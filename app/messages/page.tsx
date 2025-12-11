@@ -1,330 +1,430 @@
+// app/messages/page.tsx
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
+import Link from "next/link";
+import AppHeader from "@/components/AppHeader";
+import BottomNav from "@/components/BottomNav";
+import { getCurrentUserId } from "@/lib/auth";
+import { getRelationsForUser } from "@/lib/repositories/relationRepository";
+import { getThreadsForUser } from "@/lib/repositories/dmRepository";
+import { supabase } from "@/lib/supabaseClient";
+import type { UserId } from "@/types/user";
+import type { DbRelationRow, DbDmThreadRow } from "@/types/db";
 
-// ★ ここに置く（import の下 / コンポーネントの上）
-const CURRENT_USER_ID = "guest"; 
-
-type Thread = {
-  id: string;
-  name: string;
-  handle: string;
+// 一覧用の表示モデル
+type ThreadListItem = {
+  threadId: string;
+  partnerId: string;
+  partnerName: string; // いまは partnerId をそのまま表示
   lastMessage: string;
-  time: string;
+  lastMessageTime: string;
+  lastMessageAt: string; // ソート用 ISO
   unreadCount: number;
-  kind: "therapist" | "store" | "user";
 };
 
-const hasUnread = true;
+// uuid 判定用
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// デモ用スレッド
-const demoThreads: Thread[] = [
-  {
-    id: "taki",
-    name: "TAKI",
-    handle: "@taki_lux",
-    lastMessage: "今日はゆっくり眠れそうかな？",
-    time: "3分前",
-    unreadCount: 2,
-    kind: "therapist",
-  },
-  {
-    id: "loomroom",
-    name: "LoomRoom nagoya",
-    handle: "@loomroom",
-    lastMessage: "アプリのアップデートのお知らせです。",
-    time: "1時間前",
-    unreadCount: 0,
-    kind: "store",
-  },
-  {
-    id: "yukkuri",
-    name: "ゆっくりさん",
-    handle: "@yukkuri",
-    lastMessage: "きょうのお礼を伝えたくて...",
-    time: "昨日",
-    unreadCount: 0,
-    kind: "user",
-  },
-];
+function isUuid(id: string | null | undefined): id is string {
+  return !!id && UUID_REGEX.test(id);
+}
 
-const MessagesPage: React.FC = () => {
-  const handleOpenThread = (threadId: string) => {
-    // 本番では /messages/[id] などへ遷移予定
-    window.location.href = `/messages/${threadId}`;
-  };
-
+// シンプルなアバター（頭文字だけ表示）
+function ThreadAvatar({ name }: { name: string }) {
+  const initial =
+    name && name.trim().length > 0
+      ? name.trim().charAt(0).toUpperCase()
+      : "?";
   return (
-    <>
-      <div className="app-shell">
-        {/* ヘッダー */}
-        <header className="app-header">
-          <div style={{ width: 30 }} />
-          <div className="app-header-center">
-            <div className="app-title">メッセージ</div>
-          </div>
-          <div style={{ width: 30 }} />
-        </header>
-
-        {/* メイン */}
-        <main className="app-main messages-main">
-          <section className="messages-section">
-            <p className="messages-hint">
-              セラピスト・店舗・ユーザーとのやり取りがここに並びます。
-              <br />
-              気になる名前をタップすると、チャット画面がひらきます。
-            </p>
-          </section>
-
-          <section className="messages-section">
-            <div className="thread-list">
-              {demoThreads.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={
-                    "thread-item" + (t.unreadCount > 0 ? " thread-item--unread" : "")
-                  }
-                  onClick={() => handleOpenThread(t.id)}
-                >
-                  <div className="thread-avatar">
-                    {t.kind === "therapist"
-                      ? "🦋"
-                      : t.kind === "store"
-                      ? "🏛"
-                      : "🙂"}
-                  </div>
-                  <div className="thread-main">
-                    <div className="thread-name-row">
-                      <div className="thread-name-block">
-                        <span className="thread-name">{t.name}</span>
-                        <span className="thread-handle">{t.handle}</span>
-                      </div>
-                      <div className="thread-meta-right">
-                        <span className="thread-time">{t.time}</span>
-                        {t.unreadCount > 0 && (
-                          <span className="thread-unread-badge">
-                            {t.unreadCount}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="thread-preview">
-                      {t.unreadCount > 0 && <span className="thread-preview-dot" />}
-                      <span className="thread-preview-text">{t.lastMessage}</span>
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
-        </main>
-
-        {/* 下ナビ：とりあえず「マイ」をアクティブ（自分のエリアという扱い） */}
-        <nav className="bottom-nav">
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/")}
-          >
-            <span className="nav-icon">🏠</span>
-            ホーム
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/search")}
-          >
-            <span className="nav-icon">🔍</span>
-            さがす
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/compose")}
-          >
-            <span className="nav-icon">➕</span>
-            投稿
-          </button>
-
-          <button
-            type="button"
-            className="nav-item is-active"
-            onClick={() => (window.location.href = "/messages")}
-          >
-            <span className="nav-icon">💌</span>
-            メッセージ
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/notifications")}
-          >
-            <span className="nav-icon-wrap">
-              <span className="nav-icon">🔔</span>
-              {hasUnread && <span className="nav-badge-dot" />}
-            </span>
-            通知
-          </button>
-
-          <button
-            type="button"
-            className="nav-item is-active"
-            onClick={() => 
-              (window.location.href = `/mypage/${CURRENT_USER_ID}/console`)
-            }
-          >
-            <span className="nav-icon">👤</span>
-            マイ
-          </button>
-        </nav>
-      </div>
-
+    <div className="avatar-circle thread-avatar">
+      <span className="avatar-circle-text">{initial}</span>
       <style jsx>{`
-        .messages-main {
-          padding: 12px 12px 120px;
-        }
-
-        .messages-section {
-          margin-bottom: 10px;
-        }
-
-        .messages-hint {
-          font-size: 12px;
-          color: var(--text-sub);
-          line-height: 1.6;
-        }
-
-        .thread-list {
-          display: flex;
-          flex-direction: column;
-          border-radius: 14px;
-          overflow: hidden;
-          border: 1px solid var(--border);
-          background: var(--surface);
-        }
-
-        /* iOS が勝手に青くする対策（リンク・タップハイライト完全無効） */
-        .thread-list * {
-          color: var(--text-main) !important;
-          -webkit-tap-highlight-color: transparent !important;
-          text-decoration: none !important;
-        }
-
-        .thread-item {
-          width: 100%;
-          border: none;
-          background: transparent;
-          padding: 10px 12px;
-          display: flex;
-          gap: 10px;
-          cursor: pointer;
-          text-align: left;
-          border-bottom: 1px solid var(--border);
-        }
-
-        .thread-item:last-child {
-          border-bottom: none;
-        }
-
-        .thread-item--unread {
-          background: rgba(215, 185, 118, 0.06);
-        }
-
         .thread-avatar {
           width: 40px;
           height: 40px;
           border-radius: 999px;
-          background: var(--surface-soft);
+          background: var(--surface);
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 20px;
+          font-size: 16px;
+          font-weight: 600;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+export default function MessagesPage() {
+  const [threads, setThreads] = useState<ThreadListItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // SSRズレ防止：currentUserId は state + useEffect で決定
+  const [currentUserId, setCurrentUserId] = useState<UserId>("" as UserId);
+
+  // relations（自分 → 相手）一覧
+  const [relations, setRelations] = useState<DbRelationRow[]>([]);
+
+  // currentUserId を確定
+  useEffect(() => {
+    const id = getCurrentUserId();
+    setCurrentUserId(id as UserId);
+  }, []);
+
+  // relations を Supabase から取得（uuid 会員のみ）
+  useEffect(() => {
+    if (!isUuid(currentUserId)) {
+      setRelations([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const rows = await getRelationsForUser(currentUserId as UserId);
+        if (cancelled) return;
+        setRelations(rows ?? []);
+      } catch (e: any) {
+        if (cancelled) return;
+        console.error(
+          "[messages.getRelationsForUser] error:",
+          e,
+          "message:",
+          e?.message,
+          "code:",
+          e?.code
+        );
+        setRelations([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
+  // DMスレッド一覧（Supabase）を取得して、block済みを除外して ThreadListItem に整形
+  useEffect(() => {
+    // userId まだ不明なら何もしない
+    if (!currentUserId) return;
+
+    // ゲスト（非UUID）はサーバーDMなし
+    if (!isUuid(currentUserId)) {
+      setThreads([]);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      try {
+        // block されている相手一覧をセット化
+        const blockedTargets = new Set<string>();
+        relations.forEach((r) => {
+          if (r.type === "block") blockedTargets.add(r.target_id);
+        });
+
+        // Supabase から自分のDMスレッド一覧を取得
+        const baseThreads: DbDmThreadRow[] =
+          (await getThreadsForUser(currentUserId)) ?? [];
+
+        const items: ThreadListItem[] = baseThreads
+          .map((row) => {
+            const partnerId =
+              row.user_a_id === currentUserId
+                ? row.user_b_id
+                : row.user_a_id;
+
+            // relations テーブルで block されている相手なら一覧に出さない
+            if (partnerId && blockedTargets.has(partnerId)) return null;
+
+            // last_message_at がないスレッドは、一覧から除外（今は非表示）
+            if (!row.last_message_at) return null;
+
+            const lastMessage = row.last_message ?? "";
+            const lastMessageAt = row.last_message_at;
+
+            const dt = new Date(lastMessageAt);
+            const hh = dt.getHours().toString().padStart(2, "0");
+            const mm = dt.getMinutes().toString().padStart(2, "0");
+            const lastMessageTime = `${hh}:${mm}`;
+
+            const unreadCount =
+              row.user_a_id === currentUserId
+                ? row.unread_for_a ?? 0
+                : row.unread_for_b ?? 0;
+
+            const partnerName = partnerId ?? "相手";
+
+            return {
+              threadId: row.thread_id,
+              partnerId: partnerId ?? "",
+              partnerName,
+              lastMessage,
+              lastMessageTime,
+              lastMessageAt,
+              unreadCount,
+            } as ThreadListItem;
+          })
+          .filter((x): x is ThreadListItem => x !== null)
+          // lastMessageAt 降順でソート
+          .sort((a, b) => {
+            return (
+              new Date(b.lastMessageAt).getTime() -
+              new Date(a.lastMessageAt).getTime()
+            );
+          });
+
+        if (cancelled) return;
+        setThreads(items);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, relations, reloadKey]);
+
+  // ==============================
+  // Realtime: dm_threads の INSERT / UPDATE を購読して一覧を再読み込み
+  // ==============================
+  useEffect(() => {
+    if (!currentUserId || !isUuid(currentUserId)) return;
+
+    const handleChange = (payload: any) => {
+      const newRow = (payload.new ?? null) as DbDmThreadRow | null;
+      const oldRow = (payload.old ?? null) as DbDmThreadRow | null;
+
+      const isMine =
+        (newRow &&
+          (newRow.user_a_id === currentUserId ||
+            newRow.user_b_id === currentUserId)) ||
+        (oldRow &&
+          (oldRow.user_a_id === currentUserId ||
+            oldRow.user_b_id === currentUserId));
+
+      if (!isMine) return;
+
+      // 自分が関係するスレッドに変化があった場合のみ再取得トリガー
+      setReloadKey((k) => k + 1);
+    };
+
+    const channel = supabase
+      .channel(`dm_threads_user_${currentUserId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "dm_threads",
+        },
+        handleChange
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "dm_threads",
+        },
+        handleChange
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId]);
+
+  const hasUnread = threads.some((t) => t.unreadCount > 0);
+
+  // ゲストの場合の表示（任意）
+  if (!isUuid(currentUserId)) {
+    return (
+      <div className="app-shell">
+        <AppHeader title="メッセージ" />
+        <main className="app-main">
+          <p className="text-sm text-gray-500">
+            ログインすると、DM（メッセージ）が使えるようになります。
+          </p>
+        </main>
+        <BottomNav active="messages" hasUnread={false} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <AppHeader title="メッセージ" />
+
+      <main className="app-main">
+        {loading ? (
+          <div className="messages-loading">
+            <p>読み込み中...</p>
+          </div>
+        ) : threads.length === 0 ? (
+          <div className="messages-empty">
+            <p>メッセージスレッドはまだありません。</p>
+            <p className="messages-empty-sub">
+              セラピストや店舗のプロフィールから DM を送ると、ここに表示されます。
+            </p>
+          </div>
+        ) : (
+          <ul className="thread-list">
+            {threads.map((t) => (
+              <li key={t.threadId} className="thread-item">
+                <Link
+                  href={`/messages/${encodeURIComponent(t.threadId)}`}
+                  className="thread-link"
+                >
+                  <div className="thread-avatar-wrap">
+                    <ThreadAvatar name={t.partnerName || t.partnerId} />
+                  </div>
+                  <div className="thread-main">
+                    <div className="thread-header-row">
+                      <div className="thread-name">
+                        {t.partnerName || t.partnerId}
+                      </div>
+                      <div className="thread-time">{t.lastMessageTime}</div>
+                    </div>
+                    <div className="thread-body-row">
+                      <div className="thread-last-message">
+                        {t.lastMessage || "（メッセージなし）"}
+                      </div>
+                      {t.unreadCount > 0 && (
+                        <span className="thread-unread-dot" />
+                      )}
+                    </div>
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </main>
+
+      <BottomNav active="messages" hasUnread={hasUnread} />
+
+      <style jsx>{`
+        .app-shell {
+          display: flex;
+          flex-direction: column;
+          min-height: 100vh;
+          background: var(--background);
+          color: var(--foreground);
+        }
+
+        .app-main {
+          flex: 1;
+          padding: 12px 12px 72px;
+          max-width: 640px;
+          margin: 0 auto;
+          width: 100%;
+        }
+
+        .messages-loading,
+        .messages-empty {
+          padding: 24px 8px;
+          text-align: center;
+          color: var(--muted-foreground);
+        }
+
+        .messages-empty-sub {
+          margin-top: 8px;
+          font-size: 12px;
+          color: var(--muted-foreground);
+        }
+
+        .thread-list {
+          list-style: none;
+          margin: 0;
+          padding: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .thread-item {
+          border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .thread-link {
+          display: flex;
+          gap: 10px;
+          padding: 10px 4px;
+          text-decoration: none;
+          color: inherit;
+        }
+
+        .thread-avatar-wrap {
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
 
         .thread-main {
           flex: 1;
+          min-width: 0;
           display: flex;
           flex-direction: column;
           gap: 4px;
         }
 
-        .thread-name-row {
+        .thread-header-row {
           display: flex;
           justify-content: space-between;
-          align-items: center;
+          align-items: baseline;
+          gap: 8px;
         }
 
-       .thread-name-block {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-
-        /* ここが iOS で青くなる主犯。
-        aタグじゃなくても“タップ対象”と判定され青くされるので強制上書き。 */
         .thread-name {
           font-size: 14px;
           font-weight: 600;
-          color: var(--text-main) !important;
-        }
-
-        .thread-handle {
-          font-size: 11px;
-          color: var(--text-sub) !important;
-        }
-
-        .thread-meta-right {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-end;
-          gap: 4px;
-          margin-left: 8px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .thread-time {
           font-size: 11px;
-          color: var(--text-sub) !important;
+          color: var(--muted-foreground);
+          flex-shrink: 0;
         }
 
-        .thread-unread-badge {
-          min-width: 18px;
-          padding: 2px 6px;
-          border-radius: 999px;
-          background: var(--accent);
-          color: #fff;
-          font-size: 11px;
-          text-align: center;
-        }
-
-        .thread-preview {
+        .thread-body-row {
           display: flex;
+          justify-content: space-between;
           align-items: center;
-          gap: 4px;
-          font-size: 12px;
-          color: var(--text-sub) !important;
-          margin-top: 2px;
+          gap: 8px;
         }
 
-        .thread-preview-dot {
-          width: 6px;
-          height: 6px;
+        .thread-last-message {
+          font-size: 13px;
+          color: var(--muted-foreground);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .thread-unread-dot {
+          width: 8px;
+          height: 8px;
           border-radius: 999px;
           background: var(--accent);
-        }
-
-        .thread-preview-text {
-          overflow: hidden;
-          white-space: nowrap;
-          text-overflow: ellipsis;
-         flex: 1;
+          flex-shrink: 0;
         }
       `}</style>
-    </>
+    </div>
   );
-};
-
-export default MessagesPage;
+}

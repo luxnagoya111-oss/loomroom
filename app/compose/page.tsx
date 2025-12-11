@@ -1,392 +1,464 @@
+// app/compose/page.tsx
 "use client";
 
-import React, { useState, ChangeEvent } from "react";
+import React, {
+  useState,
+  useEffect,
+  ChangeEvent,
+  FormEvent,
+} from "react";
+import AppHeader from "@/components/AppHeader";
+import BottomNav from "@/components/BottomNav";
+import { getCurrentUserId, getCurrentUserRole } from "@/lib/auth";
+import { supabase } from "@/lib/supabaseClient";
 
-// ★ ここに置く（import の下 / コンポーネントの上）
-const CURRENT_USER_ID = "guest"; 
+// Supabase users テーブル上で「ゲスト用」に1行だけ作っておく想定
+const GUEST_DB_USER_ID = "00000000-0000-0000-0000-000000000000";
 
-// ★ まずは強制的に true（確認用）
-const hasUnread = true;
+const MAX_LENGTH = 280;
 
-const ComposePage: React.FC = () => {
+// therapists テーブルの最低限の行型
+type DbTherapistRowForStatus = {
+  id: string;
+  user_id: string;
+  store_id: string | null;
+};
+
+export default function ComposePage() {
+  const logicalUserId = getCurrentUserId(); // 例: "guest-xxxxx" or UUID
+  const currentRole = getCurrentUserRole(); // "user" | "therapist" | "store" | "guest"
+
+  const hasUnread = false; // DM未読は別フェーズで接続
+
+  // 「投稿可能か」の状態をここで一元管理
+  const [canPost, setCanPost] = useState<boolean>(true);
+  const [checkingStatus, setCheckingStatus] = useState<boolean>(
+    currentRole === "therapist"
+  );
+
   const [text, setText] = useState("");
-  const [visibility, setVisibility] = useState<"public" | "follow">("public");
+  const [area, setArea] = useState("中部");
+  const [visibility, setVisibility] = useState<"public" | "limited">("public");
+  const [canReply, setCanReply] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  // ロールに応じて投稿可否を決定
+  useEffect(() => {
+    // セラピスト以外（user / store / guest）は今のところ制限なし
+    if (currentRole !== "therapist") {
+      setCanPost(true);
+      setCheckingStatus(false);
+      return;
+    }
+
+    // セラピストの場合のみ、therapists.store_id を確認
+    let cancelled = false;
+
+    const checkTherapistStoreLink = async () => {
+      try {
+        setCheckingStatus(true);
+
+        const { data, error } = await supabase
+          .from("therapists")
+          .select("id, user_id, store_id")
+          .eq("user_id", logicalUserId)
+          .maybeSingle<DbTherapistRowForStatus>();
+
+        if (cancelled) return;
+
+        if (error) {
+          console.error(
+            "[Compose] failed to load therapist status:",
+            error
+          );
+          // 安全側に倒して「投稿不可」とする
+          setCanPost(false);
+          return;
+        }
+
+        if (!data) {
+          // therapist レコードが無い場合も、所属店舗なし扱い
+          setCanPost(false);
+          return;
+        }
+
+        // store_id が入っているセラピストのみ投稿許可
+        setCanPost(!!data.store_id);
+      } catch (e) {
+        if (!cancelled) {
+          console.error("[Compose] therapist status check exception:", e);
+          setCanPost(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setCheckingStatus(false);
+        }
+      }
+    };
+
+    checkTherapistStoreLink();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentRole, logicalUserId]);
 
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
-    setText(e.target.value);
+    const next = e.target.value;
+    if (next.length <= MAX_LENGTH) {
+      setText(next);
+    }
   };
 
-  const handlePost = () => {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      alert("投稿内容を入力してください。");
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    const body = text.trim();
+    if (!body) return;
+
+    // 投稿禁止ならここで止める
+    // （セラピストかどうかに限らず canPost に従う）
+    if (!canPost) {
+      alert("現在、所属店舗が無いため投稿はできません。");
       return;
     }
 
-    // 本番ではここでAPI呼び出しなど
-    alert(
-      `（デモ）投稿を送信しました。\n\n本文：${trimmed}\n公開範囲：${
-        visibility === "public" ? "すべて" : "フォロー中のみ"
-      }`
-    );
-    setText("");
-  };
+    // Supabase 上の author_id に使う ID を決める
+    // - ログイン済み（UUID）: そのまま author_id
+    // - ゲスト（"guest-" から始まる）: GUEST_DB_USER_ID に集約
+    const isGuestLogical = logicalUserId.startsWith("guest-");
+    const authorId = isGuestLogical ? GUEST_DB_USER_ID : logicalUserId;
 
-  const handleCancel = () => {
-    if (text.trim().length === 0) {
-      history.back();
-      return;
-    }
-    const ok = confirm("入力中の内容を破棄してよろしいですか？");
-    if (ok) {
+    // author_kind は role ベース（guest は user 扱い）
+    const authorKind =
+      currentRole === "therapist" ||
+      currentRole === "store" ||
+      currentRole === "user"
+        ? currentRole
+        : "user";
+
+    try {
+      setSubmitting(true);
+
+      const { error } = await supabase.from("posts").insert([
+        {
+          body,
+          area,
+          author_id: authorId,
+          author_kind: authorKind,
+          // ここで visibility / can_reply を使うならカラム追加してから
+          // visibility,
+          // can_reply: canReply,
+        },
+      ]);
+
+      if (error) {
+        console.error(
+          "Supabase insert error:",
+          error,
+          (error as any)?.message,
+          (error as any)?.code
+        );
+        alert(
+          (error as any)?.message ??
+            "投稿の保存中にエラーが発生しました。時間をおいて再度お試しください。"
+        );
+        return;
+      }
+
+      alert("投稿を公開しました。ホームのタイムラインに反映されます。");
       setText("");
-      history.back();
+
+      if (typeof window !== "undefined") {
+        window.location.href = "/";
+      }
+    } catch (err: any) {
+      console.error("Supabase insert unexpected error:", err);
+      alert(
+        err?.message ??
+          "予期せぬエラーが発生しました。時間をおいて再度お試しください。"
+      );
+    } finally {
+      setSubmitting(false);
     }
   };
+
+  const remaining = MAX_LENGTH - text.length;
 
   return (
-    <>
-      <div className="app-shell">
-        {/* ヘッダー */}
-        <header className="app-header">
-          <button
-            type="button"
-            className="header-icon-btn"
-            onClick={() => history.back()}
-          >
-            ◀
-          </button>
+    <div className="app-root">
+      <AppHeader title="投稿を作成" />
 
-          <div className="app-header-center">
-            <div className="app-title">投稿を作成</div>
+      <main className="app-main compose-main">
+        {/* セラピストで、所属なしのときの案内（表示だけ） */}
+        {currentRole === "therapist" && !checkingStatus && !canPost && (
+          <div className="compose-block">
+            <p className="compose-block-title">
+              現在、所属店舗が無いため、投稿機能はご利用いただけません。
+            </p>
+            <p className="compose-block-text">
+              店舗に所属してから、またここでの発信を再開できます。
+            </p>
           </div>
+        )}
 
-          <div style={{ width: 30 }} />
-        </header>
+        {/* ステータス判定中の軽い表示（任意） */}
+        {currentRole === "therapist" && checkingStatus && (
+          <div className="compose-block">
+            <p className="compose-block-title">投稿可否を確認しています…</p>
+            <p className="compose-block-text">
+              少しだけお待ちください。通信状況によって数秒かかることがあります。
+            </p>
+          </div>
+        )}
 
-        {/* メイン */}
-        <main className="app-main compose-main">
-          {/* プロフィール行 */}
-          <section className="compose-profile-row">
-            <div className="avatar">U</div>
-            <div className="compose-profile-text">
-              <div className="compose-name">あなた</div>
-              <div className="compose-hint">今の気持ちをすこしだけ。</div>
-            </div>
-          </section>
-
-          {/* テキスト入力 */}
-          <section className="compose-text-section">
+        {/* フォーム自体は常に描画する（Hydration対策・UI一貫性） */}
+        <form onSubmit={handleSubmit}>
+          {/* 投稿テキスト */}
+          <div className="compose-card">
             <textarea
               className="compose-textarea"
-              placeholder={
-                "今日はどんな時間でしたか？\n不安なことも、嬉しかったことも、そのままで。"
-              }
               value={text}
               onChange={handleChange}
+              placeholder="いまの気持ちや、残しておきたいことを自由に書いてください"
             />
-          </section>
+            <div className="compose-footer">
+              <span
+                className={
+                  remaining < 0
+                    ? "compose-count compose-count--over"
+                    : "compose-count"
+                }
+              >
+                {remaining}
+              </span>
 
-          {/* オプション行 */}
-          <section className="compose-options">
-            <div className="compose-option-block">
-              <div className="compose-option-label">公開範囲</div>
-              <div className="pill-toggle">
+              <button
+                type="submit"
+                className="compose-submit"
+                disabled={!text.trim() || submitting || checkingStatus}
+              >
+                {submitting ? "送信中…" : "投稿する"}
+              </button>
+            </div>
+          </div>
+
+          {/* 公開範囲・返信可否設定 */}
+          <div className="compose-card compose-settings">
+            {/* エリア */}
+            <div className="compose-setting-row">
+              <div className="compose-setting-label">エリア</div>
+              <div className="compose-setting-control">
+                <select
+                  className="compose-select"
+                  value={area}
+                  onChange={(e) => setArea(e.target.value)}
+                >
+                  <option value="北海道">北海道</option>
+                  <option value="東北">東北</option>
+                  <option value="関東">関東</option>
+                  <option value="中部">中部</option>
+                  <option value="近畿">近畿</option>
+                  <option value="中国">中国</option>
+                  <option value="四国">四国</option>
+                  <option value="九州">九州</option>
+                  <option value="沖縄">沖縄</option>
+                </select>
+              </div>
+            </div>
+
+            {/* 公開範囲（カラム未作成なら見た目だけ） */}
+            <div className="compose-setting-row">
+              <div className="compose-setting-label">公開範囲</div>
+              <div className="compose-setting-control compose-visibility-toggle">
                 <button
                   type="button"
                   className={
-                    "pill-toggle-item" +
-                    (visibility === "public" ? " is-active" : "")
+                    visibility === "public"
+                      ? "toggle-pill toggle-pill--active"
+                      : "toggle-pill"
                   }
                   onClick={() => setVisibility("public")}
                 >
-                  すべて
+                  みんなに公開
                 </button>
+
                 <button
                   type="button"
                   className={
-                    "pill-toggle-item" +
-                    (visibility === "follow" ? " is-active" : "")
+                    visibility === "limited"
+                      ? "toggle-pill toggle-pill--active"
+                      : "toggle-pill"
                   }
-                  onClick={() => setVisibility("follow")}
+                  onClick={() => setVisibility("limited")}
                 >
-                  フォロー中のみ
+                  一部だけ
                 </button>
               </div>
             </div>
 
-            <div className="compose-option-block">
-              <div className="compose-option-label">メディア</div>
-              <button
-                type="button"
-                className="chip chip-outline"
-                onClick={() =>
-                  alert("（デモ）メディア選択はまだ未実装です。")
-                }
-              >
-                📷 画像・動画を追加
-              </button>
+            {/* 返信可否（カラム未作成なら見た目だけ） */}
+            <div className="compose-setting-row">
+              <div className="compose-setting-label">返信</div>
+              <div className="compose-setting-control">
+                <label className="compose-checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={canReply}
+                    onChange={(e) => setCanReply(e.target.checked)}
+                  />
+                  <span>この投稿への返信を許可する</span>
+                </label>
+              </div>
             </div>
-          </section>
-        </main>
+          </div>
+        </form>
+      </main>
 
-        {/* 下フッターボタン */}
-        <footer className="compose-footer-bar">
-          <button
-            type="button"
-            className="compose-footer-btn compose-footer-btn--ghost"
-            onClick={handleCancel}
-          >
-            キャンセル
-          </button>
-          <button
-            type="button"
-            className="compose-footer-btn compose-footer-btn--primary"
-            onClick={handlePost}
-          >
-            投稿する
-          </button>
-        </footer>
+      <BottomNav active="home" hasUnread={hasUnread} />
 
-        {/* 下ナビ：投稿をアクティブ */}
-        <nav className="bottom-nav">
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/")}
-          >
-            <span className="nav-icon">🏠</span>
-            ホーム
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/search")}
-          >
-            <span className="nav-icon">🔍</span>
-            さがす
-          </button>
-
-          <button
-            type="button"
-            className="nav-item is-active"
-            onClick={() => (window.location.href = "/compose")}
-          >
-            <span className="nav-icon">➕</span>
-            投稿
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/messages")}
-          >
-            <span className="nav-icon">💌</span>
-            メッセージ
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/notifications")}
-          >
-            <span className="nav-icon-wrap">
-              <span className="nav-icon">🔔</span>
-              {hasUnread && <span className="nav-badge-dot" />}
-            </span>
-            通知
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => 
-              (window.location.href = `/mypage/${CURRENT_USER_ID}/console`)
-            }
-          >
-            <span className="nav-icon">👤</span>
-            マイ
-          </button>
-        </nav>
-      </div>
-
-      {/* このページ専用のスタイルだけ scoped で持つ */}
       <style jsx>{`
-        .header-icon-btn {
-          width: 30px;
-          height: 30px;
-          border-radius: 999px;
-          border: 1px solid var(--border);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 14px;
-          color: var(--text-sub);
-          background: var(--surface-soft);
-          cursor: pointer;
-        }
-
         .compose-main {
-          padding: 12px 16px 120px;
+          padding: 12px 16px 140px;
         }
 
-        .avatar {
-          width: 38px;
-          height: 38px;
-          border-radius: 999px;
-          background: #ddd;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 18px;
-        }
-
-        .compose-profile-row {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-bottom: 8px;
-        }
-
-        .compose-profile-text {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-
-        .compose-name {
-          font-size: 14px;
-          font-weight: 600;
-        }
-
-        .compose-hint {
-          font-size: 12px;
-          color: var(--text-sub);
-        }
-
-        .compose-text-section {
-          margin-top: 6px;
-          margin-bottom: 14px;
+        .compose-card {
+          border-radius: 16px;
+          border: 1px solid var(--border);
+          background: var(--surface);
+          padding: 12px 12px 8px;
+          box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+          margin-top: 12px;
         }
 
         .compose-textarea {
           width: 100%;
-          min-height: 160px;
-          border-radius: 14px;
-          border: 1px solid var(--border);
-          padding: 10px 12px;
-          font-size: 14px;
-          line-height: 1.7;
-          resize: vertical;
-          background: var(--surface);
-        }
-
-        .compose-textarea::placeholder {
-          color: #b6b7bd;
-        }
-
-        .compose-options {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .compose-option-block {
-          background: var(--surface);
-          border-radius: 12px;
-          border: 1px solid var(--border);
-          padding: 10px 12px;
-        }
-
-        .compose-option-label {
-          font-size: 12px;
-          color: var(--text-sub);
-          margin-bottom: 6px;
-        }
-
-        .pill-toggle {
-          display: inline-flex;
-          border-radius: 999px;
-          background: var(--surface-soft);
-          border: 1px solid var(--border);
-          padding: 2px;
-          gap: 2px;
-        }
-
-        .pill-toggle-item {
-          border-radius: 999px;
+          min-height: 120px;
           border: none;
+          outline: none;
+          resize: none;
           background: transparent;
-          padding: 4px 10px;
-          font-size: 12px;
-          color: var(--text-sub);
-          cursor: pointer;
+          font-size: 14px;
+          line-height: 1.6;
         }
 
-        .pill-toggle-item.is-active {
-          background: var(--accent-soft);
-          color: var(--accent);
-          font-weight: 600;
-        }
-
-        .chip {
-          padding: 4px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          display: inline-flex;
+        .compose-footer {
+          display: flex;
+          justify-content: space-between;
           align-items: center;
-          gap: 4px;
-        }
-
-        .chip-outline {
-          border: 1px solid var(--border);
-          background: var(--surface-soft);
-          color: var(--text-sub);
-        }
-
-        .compose-footer-bar {
-          position: fixed;
-          bottom: 58px;
-          left: 0;
-          width: 100vw;
-          max-width: 100vw;
-          padding: 8px 16px;
-          background: linear-gradient(
-            to top,
-            rgba(247, 247, 250, 0.98),
-            rgba(247, 247, 250, 0.88)
-          );
-          border-top: 1px solid var(--border);
-          display: flex;
           gap: 8px;
-          z-index: 25;
+          margin-top: 4px;
         }
 
-        .compose-footer-btn {
-          flex: 1;
-          border-radius: 999px;
-          padding: 9px 12px;
-          font-size: 14px;
-          font-weight: 600;
-          border: none;
-          cursor: pointer;
-        }
-
-        .compose-footer-btn--ghost {
-          background: transparent;
+        .compose-count {
+          font-size: 11px;
           color: var(--text-sub);
-          border: 1px solid var(--border);
         }
 
-        .compose-footer-btn--primary {
+        .compose-count--over {
+          color: #e11d48;
+        }
+
+        .compose-submit {
+          border-radius: 999px;
+          border: none;
+          padding: 6px 14px;
+          font-size: 13px;
+          font-weight: 500;
           background: var(--accent);
           color: #fff;
           box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
+          cursor: pointer;
+        }
+
+        .compose-submit:disabled {
+          opacity: 0.5;
+          cursor: default;
+        }
+
+        .compose-settings {
+          margin-top: 16px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .compose-setting-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+
+        .compose-setting-label {
+          font-size: 13px;
+          color: var(--text-sub);
+          flex-shrink: 0;
+        }
+
+        .compose-setting-control {
+          flex: 1;
+          display: flex;
+          justify-content: flex-end;
+          align-items: center;
+        }
+
+        .compose-select {
+          width: 140px;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          padding: 4px 10px;
+          font-size: 13px;
+          background: #fff;
+        }
+
+        .compose-visibility-toggle {
+          gap: 6px;
+        }
+
+        .toggle-pill {
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          padding: 4px 10px;
+          font-size: 12px;
+          background: #fff;
+          cursor: pointer;
+        }
+
+        .toggle-pill--active {
+          background: var(--accent);
+          color: #fff;
+          border-color: var(--accent);
+        }
+
+        .compose-checkbox-label {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          color: var(--text-sub);
+        }
+
+        .compose-block {
+          margin-top: 24px;
+          padding: 20px 16px;
+          border-radius: 16px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+        }
+
+        .compose-block-title {
+          font-size: 14px;
+          font-weight: 600;
+          margin-bottom: 8px;
+        }
+
+        .compose-block-text {
+          font-size: 13px;
+          color: var(--muted-foreground);
+          line-height: 1.6;
         }
       `}</style>
-    </>
+    </div>
   );
-};
-
-export default ComposePage;
+}

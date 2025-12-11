@@ -3,15 +3,17 @@
 import React, { useRef } from "react";
 
 type Props = {
-  avatarDataUrl?: string;
-  displayName?: string;
-  onChange: (dataUrl: string) => void;
+  avatarDataUrl?: string;         // 表示用URL（Base64 or Storage URL）
+  displayName?: string;           // 頭文字
+  onChange?: (dataUrl: string) => void;      // ※従来の Base64 コールバック（後方互換）
+  onFileSelect?: (file: File) => void;       // ★新規：Storage アップロード用
 };
 
 const AvatarUploader: React.FC<Props> = ({
   avatarDataUrl,
   displayName,
   onChange,
+  onFileSelect,
 }) => {
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -23,18 +25,27 @@ const AvatarUploader: React.FC<Props> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 2 * 1024 * 1024) {
-      alert("画像サイズが大きすぎます（2MB以下推奨）");
+    if (file.size > 5 * 1024 * 1024) {
+      // 5MB 制限（Storage 前提なので少し緩め）
+      alert("画像サイズが大きすぎます（5MB以下推奨）");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        onChange(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
+    // ① Storage アップロード用：File を親へ渡す
+    if (onFileSelect) {
+      onFileSelect(file);
+    }
+
+    // ② 従来の Base64 コールバックも維持（互換性のため）
+    if (onChange) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          onChange(reader.result);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const avatarStyle: React.CSSProperties = avatarDataUrl
@@ -74,7 +85,6 @@ const AvatarUploader: React.FC<Props> = ({
         onChange={handleChange}
       />
 
-      {/* Avatar 専用スタイル（丸い枠アイコン） */}
       <style jsx>{`
         .tc-avatar {
           border: none;

@@ -1,16 +1,13 @@
-// app/mypage/[id]/therapist/console/page.tsx（想定）
 "use client";
 
-import React, {
-  useEffect,
-  useState,
-  ChangeEvent,
-} from "react";
+import React, { useEffect, useState, ChangeEvent } from "react";
 import { useParams } from "next/navigation";
-import AvatarUploader from "@/components/AvatarUploader"; // 共通アバターコンポーネント
+import AvatarUploader from "@/components/AvatarUploader";
+import BottomNav from "@/components/BottomNav";
+import { supabase } from "@/lib/supabaseClient";
+import { uploadAvatar } from "@/lib/avatarStorage";
 
-// 今は未使用だけど残しておく（将来ログインIDと紐付ける用）
-const CURRENT_USER_ID = "guest";
+const hasUnread = true;
 
 type Area =
   | "北海道"
@@ -25,15 +22,28 @@ type Area =
 
 type TherapistProfile = {
   displayName: string;
-  handle: string;          // 内部的には保持しておく（将来用）
+  handle: string;
   area: Area | "";
   intro: string;
   messagePolicy: string;
   snsX?: string;
   snsLine?: string;
   snsOther?: string;
-  /** アイコン画像（data URL） */
   avatarDataUrl?: string;
+};
+
+// Supabase therapists テーブルの型（想定カラム名）
+// 必要に応じて、実際のテーブルに合わせてリネームしてください。
+type DbTherapistRow = {
+  display_name: string | null;
+  handle: string | null;
+  area: string | null;
+  intro: string | null;
+  message_policy: string | null;
+  sns_x: string | null;
+  sns_line: string | null;
+  sns_other: string | null;
+  avatar_url: string | null;
 };
 
 const STORAGE_PREFIX = "loomroom_therapist_profile_";
@@ -67,15 +77,27 @@ const DEFAULT_PROFILES: Record<string, TherapistProfile> = {
 
 const TherapistConsolePage: React.FC = () => {
   const params = useParams<{ id: string }>();
-  const therapistId = (params?.id as string) || "taki";
+  const therapistId = (params?.id as string) || "taki"; // URLの [id]。therapists.slug 想定
   const storageKey = `${STORAGE_PREFIX}${therapistId}`;
 
   const [data, setData] = useState<TherapistProfile>(() => {
     return DEFAULT_PROFILES[therapistId] || DEFAULT_PROFILES.default;
   });
   const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
-  // 既存データを読み込み（アイコンも含めて復元）
+  const updateField = <K extends keyof TherapistProfile>(
+    key: K,
+    value: TherapistProfile[K]
+  ) => {
+    setData((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
+  // ① localStorage から復元（旧仕様との互換）
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -94,24 +116,153 @@ const TherapistConsolePage: React.FC = () => {
     }
   }, [storageKey]);
 
-  const updateField = <K extends keyof TherapistProfile>(
-    key: K,
-    value: TherapistProfile[K]
-  ) => {
-    setData((prev) => ({
-      ...prev,
-      [key]: value,
-    }));
+  // ② Supabase therapists から基本プロフィールを取得
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTherapistFromSupabase = async () => {
+      try {
+        const { data: dbRow, error } = await supabase
+          .from("therapists")
+          .select(
+            "display_name, handle, area, intro, message_policy, sns_x, sns_line, sns_other, avatar_url"
+          )
+          .eq("slug", therapistId) // therapists.slug が URL の [id] 想定
+          .maybeSingle<DbTherapistRow>();
+
+        if (cancelled) return;
+
+        if (error) {
+          console.error("[TherapistConsole] loadTherapist error:", error);
+          return;
+        }
+        if (!dbRow) return;
+
+        setData((prev) => ({
+          ...prev,
+          displayName: dbRow.display_name ?? prev.displayName,
+          handle: dbRow.handle ?? prev.handle,
+          area: (dbRow.area as Area) ?? prev.area,
+          intro: dbRow.intro ?? prev.intro,
+          messagePolicy: dbRow.message_policy ?? prev.messagePolicy,
+          snsX: dbRow.sns_x ?? prev.snsX,
+          snsLine: dbRow.sns_line ?? prev.snsLine,
+          snsOther: dbRow.sns_other ?? prev.snsOther,
+          avatarDataUrl: dbRow.avatar_url ?? prev.avatarDataUrl,
+        }));
+      } catch (e) {
+        if (!cancelled) {
+          console.error("[TherapistConsole] loadTherapist exception:", e);
+        }
+      }
+    };
+
+    loadTherapistFromSupabase();
+    return () => {
+      cancelled = true;
+    };
+  }, [therapistId]);
+
+  // ③ Avatar 選択時：即プレビュー → Storage アップロード → therapists.avatar_url 更新
+  const handleAvatarFileSelect = async (file: File) => {
+    try {
+      // まずはローカルプレビュー（Base64）を即反映
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          updateField("avatarDataUrl", reader.result);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (e) {
+      console.warn("[TherapistConsole] preview read error:", e);
+    }
+
+    // Storage ＋ DB 更新
+    try {
+      setAvatarUploading(true);
+
+      // Storage パスには therapistId をそのまま使う（uploadAvatar 内で users/{id}/... だが、
+      // 「id」として therapistId を流用して問題はない）
+      const publicUrl = await uploadAvatar(file, therapistId);
+
+      const { error } = await supabase
+        .from("therapists")
+        .update({ avatar_url: publicUrl })
+        .eq("slug", therapistId);
+
+      if (error) {
+        console.error(
+          "[TherapistConsole] failed to update therapists.avatar_url:",
+          error
+        );
+        alert(
+          "アイコン画像をサーバーに保存できませんでした。時間をおいて再度お試しください。"
+        );
+        return;
+      }
+
+      // 最終的には Storage の URL を反映
+      updateField("avatarDataUrl", publicUrl);
+    } catch (e) {
+      console.error("[TherapistConsole] handleAvatarFileSelect error:", e);
+      alert("画像のアップロードに失敗しました。通信環境をご確認ください。");
+    } finally {
+      setAvatarUploading(false);
+    }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (typeof window === "undefined") return;
+
+    // 1) 端末ローカルに保存（旧仕様互換）
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(data));
-      alert("プロフィールを保存しました（この端末の中に保存されます）。");
     } catch (e) {
-      console.warn("Failed to save therapist profile", e);
-      alert("保存に失敗しました。ストレージ容量などをご確認ください。");
+      console.warn("Failed to save therapist profile (localStorage)", e);
+      alert("ローカル保存に失敗しました。ストレージ容量などをご確認ください。");
+    }
+
+    // 2) therapists テーブルに保存
+    try {
+      setSaving(true);
+
+      const updatePayload: Partial<DbTherapistRow> = {
+        display_name: data.displayName,
+        handle: data.handle,
+        area: data.area || null,
+        intro: data.intro,
+        message_policy: data.messagePolicy,
+        sns_x: data.snsX || null,
+        sns_line: data.snsLine || null,
+        sns_other: data.snsOther || null,
+        // avatar_url はアイコン変更時に個別更新しているが、
+        // data.avatarDataUrl が Storage URL になっていればここで上書きしても良い
+        avatar_url: data.avatarDataUrl || null,
+      };
+
+      const { error } = await supabase
+        .from("therapists")
+        .update(updatePayload)
+        .eq("slug", therapistId);
+
+      if (error) {
+        console.error("[TherapistConsole] failed to update therapists:", error);
+        alert(
+          "サーバー側のプロフィール保存に失敗しました。時間をおいて再度お試しください。"
+        );
+      } else {
+        alert(
+          "プロフィールを保存しました。（この端末と LoomRoom アカウントの両方に保存されています）"
+        );
+      }
+    } catch (e) {
+      console.error("[TherapistConsole] handleSave error:", e);
+      alert(
+        "サーバー側のプロフィール保存に失敗しました。通信環境をご確認ください。"
+      );
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -125,7 +276,7 @@ const TherapistConsolePage: React.FC = () => {
             className="header-icon-btn"
             onClick={() => history.back()}
           >
-            ◀
+            ←
           </button>
           <div className="app-header-center">
             <div className="app-title">セラピスト用コンソール</div>
@@ -136,39 +287,33 @@ const TherapistConsolePage: React.FC = () => {
 
         {/* メイン */}
         <main className="app-main therapist-console-main">
-          {/* ★ 店舗とのつながり（在籍リクエスト表示エリア） */}
-          <section className="tc-card">
+          {/* 店舗とのつながり */}
+          <section className="surface-card tc-card">
             <h2 className="tc-title">店舗とのつながり</h2>
-            {/* 今はまだダミー文。後でリクエスト一覧に差し替える */}
             <p className="tc-caption">
               現在、新しい在籍リクエストは届いていません。
             </p>
           </section>
 
-          {/* プロフィール上部：アイコン＋表示名 */}
-          <section className="tc-card">
+          {/* 表示情報 */}
+          <section className="surface-card tc-card">
             <h2 className="tc-title">表示情報</h2>
 
             <div className="tc-profile-row">
-              {/* 共通 AvatarUploader を使用 */}
               <AvatarUploader
                 avatarDataUrl={data.avatarDataUrl}
                 displayName={data.displayName}
-                onChange={(dataUrl: string) =>
-                  updateField("avatarDataUrl", dataUrl)
-                }
+                // Base64 を使ったローカル保存はもう不要なので onChange は渡さない
+                onFileSelect={handleAvatarFileSelect}
               />
 
               <div className="tc-profile-main">
-                {/* LoomRoom ID 表示（編集不可） */}
-                <div className="tc-id-pill">
-                  LoomRoom ID：@{therapistId}
-                </div>
+                <div className="tc-id-pill">LoomRoom ID：@{therapistId}</div>
 
-                <div className="tc-field-block">
-                  <label className="tc-label">表示名</label>
+                <div className="field">
+                  <label className="field-label">表示名</label>
                   <input
-                    className="tc-input"
+                    className="field-input"
                     value={data.displayName}
                     onChange={(e: ChangeEvent<HTMLInputElement>) =>
                       updateField("displayName", e.target.value)
@@ -176,19 +321,21 @@ const TherapistConsolePage: React.FC = () => {
                     placeholder="例）TAKI / Hiyo / ひより など"
                   />
                 </div>
+                {avatarUploading && (
+                  <div className="tc-caption">
+                    アイコン画像を保存しています…
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="tc-field-block">
-              <label className="tc-label">よくいるエリア</label>
+            <div className="field">
+              <label className="field-label">よくいるエリア</label>
               <select
-                className="tc-select"
+                className="field-input"
                 value={data.area}
                 onChange={(e) =>
-                  updateField(
-                    "area",
-                    e.target.value as TherapistProfile["area"]
-                  )
+                  updateField("area", e.target.value as TherapistProfile["area"])
                 }
               >
                 <option value="">未設定</option>
@@ -204,10 +351,10 @@ const TherapistConsolePage: React.FC = () => {
               </select>
             </div>
 
-            <div className="tc-field-block">
-              <label className="tc-label">ひとこと紹介</label>
+            <div className="field">
+              <label className="field-label">ひとこと紹介</label>
               <textarea
-                className="tc-textarea"
+                className="field-input tc-textarea"
                 value={data.intro}
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
                   updateField("intro", e.target.value)
@@ -217,13 +364,14 @@ const TherapistConsolePage: React.FC = () => {
             </div>
           </section>
 
-          <section className="tc-card">
+          {/* メッセージについて */}
+          <section className="surface-card tc-card">
             <h2 className="tc-title">メッセージについて</h2>
 
-            <div className="tc-field-block">
-              <label className="tc-label">返信のペースや考え方</label>
+            <div className="field">
+              <label className="field-label">返信のペースや考え方</label>
               <textarea
-                className="tc-textarea"
+                className="field-input tc-textarea"
                 value={data.messagePolicy}
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
                   updateField("messagePolicy", e.target.value)
@@ -236,13 +384,14 @@ const TherapistConsolePage: React.FC = () => {
             </div>
           </section>
 
-          <section className="tc-card">
+          {/* リンク */}
+          <section className="surface-card tc-card">
             <h2 className="tc-title">リンク</h2>
 
-            <div className="tc-field-block">
-              <label className="tc-label">X（旧Twitter）URL</label>
+            <div className="field">
+              <label className="field-label">X（旧Twitter）URL</label>
               <input
-                className="tc-input"
+                className="field-input"
                 value={data.snsX || ""}
                 onChange={(e: ChangeEvent<HTMLInputElement>) =>
                   updateField("snsX", e.target.value)
@@ -251,10 +400,10 @@ const TherapistConsolePage: React.FC = () => {
               />
             </div>
 
-            <div className="tc-field-block">
-              <label className="tc-label">LINE（リットリンクなども可）</label>
+            <div className="field">
+              <label className="field-label">LINE（リットリンクなども可）</label>
               <input
-                className="tc-input"
+                className="field-input"
                 value={data.snsLine || ""}
                 onChange={(e: ChangeEvent<HTMLInputElement>) =>
                   updateField("snsLine", e.target.value)
@@ -263,10 +412,10 @@ const TherapistConsolePage: React.FC = () => {
               />
             </div>
 
-            <div className="tc-field-block">
-              <label className="tc-label">その他リンク</label>
+            <div className="field">
+              <label className="field-label">その他リンク</label>
               <input
-                className="tc-input"
+                className="field-input"
                 value={data.snsOther || ""}
                 onChange={(e: ChangeEvent<HTMLInputElement>) =>
                   updateField("snsOther", e.target.value)
@@ -276,7 +425,7 @@ const TherapistConsolePage: React.FC = () => {
             </div>
 
             <div className="tc-caption">
-              ※ 現時点では、この端末の中だけで保存されます（本番ではサーバー保存予定）。
+              この端末だけでなく、LoomRoom アカウント側にも順次反映されます。
             </div>
           </section>
         </main>
@@ -285,27 +434,23 @@ const TherapistConsolePage: React.FC = () => {
         <footer className="tc-footer-bar">
           <button
             type="button"
-            className="tc-save-btn"
-            disabled={!loaded}
+            className="btn-primary btn-primary--full"
+            disabled={!loaded || saving}
             onClick={handleSave}
           >
-            {loaded ? "プロフィールを保存する" : "読み込み中..."}
+            {saving ? "保存中..." : loaded ? "プロフィールを保存する" : "読み込み中..."}
           </button>
         </footer>
 
-        {/* このページ専用のスタイル */}
+        <BottomNav active="mypage" hasUnread={hasUnread} />
+
+        {/* このページ専用のスタイル（差分だけ） */}
         <style jsx>{`
           .therapist-console-main {
             padding: 12px 16px 140px;
           }
 
           .tc-card {
-            background: var(--surface);
-            border-radius: 16px;
-            border: 1px solid var(--border);
-            padding: 14px 14px 12px;
-            margin-bottom: 12px;
-            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.03);
           }
 
           .tc-title {
@@ -339,45 +484,9 @@ const TherapistConsolePage: React.FC = () => {
             color: var(--text-sub);
           }
 
-          .tc-field-block {
-            margin-bottom: 10px;
-          }
-
-          .tc-label {
-            font-size: 12px;
-            margin-bottom: 4px;
-            display: block;
-            color: var(--text-main);
-          }
-
-          .tc-input {
-            width: 100%;
-            border-radius: 10px;
-            border: 1px solid var(--border);
-            padding: 7px 10px;
-            font-size: 13px;
-            background: var(--surface-soft);
-          }
-
-          .tc-select {
-            width: 100%;
-            border-radius: 999px;
-            border: 1px solid var(--border);
-            padding: 6px 10px;
-            font-size: 13px;
-            background: var(--surface-soft);
-            color: var(--text-main);
-          }
-
           .tc-textarea {
-            width: 100%;
-            min-height: 80px;
-            border-radius: 10px;
-            border: 1px solid var(--border);
-            padding: 8px 10px;
-            font-size: 13px;
+            min高さ: 80px;
             line-height: 1.7;
-            background: var(--surface-soft);
             resize: vertical;
           }
 
@@ -390,9 +499,10 @@ const TherapistConsolePage: React.FC = () => {
           .tc-footer-bar {
             position: fixed;
             bottom: 58px;
-            left: 0;
-            width: 100vw;
-            max-width: 100vw;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100%;
+            max-width: 430px;
             padding: 8px 16px;
             background: linear-gradient(
               to top,
@@ -403,24 +513,6 @@ const TherapistConsolePage: React.FC = () => {
             display: flex;
             justify-content: center;
             z-index: 25;
-          }
-
-          .tc-save-btn {
-            width: 100%;
-            border-radius: 999px;
-            padding: 10px 12px;
-            font-size: 14px;
-            font-weight: 600;
-            border: none;
-            cursor: pointer;
-            background: var(--accent);
-            color: #fff;
-            box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
-          }
-
-          .tc-save-btn[disabled] {
-            opacity: 0.6;
-            cursor: default;
           }
         `}</style>
       </div>

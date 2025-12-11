@@ -1,401 +1,206 @@
 "use client";
 
-import React, { useState, ChangeEvent, useMemo } from "react";
+import React, { useState, ChangeEvent, FormEvent } from "react";
+import AppHeader from "@/components/AppHeader";
+import BottomNav from "@/components/BottomNav";
+import AvatarCircle from "@/components/AvatarCircle";
 
-// ★ ここに置く（import の下 / コンポーネントの上）
-const CURRENT_USER_ID = "guest"; 
+type SearchFilter = "all" | "therapist" | "store";
 
-type Area =
-  | ""
-  | "北海道"
-  | "東北"
-  | "関東"
-  | "中部"
-  | "近畿"
-  | "中国"
-  | "四国"
-  | "九州"
-  | "沖縄";
+export default function SearchPage() {
+  const [keyword, setKeyword] = useState("");
+  const [filter, setFilter] = useState<SearchFilter>("all");
+  const [includeArea, setIncludeArea] = useState(true);
 
-type SearchMode = "therapist" | "post";
-
-type TherapistLike = {
-  id: string;
-  name: string;
-  kind: "therapist" | "store";
-  area: Area;
-  tags: string[];
-  intro: string;
-};
-
-type PostLike = {
-  id: string;
-  authorName: string;
-  authorKind: "therapist" | "store" | "user";
-  area: Area;
-  body: string;
-  timeAgo: string;
-};
-
-// ★ まずは強制的に true（確認用）
-const hasUnread = true;
-
-const AREA_LABELS: Area[] = [
-  "",
-  "北海道",
-  "東北",
-  "関東",
-  "中部",
-  "近畿",
-  "中国",
-  "四国",
-  "九州",
-  "沖縄",
-];
-
-// デモ用ダミーデータ
-const DEMO_THERAPISTS: TherapistLike[] = [
-  {
-    id: "t1",
-    name: "TAKI",
-    kind: "therapist",
-    area: "中部",
-    tags: ["やさしい", "ゆっくり過ごす", "初心者歓迎"],
-    intro: "はじめてでも、緊張しすぎない時間を大事にしています。",
-  },
-  {
-    id: "t2",
-    name: "LoomRoom nagoya",
-    kind: "store",
-    area: "中部",
-    tags: ["店舗アカウント", "お知らせ"],
-    intro: "名古屋エリアのセラピスト・店舗の情報をまとめて案内します。",
-  },
-  {
-    id: "t3",
-    name: "hiyori",
-    kind: "therapist",
-    area: "関東",
-    tags: ["会話中心", "聞き上手"],
-    intro: "安心して話せる相手がほしいときに。",
-  },
-];
-
-const DEMO_POSTS: PostLike[] = [
-  {
-    id: "p1",
-    authorName: "TAKI",
-    authorKind: "therapist",
-    area: "中部",
-    body: "今日は少しだけ寒いですね。あたたかい飲み物を用意して、お話だけでも大丈夫です。",
-    timeAgo: "1時間前",
-  },
-  {
-    id: "p2",
-    authorName: "LoomRoom nagoya",
-    authorKind: "store",
-    area: "中部",
-    body: "LoomRoomのテストエリアです。アプリの世界観づくりのための投稿。",
-    timeAgo: "3時間前",
-  },
-  {
-    id: "p3",
-    authorName: "ゆっくりさん",
-    authorKind: "user",
-    area: "関東",
-    body: "はじめてセラピストさんと会ってきました。思っていたよりずっと、静かで穏やかな時間でした。",
-    timeAgo: "昨日",
-  },
-];
-
-// 認証バッジ（セラピスト ✦ / 店舗 🏛）
-const renderGoldBadge = (kind: "therapist" | "store") => {
-  if (kind === "therapist") {
-    return <span className="badge-gold">✦</span>;
-  }
-  return <span className="badge-gold">🏛</span>;
-};
-
-const SearchPage: React.FC = () => {
-  const [mode, setMode] = useState<SearchMode>("therapist");
-  const [query, setQuery] = useState("");
-  const [area, setArea] = useState<Area>("");
-
-  const handleQueryChange = (e: ChangeEvent<HTMLInputElement>) => {
-    setQuery(e.target.value);
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    // TODO: 検索APIとの連携
+    console.log("検索:", { keyword, filter, includeArea });
   };
 
-  const filteredTherapists = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return DEMO_THERAPISTS.filter((t) => {
-      if (area && t.area !== area) return false;
-      if (!q) return true;
-      const text =
-        (t.name + " " + t.intro + " " + t.tags.join(" ")).toLowerCase();
-      return text.includes(q);
-    });
-  }, [query, area]);
-
-  const filteredPosts = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return DEMO_POSTS.filter((p) => {
-      if (area && p.area !== area) return false;
-      if (!q) return true;
-      const text = (p.authorName + " " + p.body).toLowerCase();
-      return text.includes(q);
-    });
-  }, [query, area]);
+  const handleChangeKeyword = (e: ChangeEvent<HTMLInputElement>) => {
+    setKeyword(e.target.value);
+  };
 
   return (
-    <div className="app-shell">
-      {/* ヘッダー */}
-      <header className="app-header">
-        <div style={{ width: 30 }} />
-        <div className="app-header-center">
-          <div className="app-title">さがす</div>
-        </div>
-        <div style={{ width: 30 }} />
-      </header>
+    <div className="app-root">
+      <AppHeader />
 
-      {/* メイン */}
       <main className="app-main search-main">
-        {/* 検索ボックス */}
-        <section className="search-section">
-          <div className="search-input-wrap">
-            <span className="search-icon">🔍</span>
-            <input
-              className="search-input"
-              placeholder="セラピスト名・店舗名・キーワード"
-              value={query}
-              onChange={handleQueryChange}
-            />
-            {query && (
-              <button
-                type="button"
-                className="search-clear"
-                onClick={() => setQuery("")}
-              >
-                ✕
-              </button>
-            )}
-          </div>
-        </section>
+        <h1 className="app-title">さがす</h1>
 
-        {/* タブ切り替え */}
-        <section className="search-section">
-          <div className="tab-toggle">
-            <button
-              type="button"
-              className={
-                "tab-toggle-item" + (mode === "therapist" ? " is-active" : "")
-              }
-              onClick={() => setMode("therapist")}
-            >
-              セラピスト
-            </button>
-            <button
-              type="button"
-              className={
-                "tab-toggle-item" + (mode === "post" ? " is-active" : "")
-              }
-              onClick={() => setMode("post")}
-            >
-              投稿
-            </button>
-          </div>
-        </section>
+        <form onSubmit={handleSubmit} className="search-form">
+          <input
+            type="text"
+            className="search-input"
+            value={keyword}
+            onChange={handleChangeKeyword}
+            placeholder="セラピスト名・お店・キーワードなど"
+          />
+          <button type="submit" className="search-btn">
+            検索
+          </button>
+        </form>
 
-        {/* エリアチップ */}
-        <section className="search-section">
-          <div className="area-scroll">
-            {AREA_LABELS.map((label) => {
-              if (label === "") {
-                return (
-                  <button
-                    key="all"
-                    type="button"
-                    className={
-                      "area-chip" + (area === "" ? " area-chip--active" : "")
-                    }
-                    onClick={() => setArea("")}
-                  >
-                    すべて
-                  </button>
-                );
-              }
-              return (
-                <button
-                  key={label}
-                  type="button"
-                  className={
-                    "area-chip" + (area === label ? " area-chip--active" : "")
-                  }
-                  onClick={() => setArea(label)}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* リスト */}
-        <section className="search-section">
-          {mode === "therapist" ? (
-            <div className="result-list">
-              {filteredTherapists.length === 0 && (
-                <div className="empty-hint">
-                  条件に合うセラピスト・店舗がまだありません。
-                  <br />
-                  キーワードやエリアを少し変えて試してみてください。
-                </div>
-              )}
-
-              {filteredTherapists.map((t) => (
-                <article key={t.id} className="result-card">
-                  <div className="result-top-row">
-                    <div className="result-avatar">
-                      {t.kind === "store" ? "🏬" : "🧑‍🦱"}
-                    </div>
-                    <div className="result-main-text">
-                      <div className="result-name-row">
-                        <span className="result-name">{t.name}</span>
-                        {renderGoldBadge(t.kind)}
-                      </div>
-                      <div className="result-meta">
-                        {t.area && <span>{t.area}</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <p className="result-intro">{t.intro}</p>
-                  {t.tags?.length > 0 && (
-                    <div className="tag-row">
-                      {t.tags.map((tag) => (
-                        <span key={tag} className="tag-chip">
-                          #{tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className="result-footer">
-                    <button
-                      type="button"
-                      className="result-link-btn"
-                      onClick={() =>
-                        alert("（デモ）プロフィール詳細はまだ未実装です。")
-                      }
-                    >
-                      プロフィールを見る
-                    </button>
-                  </div>
-                </article>
-              ))}
+        <div className="search-toggle-group">
+          <div className="toggle-row" onClick={() => setIncludeArea((prev) => !prev)}>
+            <div className="toggle-main">
+              <span className="toggle-title">エリアを含めて検索</span>
+              <span className="toggle-caption">
+                {includeArea
+                  ? "現在の地域に近い人・お店を優先して表示します"
+                  : "地域を気にせず、条件に合う人・お店をさがします"}
+              </span>
             </div>
-          ) : (
-            <div className="result-list">
-              {filteredPosts.length === 0 && (
-                <div className="empty-hint">
-                  条件に合う投稿がまだありません。
-                  <br />
-                  キーワードやエリアを少し変えて試してみてください。
-                </div>
-              )}
-
-              {filteredPosts.map((p) => (
-                <article key={p.id} className="result-card result-card--post">
-                  <div className="result-top-row">
-                    <div className="result-avatar">
-                      {p.authorKind === "therapist"
-                        ? "🧑‍🦱"
-                        : p.authorKind === "store"
-                        ? "🏬"
-                        : "🙂"}
-                    </div>
-                    <div className="result-main-text">
-                      <div className="result-name-row">
-                        <span className="result-name">{p.authorName}</span>
-                        {p.authorKind !== "user" &&
-                          renderGoldBadge(
-                            p.authorKind === "therapist" ? "therapist" : "store"
-                          )}
-                      </div>
-                      <div className="result-meta">
-                        {p.area && <span>{p.area}</span>}
-                        <span>{p.timeAgo}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <p className="result-intro">{p.body}</p>
-                </article>
-              ))}
+            <div className="toggle-switch">
+              <div
+                className="toggle-knob"
+                style={{
+                  transform: includeArea ? "translateX(20px)" : "translateX(0)",
+                }}
+              />
             </div>
-          )}
+          </div>
+        </div>
+
+        <div className="search-chips">
+          <button
+            type="button"
+            className={filter === "all" ? "chip chip--active" : "chip"}
+            onClick={() => setFilter("all")}
+          >
+            すべて
+          </button>
+          <button
+            type="button"
+            className={filter === "therapist" ? "chip chip--active" : "chip"}
+            onClick={() => setFilter("therapist")}
+          >
+            セラピスト
+          </button>
+          <button
+            type="button"
+            className={filter === "store" ? "chip chip--active" : "chip"}
+            onClick={() => setFilter("store")}
+          >
+            お店
+          </button>
+        </div>
+
+        {/* 仮の検索結果リスト */}
+        <section className="search-section">
+          <h2 className="search-section-title">候補</h2>
+          <ul className="search-list">
+            <li className="search-item">
+              <AvatarCircle displayName="A" />
+              <div className="search-item-main">
+                <div className="search-item-name">朝陽（あさひ）</div>
+                <div className="search-item-caption">LuX nagoya / セラピスト</div>
+              </div>
+            </li>
+          </ul>
         </section>
       </main>
 
-      {/* 下ナビ：さがすをアクティブ */}
-      <nav className="bottom-nav">
-        <button
-          type="button"
-          className="nav-item"
-          onClick={() => (window.location.href = "/")}
-        >
-          <span className="nav-icon">🏠</span>
-          ホーム
-        </button>
+      <BottomNav />
 
-        <button
-          type="button"
-          className="nav-item is-active"
-          onClick={() => (window.location.href = "/search")}
-        >
-          <span className="nav-icon">🔍</span>
-          さがす
-        </button>
+      <style jsx>{`
+        .search-main {
+          padding: 12px 16px 140px;
+        }
 
-        <button
-          type="button"
-          className="nav-item"
-          onClick={() => (window.location.href = "/compose")}
-        >
-          <span className="nav-icon">➕</span>
-          投稿
-        </button>
+        .search-form {
+          display: flex;
+          gap: 8px;
+          margin-top: 12px;
+        }
 
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/messages")}
-          >
-            <span className="nav-icon">💌</span>
-            メッセージ
-          </button>
+        .search-input {
+          flex: 1;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          padding: 8px 12px;
+          font-size: 14px;
+        }
 
-        <button
-          type="button"
-          className="nav-item"
-          onClick={() => (window.location.href = "/notifications")}
-        >
-          <span className="nav-icon-wrap">
-            <span className="nav-icon">🔔</span>
-            {hasUnread && <span className="nav-badge-dot" />}
-          </span>
-          通知
-        </button>
+        .search-btn {
+          border-radius: 999px;
+          background: var(--accent);
+          color: #fff;
+          border: none;
+          padding: 8px 14px;
+          font-size: 13px;
+          font-weight: 500;
+          cursor: pointer;
+          box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
+        }
 
-        <button
-          type="button"
-          className="nav-item"
-          onClick={() => 
-           (window.location.href = `/mypage/${CURRENT_USER_ID}/console`)
-          }
-        >
-          <span className="nav-icon">👤</span>
-          マイ
-        </button>
-      </nav>
+        .search-toggle-group {
+          margin-top: 16px;
+        }
+
+        .search-chips {
+          display: flex;
+          gap: 8px;
+          margin-top: 12px;
+        }
+
+        .chip {
+          border-radius: 999px;
+          padding: 4px 12px;
+          font-size: 12px;
+          border: 1px solid var(--border);
+          background: var(--surface-soft);
+          color: var(--text-sub);
+        }
+
+        .chip--active {
+          background: var(--accent-soft);
+          color: var(--text-main);
+          border-color: var(--accent);
+        }
+
+        .search-section {
+          margin-top: 20px;
+        }
+
+        .search-section-title {
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 8px;
+          color: var(--text-sub);
+        }
+
+        .search-list {
+          list-style: none;
+          padding: 0;
+          margin: 0;
+        }
+
+        .search-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 0;
+          border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+        }
+
+        .search-item-main {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .search-item-name {
+          font-size: 14px;
+          font-weight: 500;
+        }
+
+        .search-item-caption {
+          font-size: 11px;
+          color: var(--text-sub);
+        }
+      `}</style>
     </div>
   );
-};
-
-export default SearchPage;
+}

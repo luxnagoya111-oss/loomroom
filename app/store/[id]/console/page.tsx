@@ -1,90 +1,72 @@
 "use client";
 
-import React, {
-  useState,
-  useEffect,
-  ChangeEvent,
-  FormEvent,
-} from "react";
+import React, { useState, useEffect, ChangeEvent } from "react";
 import { useParams } from "next/navigation";
+import AppHeader from "@/components/AppHeader";
+import BottomNav from "@/components/BottomNav";
+import AvatarUploader from "@/components/AvatarUploader";
+import { supabase } from "@/lib/supabaseClient";
+import { uploadAvatar } from "@/lib/avatarStorage";
 
-// ★ ここに置く（import の下 / コンポーネントの上）
-const CURRENT_USER_ID = "guest";
+import type { DbStoreRow, DbTherapistRow } from "@/types/db";
+import {
+  listTherapistsForStore,
+  listTherapistCandidates,
+  attachTherapistToStore,
+} from "@/lib/repositories/therapistRepository";
 
-type Area =
-  | ""
-  | "北海道"
-  | "東北"
-  | "関東"
-  | "中部"
-  | "近畿"
-  | "中国"
-  | "四国"
-  | "九州"
-  | "沖縄";
+const STORAGE_KEY_PREFIX = "loomroom_store_console_";
 
-type MembershipStatus = "pending" | "approved" | "rejected" | "left";
+type VisitType = "online" | "offline";
 
-type TherapistMember = {
-  therapistId: string;
-  status: MembershipStatus;
-};
-
-type StoreProfile = {
+type FormState = {
   storeName: string;
-  area: Area;
-  intro: string;
-  siteUrl: string;
+  avatarDataUrl?: string;
+  catchCopy: string;
+  area: string;
+  visitType: VisitType;
+  websiteUrl: string;
   lineUrl: string;
-  xUrl: string;
-  twitcastUrl: string;
-  otherUrl: string;
-  termsUrl: string;
-  acceptDm: boolean;
-
-  // 在籍セラピストリスト（新仕様）
-  members: TherapistMember[];
-
-  // ★ 後方互換用：旧テキスト保存が残っている可能性
-  therapistIdsText?: string;
+  intro: string;
+  reserveNotice: boolean;
+  dmNotice: boolean;
+  reviewNotice: boolean;
 };
 
-const DEFAULT_PROFILE: StoreProfile = {
-  storeName: "",
-  area: "",
-  intro: "",
-  siteUrl: "",
-  lineUrl: "",
-  xUrl: "",
-  twitcastUrl: "",
-  otherUrl: "",
-  termsUrl: "",
-  acceptDm: true,
-  members: [],
-  therapistIdsText: "",
-};
+const StoreConsolePage: React.FC = () => {
+  const params = useParams();
+  const storeId = params?.id as string | undefined;
 
-// ステータスの表示ラベル
-const STATUS_LABEL: Record<MembershipStatus, string> = {
-  pending: "未承認",
-  approved: "承認",
-  rejected: "拒否",
-  left: "脱退",
-};
+  const storageKey =
+    typeof storeId === "string"
+      ? `${STORAGE_KEY_PREFIX}${storeId}`
+      : `${STORAGE_KEY_PREFIX}default`;
 
-export default function StoreConsolePage() {
-  const params = useParams<{ id: string }>();
-  const storeId = params?.id || "store";
+  const [state, setState] = useState<FormState>({
+    storeName: "",
+    avatarDataUrl: undefined,
+    catchCopy: "",
+    area: "",
+    visitType: "offline",
+    websiteUrl: "",
+    lineUrl: "",
+    intro: "",
+    reserveNotice: true,
+    dmNotice: true,
+    reviewNotice: false,
+  });
 
-  const storageKey = `loomroom_store_profile_${storeId}`;
-
-  const [profile, setProfile] = useState<StoreProfile>(DEFAULT_PROFILE);
   const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
-  // 在籍セラピスト 追加用の一時ID
-  const [newTherapistId, setNewTherapistId] = useState("");
+  // セラピスト管理用
+  const [therapists, setTherapists] = useState<DbTherapistRow[]>([]);
+  const [candidates, setCandidates] = useState<DbTherapistRow[]>([]);
+  const [loadingTherapists, setLoadingTherapists] = useState(false);
+  const [attachTargetId, setAttachTargetId] = useState<string | null>(null);
 
-  // 初回ロードで localStorage から復元
+  // ① localStorage から復元（旧仕様互換）
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -93,488 +75,595 @@ export default function StoreConsolePage() {
         setLoaded(true);
         return;
       }
-      const data = JSON.parse(raw) as Partial<StoreProfile>;
-
-      // --- 後方互換：旧 therapistIdsText がある場合は members に変換 ---
-      let members: TherapistMember[] = Array.isArray(data.members)
-        ? data.members
-        : [];
-
-      if ((!members || members.length === 0) && data.therapistIdsText) {
-        const ids = data.therapistIdsText
-          .split(/\r?\n|,|、|\s+/)
-          .map((s) => s.trim())
-          .filter(Boolean);
-        members = ids.map((id) => ({
-          therapistId: id,
-          status: "approved",
-        }));
-      }
-
-      setProfile({
-        ...DEFAULT_PROFILE,
+      const data = JSON.parse(raw) as Partial<FormState>;
+      setState((prev) => ({
+        ...prev,
         ...data,
-        members,
-      });
+      }));
+      setLoaded(true);
     } catch (e) {
-      console.warn("Failed to load store profile from localStorage", e);
-    } finally {
+      console.error(e);
       setLoaded(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
 
+  // ② Supabase の stores から店舗情報を取得
+  useEffect(() => {
+    if (!storeId) return;
+
+    let cancelled = false;
+
+    const loadStoreFromSupabase = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("stores")
+          .select(
+            "name, catch_copy, area, visit_type, website_url, line_url, intro, avatar_url, reserve_notice, dm_notice, review_notice"
+          )
+          .eq("id", storeId)
+          .maybeSingle<DbStoreRow>();
+
+        if (cancelled) return;
+
+        if (error) {
+          console.error("[StoreConsole] loadStore error:", error);
+          return;
+        }
+        if (!data) return;
+
+        setState((prev) => ({
+          ...prev,
+          storeName: data.name ?? prev.storeName,
+          catchCopy: data.catch_copy ?? prev.catchCopy,
+          area: data.area ?? prev.area,
+          visitType: (data.visit_type as VisitType | null) ?? prev.visitType,
+          websiteUrl: data.website_url ?? prev.websiteUrl,
+          lineUrl: data.line_url ?? prev.lineUrl,
+          intro: data.intro ?? prev.intro,
+          avatarDataUrl: data.avatar_url ?? prev.avatarDataUrl,
+          reserveNotice:
+            typeof data.reserve_notice === "boolean"
+              ? data.reserve_notice
+              : prev.reserveNotice,
+          dmNotice:
+            typeof data.dm_notice === "boolean" ? data.dm_notice : prev.dmNotice,
+          reviewNotice:
+            typeof data.review_notice === "boolean"
+              ? data.review_notice
+              : prev.reviewNotice,
+        }));
+      } catch (e) {
+        if (!cancelled) {
+          console.error("[StoreConsole] loadStore exception:", e);
+        }
+      }
+    };
+
+    loadStoreFromSupabase();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId]);
+
+  // ③ localStorage への自動保存（見た目の挙動は従来通り）
+  useEffect(() => {
+    if (!loaded) return;
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(state));
+    } catch (e) {
+      console.error("[StoreConsole] failed to save to localStorage:", e);
+    }
+  }, [loaded, state, storageKey]);
+
+  // ④ セラピスト一覧 / 候補の読み込み
+  useEffect(() => {
+    if (!storeId) return;
+
+    let cancelled = false;
+
+    const loadTherapists = async () => {
+      setLoadingTherapists(true);
+      try {
+        const [joined, candidateList] = await Promise.all([
+          listTherapistsForStore(storeId),
+          listTherapistCandidates(),
+        ]);
+        if (cancelled) return;
+        setTherapists(joined);
+        setCandidates(candidateList);
+      } catch (e) {
+        if (!cancelled) {
+          console.error("[StoreConsole] loadTherapists error:", e);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingTherapists(false);
+        }
+      }
+    };
+
+    loadTherapists();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId]);
+
+  if (!loaded) {
+    return (
+      <div className="app-root">
+        <AppHeader />
+        <main className="app-main">
+          <p>読み込み中...</p>
+        </main>
+        <BottomNav />
+      </div>
+    );
+  }
+
   const handleChange =
-    (field: keyof StoreProfile) =>
+    (key: keyof FormState) =>
     (
       e: ChangeEvent<
         HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
       >
     ) => {
-      const value =
-        field === "acceptDm"
-          ? (e as ChangeEvent<HTMLInputElement>).target.checked
-          : e.target.value;
-      setProfile((prev) => ({
+      const value = e.target.value;
+      setState((prev) => ({
         ...prev,
-        [field]: value as any,
+        [key]: value as any,
       }));
     };
 
-  const handleSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    if (typeof window === "undefined") return;
+  const handleToggle = (key: keyof FormState) => () => {
+    setState((prev) => ({
+      ...prev,
+      [key]: !prev[key] as any,
+    }));
+  };
+
+  // Avatar 選択時：プレビュー → Storage → stores.avatar_url 更新
+  const handleAvatarFileSelect = async (file: File) => {
+    // まずは即時プレビュー（Base64）
+    try {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result === "string") {
+          setState((prev) => ({
+            ...prev,
+            avatarDataUrl: result,
+          }));
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (e) {
+      console.warn("[StoreConsole] avatar preview error:", e);
+    }
+
+    // storeId が無ければサーバーには書き込めない
+    if (!storeId) return;
 
     try {
-      const payload: StoreProfile = {
-        ...profile,
-        therapistIdsText: "", // 旧フィールドは空で保存
+      setAvatarUploading(true);
+
+      // Storage へのアップロード。ID は stores.id をそのまま使ってOK。
+      const publicUrl = await uploadAvatar(file, storeId);
+
+      const { error } = await supabase
+        .from("stores")
+        .update({ avatar_url: publicUrl })
+        .eq("id", storeId);
+
+      if (error) {
+        console.error(
+          "[StoreConsole] failed to update stores.avatar_url:",
+          error
+        );
+        alert(
+          "アイコン画像の保存に失敗しました。時間をおいて再度お試しください。"
+        );
+        return;
+      }
+
+      // 最終的には Storage URL で上書き
+      setState((prev) => ({
+        ...prev,
+        avatarDataUrl: publicUrl,
+      }));
+    } catch (e) {
+      console.error("[StoreConsole] handleAvatarFileSelect error:", e);
+      alert("画像のアップロードに失敗しました。通信環境をご確認ください。");
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const canSave = state.storeName.trim().length > 0;
+
+  // 「この内容で保存する」クリック時：stores テーブル更新
+  const handleSave = async () => {
+    if (!storeId) {
+      alert("店舗IDが取得できませんでした。URLをご確認ください。");
+      return;
+    }
+
+    if (!canSave) return;
+
+    try {
+      setSaving(true);
+
+      const payload: Partial<DbStoreRow> = {
+        name: state.storeName || null,
+        catch_copy: state.catchCopy || null,
+        area: state.area || null,
+        visit_type: state.visitType,
+        website_url: state.websiteUrl || null,
+        line_url: state.lineUrl || null,
+        intro: state.intro || null,
+        avatar_url: state.avatarDataUrl || null,
+        reserve_notice: state.reserveNotice,
+        dm_notice: state.dmNotice,
+        review_notice: state.reviewNotice,
       };
-      window.localStorage.setItem(storageKey, JSON.stringify(payload));
+
+      const { error } = await supabase
+        .from("stores")
+        .update(payload)
+        .eq("id", storeId);
+
+      if (error) {
+        console.error("[StoreConsole] failed to update stores:", error);
+        alert(
+          "店舗情報の保存に失敗しました。時間をおいて再度お試しください。"
+        );
+        return;
+      }
+
       alert(
-        [
-          "店舗プロフィールを保存しました（この端末の中に保存されます）。",
-          "",
-          `店舗名：${profile.storeName || "未設定"}`,
-          `エリア：${profile.area || "未設定"}`,
-          `在籍セラピスト数：${profile.members.length}名`,
-        ].join("\n")
+        "店舗情報を保存しました。（この端末と LoomRoom アカウントの両方に保存されています）"
       );
-    } catch (err) {
-      console.warn("Failed to save store profile", err);
-      alert("保存に失敗しました。ストレージ容量などをご確認ください。");
+    } catch (e) {
+      console.error("[StoreConsole] handleSave error:", e);
+      alert(
+        "店舗情報の保存に失敗しました。通信環境をご確認ください。"
+      );
+    } finally {
+      setSaving(false);
     }
   };
 
-  // ✅ 在籍セラピストIDを1件追加（＝確認依頼を送るボタン）
-  const handleSendInvite = () => {
-    const raw = newTherapistId.trim();
-    if (!raw) {
-      alert("在籍セラピストIDを入力してください。");
-      return;
+  // 候補セラピストをこの店舗に紐づけ
+  const handleAttachTherapist = async (therapistId: string) => {
+    if (!storeId) return;
+    try {
+      setAttachTargetId(therapistId);
+      const updated = await attachTherapistToStore(therapistId, storeId);
+      if (!updated) return;
+
+      // 在籍リストへ追加 / 候補から削除
+      setTherapists((prev) => [...prev, updated]);
+      setCandidates((prev) => prev.filter((t) => t.id !== therapistId));
+    } catch (e) {
+      console.error("[StoreConsole] handleAttachTherapist error:", e);
+      alert("セラピストの紐づけに失敗しました。時間をおいてお試しください。");
+    } finally {
+      setAttachTargetId(null);
     }
-
-    // IDとして扱うので空白は削除
-    const therapistId = raw.replace(/\s+/g, "");
-
-    // 重複チェック
-    const exists = profile.members.some(
-      (m) => m.therapistId.toLowerCase() === therapistId.toLowerCase()
-    );
-    if (exists) {
-      alert("このIDはすでに在籍リストに登録されています。");
-      return;
-    }
-
-    // ここで本当は「セラピスト側へ確認の案内送信」を実装予定
-    // （今はローカルだけなので、リストに追加するだけ）
-    setProfile((prev) => ({
-      ...prev,
-      members: [
-        ...prev.members,
-        {
-          therapistId,
-          status: "pending", // 追加時は「未承認」スタート
-        },
-      ],
-    }));
-    setNewTherapistId("");
-
-    alert(
-      [
-        "在籍確認の依頼を作成しました。",
-        "※ 現時点ではこの端末の中だけの管理です。",
-        "　セラピスト側コンソールと連携すると「承認」状態に更新できるようにします。",
-      ].join("\n")
-    );
-  };
-
-  // ステータス変更
-  const handleChangeStatus = (index: number, status: MembershipStatus) => {
-    setProfile((prev) => {
-      const next = [...prev.members];
-      if (!next[index]) return prev;
-      next[index] = { ...next[index], status };
-      return { ...prev, members: next };
-    });
-  };
-
-  // 削除
-  const handleRemoveMember = (index: number) => {
-    if (!window.confirm("この在籍IDをリストから削除しますか？")) return;
-
-    setProfile((prev) => {
-      const next = [...prev.members];
-      next.splice(index, 1);
-      return { ...prev, members: next };
-    });
   };
 
   return (
-    <>
-      <div className="app-shell">
-        {/* ヘッダー */}
-        <header className="app-header">
-          <button
-            type="button"
-            className="header-icon-btn"
-            onClick={() => history.back()}
-          >
-            ◀
-          </button>
+    <div className="app-root">
+      <AppHeader />
 
-          <div className="app-header-center">
-            <div className="app-title">店舗プロフィール設定</div>
-            <div className="app-header-sub">ストアID：{storeId}</div>
+      <main className="app-main store-main">
+        <h1 className="app-title">店舗コンソール</h1>
+        <p className="app-header-sub">
+          LoomRoom 内での店舗情報を設定します。後からいつでも変更できます。
+        </p>
+
+        {/* 店舗プロフィール */}
+        <section className="store-card">
+          <div className="store-profile-row">
+            <AvatarUploader
+              avatarDataUrl={state.avatarDataUrl}
+              displayName={state.storeName || "S"}
+              onFileSelect={handleAvatarFileSelect}
+            />
+            <div className="store-profile-main">
+              <label className="field-label">店舗名</label>
+              <input
+                type="text"
+                className="field-input"
+                value={state.storeName}
+                onChange={handleChange("storeName")}
+                placeholder="例）LuX nagoya"
+              />
+
+              <div className="store-sub-row">
+                <div className="store-sub-pill store-sub-pill--soft">
+                  種別: 女性向けリラクゼーション
+                </div>
+              </div>
+              {avatarUploading && (
+                <div className="store-sub-pill store-sub-pill--soft">
+                  アイコン画像を保存しています…
+                </div>
+              )}
+            </div>
           </div>
 
-          <div style={{ width: 30 }} />
-        </header>
+          <div className="field-row">
+            <label className="field-label">一言キャッチ（任意）</label>
+            <input
+              type="text"
+              className="field-input"
+              value={state.catchCopy}
+              onChange={handleChange("catchCopy")}
+              placeholder="例）静かな時間と甘やかしのデートを"
+            />
+          </div>
+        </section>
 
-        {/* メイン */}
-        <main className="app-main store-console-main">
-          <form onSubmit={handleSubmit}>
-            {/* 基本情報 */}
-            <section className="store-card">
-              <h2 className="store-section-title">基本情報</h2>
+        {/* 基本情報 */}
+        <section className="store-card">
+          <div className="store-section-title">基本情報</div>
 
-              <div className="field-block">
-                <label className="field-label">店舗名</label>
-                <input
-                  className="field-input"
-                  value={profile.storeName}
-                  onChange={handleChange("storeName")}
-                  placeholder="例）LuX nagoya / LoomRoom nagoya"
-                />
+          <div className="field-row">
+            <label className="field-label">エリア（任意）</label>
+            <input
+              type="text"
+              className="field-input"
+              value={state.area}
+              onChange={handleChange("area")}
+              placeholder="例）名古屋 / 関西 / オンラインメイン など"
+            />
+          </div>
+
+          <div className="field-row">
+            <label className="field-label">対応スタイル</label>
+            <select
+              className="field-input"
+              value={state.visitType}
+              onChange={handleChange("visitType")}
+            >
+              <option value="offline">対面（訪問 / 来店）メイン</option>
+              <option value="online">オンラインメイン</option>
+            </select>
+          </div>
+
+          <div className="field-row">
+            <label className="field-label">公式サイトURL（任意）</label>
+            <input
+              type="url"
+              className="field-input"
+              value={state.websiteUrl}
+              onChange={handleChange("websiteUrl")}
+              placeholder="https://example.com"
+            />
+          </div>
+
+          <div className="field-row">
+            <label className="field-label">公式LINE / 予約リンク（任意）</label>
+            <input
+              type="url"
+              className="field-input"
+              value={state.lineUrl}
+              onChange={handleChange("lineUrl")}
+              placeholder="https://lin.ee/..."
+            />
+          </div>
+        </section>
+
+        {/* 店舗紹介 */}
+        <section className="store-card">
+          <div className="store-section-title">店舗紹介（任意）</div>
+          <textarea
+            className="field-textarea"
+            value={state.intro}
+            onChange={handleChange("intro")}
+            placeholder="お店の雰囲気や大切にしていることを書いてみてください"
+          />
+        </section>
+
+        {/* 通知設定 */}
+        <section className="store-card">
+          <div className="store-section-title">通知設定</div>
+
+          <div className="toggle-row" onClick={handleToggle("reserveNotice")}>
+            <div className="toggle-main">
+              <div className="toggle-title">予約に関する通知</div>
+              <div className="toggle-caption">
+                予約が入ったときに通知を受け取ります（外部システムの場合もメモとして利用できます）
               </div>
-
-              <div className="field-block">
-                <label className="field-label">拠点エリア</label>
-                <select
-                  className="field-select"
-                  value={profile.area}
-                  onChange={handleChange("area")}
-                >
-                  <option value="">未設定</option>
-                  <option value="北海道">北海道</option>
-                  <option value="東北">東北</option>
-                  <option value="関東">関東</option>
-                  <option value="中部">中部</option>
-                  <option value="近畿">近畿</option>
-                  <option value="中国">中国</option>
-                  <option value="四国">四国</option>
-                  <option value="九州">九州</option>
-                  <option value="沖縄">沖縄</option>
-                </select>
-                <div className="field-caption">
-                  プロフィールや検索で表示する、お店のメインエリアです。
-                </div>
-              </div>
-
-              <div className="field-block">
-                <label className="field-label">店舗紹介 / コンセプト</label>
-                <textarea
-                  className="field-textarea"
-                  value={profile.intro}
-                  onChange={handleChange("intro")}
-                  placeholder="例）女性が自分のペースで安心して過ごせる時間を、大切にしています。"
-                />
-                <div className="field-caption">
-                  プロフィールページにそのまま表示される文章です。
-                </div>
-              </div>
-            </section>
-
-            {/* リンク */}
-            <section className="store-card">
-              <h2 className="store-section-title">リンク・連絡方法</h2>
-
-              <div className="field-block">
-                <label className="field-label">公式サイトURL</label>
-                <input
-                  className="field-input"
-                  value={profile.siteUrl}
-                  onChange={handleChange("siteUrl")}
-                  placeholder="https://example.com"
-                />
-              </div>
-
-              <div className="field-block">
-                <label className="field-label">公式LINE URL</label>
-                <input
-                  className="field-input"
-                  value={profile.lineUrl}
-                  onChange={handleChange("lineUrl")}
-                  placeholder="https://lin.ee/xxxxx など"
-                />
-              </div>
-
-              <div className="field-block">
-                <label className="field-label">X（旧Twitter）URL</label>
-                <input
-                  className="field-input"
-                  value={profile.xUrl}
-                  onChange={handleChange("xUrl")}
-                  placeholder="https://x.com/xxxxx"
-                />
-              </div>
-
-              <div className="field-block">
-                <label className="field-label">ツイキャスURL</label>
-                <input
-                  className="field-input"
-                  value={profile.twitcastUrl}
-                  onChange={handleChange("twitcastUrl")}
-                  placeholder="https://twitcasting.tv/xxxxx"
-                />
-              </div>
-
-              <div className="field-block">
-                <label className="field-label">その他リンク</label>
-                <input
-                  className="field-input"
-                  value={profile.otherUrl}
-                  onChange={handleChange("otherUrl")}
-                  placeholder="lit.link / プロフカードなど"
-                />
-              </div>
-            </section>
-
-            {/* 利用規約・ポリシー */}
-            <section className="store-card">
-              <h2 className="store-section-title">ルール・ポリシー</h2>
-
-              <div className="field-block">
-                <label className="field-label">店舗利用規約ページURL</label>
-                <input
-                  className="field-input"
-                  value={profile.termsUrl}
-                  onChange={handleChange("termsUrl")}
-                  placeholder="https://example.com/terms"
-                />
-                <div className="field-caption">
-                  LoomRoomから店舗ページに飛んだときに、ここへのリンクも表示する想定です。
-                </div>
-              </div>
-
+            </div>
+            <div className="toggle-switch">
               <div
-                className="toggle-row"
-                onClick={() =>
-                  setProfile((prev) => ({
-                    ...prev,
-                    acceptDm: !prev.acceptDm,
-                  }))
-                }
-              >
-                <div className="toggle-main">
-                  <div className="toggle-title">
-                    LoomRoom内でメッセージ受付中にする
-                  </div>
-                  <div className="toggle-caption">
-                    オフにすると、この店舗への新規メッセージ受付を「一時停止中」にできます。
-                  </div>
-                </div>
-                <div
-                  className={
-                    "toggle-switch" +
-                    (profile.acceptDm ? " toggle-switch--on" : "")
-                  }
-                >
-                  <div className="toggle-knob" />
-                </div>
+                className="toggle-knob"
+                style={{
+                  transform: state.reserveNotice
+                    ? "translateX(20px)"
+                    : "translateX(0)",
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="toggle-row" onClick={handleToggle("dmNotice")}>
+            <div className="toggle-main">
+              <div className="toggle-title">DMの通知</div>
+              <div className="toggle-caption">
+                セラピスト / ユーザーからのDMに関する通知を受け取ります
               </div>
-            </section>
+            </div>
+            <div className="toggle-switch">
+              <div
+                className="toggle-knob"
+                style={{
+                  transform: state.dmNotice
+                    ? "translateX(20px)"
+                    : "translateX(0)",
+                }}
+              />
+            </div>
+          </div>
 
-            {/* 在籍セラピスト管理 */}
-            <section className="store-card">
-              <h2 className="store-section-title">在籍セラピスト</h2>
-
-              <div className="field-block">
-                <label className="field-label">
-                  在籍にしたいセラピストのID
-                </label>
-                <div className="member-input-row">
-                  <input
-                    className="field-input"
-                    value={newTherapistId}
-                    onChange={(e) => setNewTherapistId(e.target.value)}
-                    placeholder="例）taki / hiyori など"
-                  />
-                  <button
-                    type="button"
-                    className="member-add-btn"
-                    onClick={handleSendInvite}
-                  >
-                    確認依頼を送る
-                  </button>
-                </div>
-                <div className="field-caption">
-                  ※ ID はセラピストのマイページURL
-                  <code>/therapist/●●</code> の <code>●●</code> と揃える想定です。
-                </div>
+          <div className="toggle-row" onClick={handleToggle("reviewNotice")}>
+            <div className="toggle-main">
+              <div className="toggle-title">レビューの通知</div>
+              <div className="toggle-caption">
+                店舗やセラピストにレビューがついたときに通知を受け取ります
               </div>
+            </div>
+            <div className="toggle-switch">
+              <div
+                className="toggle-knob"
+                style={{
+                  transform: state.reviewNotice
+                    ? "translateX(20px)"
+                    : "translateX(0)",
+                }}
+              />
+            </div>
+          </div>
+        </section>
 
-              {profile.members.length === 0 ? (
-                <div className="member-empty">
-                  まだ在籍セラピストは登録されていません。
-                  必要に応じてIDを追加してください。
-                </div>
-              ) : (
-                <ul className="member-list">
-                  {profile.members.map((m, index) => (
-                    <li key={m.therapistId + index} className="member-item">
-                      <div className="member-main">
-                        <div className="member-id">@{m.therapistId}</div>
-                        <div className="member-status-row">
-                          <label className="member-status-label">
-                            ステータス
-                          </label>
-                          <select
-                            className="member-status-select"
-                            value={m.status}
-                            onChange={(e) =>
-                              handleChangeStatus(
-                                index,
-                                e.target.value as MembershipStatus
-                              )
-                            }
-                          >
-                            <option value="pending">
-                              {STATUS_LABEL["pending"]}
-                            </option>
-                            <option value="approved">
-                              {STATUS_LABEL["approved"]}
-                            </option>
-                            <option value="rejected">
-                              {STATUS_LABEL["rejected"]}
-                            </option>
-                            <option value="left">
-                              {STATUS_LABEL["left"]}
-                            </option>
-                          </select>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="member-remove-btn"
-                        onClick={() => handleRemoveMember(index)}
-                      >
-                        削除
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+        {/* セラピスト管理 */}
+        <section className="store-card therapist-card">
+          <div className="store-section-title">セラピスト管理</div>
+          <p className="therapist-helper">
+            この店舗で一緒に活動するセラピストを選ぶことができます。
+          </p>
 
-            {/* フッター：保存ボタン */}
-            <footer className="store-console-footer">
-              <button
-                type="submit"
-                className="store-save-btn"
-                disabled={!loaded}
-              >
-                {loaded ? "この内容で保存する" : "読み込み中..."}
-              </button>
-            </footer>
-          </form>
-        </main>
+          {/* 在籍中 */}
+          <div className="therapist-block">
+            <h3 className="therapist-block-title">
+              現在いっしょに活動しているセラピスト
+            </h3>
+            {loadingTherapists && therapists.length === 0 ? (
+              <p className="therapist-helper">読み込み中です…</p>
+            ) : therapists.length === 0 ? (
+              <p className="therapist-helper">
+                まだこの店舗に紐づいているセラピストはいません。
+              </p>
+            ) : (
+              <ul className="therapist-list">
+                {therapists.map((t) => (
+                  <li key={t.id} className="therapist-row">
+                    <div className="therapist-row-main">
+                      <span className="therapist-name">
+                        {t.display_name || "名前未設定"}
+                      </span>
+                      <span className="therapist-meta">
+                        {t.area || "エリア未設定"}
+                      </span>
+                    </div>
+                    <span className="therapist-tag">店舗に参加中</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
-        {/* 下ナビ（とりあえず通常どおり） */}
-        <nav className="bottom-nav">
+          {/* 仮参加中（候補） */}
+          <div className="therapist-block">
+            <h3 className="therapist-block-title">仮参加中のセラピスト</h3>
+            <p className="therapist-helper">
+              まだどの店舗にも紐づいていないセラピストです。「この店舗に紐づける」で一緒に活動できます。
+            </p>
+
+            {loadingTherapists && candidates.length === 0 ? (
+              <p className="therapist-helper">読み込み中です…</p>
+            ) : candidates.length === 0 ? (
+              <p className="therapist-helper">
+                現在、紐づけ候補のセラピストはいません。
+              </p>
+            ) : (
+              <ul className="therapist-list">
+                {candidates.map((t) => (
+                  <li key={t.id} className="therapist-row">
+                    <div className="therapist-row-main">
+                      <span className="therapist-name">
+                        {t.display_name || "名前未設定"}
+                      </span>
+                      <span className="therapist-meta">
+                        {t.area || "エリア未設定"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="therapist-attach-btn"
+                      onClick={() => handleAttachTherapist(t.id)}
+                      disabled={attachTargetId === t.id}
+                    >
+                      {attachTargetId === t.id
+                        ? "紐づけ中…"
+                        : "この店舗に紐づける"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
+
+        <div className="store-save-wrap">
           <button
             type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/")}
+            className="store-save-btn"
+            disabled={!canSave || saving}
+            onClick={handleSave}
           >
-            <span className="nav-icon">🏠</span>
-            ホーム
+            {saving ? "保存中..." : "この内容で保存する"}
           </button>
+        </div>
+      </main>
 
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/search")}
-          >
-            <span className="nav-icon">🔍</span>
-            さがす
-          </button>
+      <BottomNav />
 
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/compose")}
-          >
-            <span className="nav-icon">➕</span>
-            投稿
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/messages")}
-          >
-            <span className="nav-icon">💌</span>
-            メッセージ
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() => (window.location.href = "/notifications")}
-          >
-            <span className="nav-icon-wrap">
-              <span className="nav-icon">🔔</span>
-            </span>
-            通知
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            onClick={() =>
-              (window.location.href = `/mypage/${CURRENT_USER_ID}/console`)
-            }
-          >
-            <span className="nav-icon">👤</span>
-            マイ
-          </button>
-        </nav>
-      </div>
-
-      {/* このページ専用の軽いスタイル（カード＆トグルなど） */}
       <style jsx>{`
-        .store-console-main {
-          padding-bottom: 140px;
+        .store-main {
+          padding: 12px 16px 140px;
         }
 
         .store-card {
-          background: var(--surface);
           border-radius: 16px;
           border: 1px solid var(--border);
-          padding: 14px 14px 12px;
-          margin-bottom: 12px;
-          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.03);
+          background: var(--surface);
+          padding: 12px;
+          box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+          margin-top: 12px;
+        }
+
+        .store-profile-row {
+          display: flex;
+          gap: 12px;
+          align-items: center;
+        }
+
+        .store-profile-main {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .store-sub-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: 10px;
+        }
+
+        .store-sub-pill {
+          font-size: 11px;
+        }
+
+        .store-sub-pill--soft {
+          background: var(--surface-soft);
+          color: var(--text-sub);
+          padding: 4px 8px;
+          border-radius: 999px;
         }
 
         .store-section-title {
@@ -584,62 +673,41 @@ export default function StoreConsolePage() {
           color: var(--text-sub);
         }
 
-        .field-block {
-          margin-bottom: 10px;
+        .field-row {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          margin-top: 10px;
         }
 
         .field-label {
-          font-size: 12px;
-          margin-bottom: 4px;
-          display: block;
-          color: var(--text-main);
+          font-size: 11px;
+          color: var(--text-sub);
         }
 
-        .field-input,
-        .field-select {
+        .field-input {
           width: 100%;
-          border-radius: 10px;
+          border-radius: 999px;
           border: 1px solid var(--border);
-          padding: 7px 10px;
+          padding: 6px 10px;
           font-size: 13px;
-          background: var(--surface-soft);
+          background: #fff;
         }
 
         .field-textarea {
           width: 100%;
-          min-height: 80px;
-          border-radius: 10px;
+          border-radius: 12px;
           border: 1px solid var(--border);
           padding: 8px 10px;
           font-size: 13px;
-          line-height: 1.7;
-          background: var(--surface-soft);
-          resize: vertical;
+          min-height: 80px;
+          resize: none;
+          background: #fff;
         }
 
-        .field-caption {
-          font-size: 11px;
-          color: var(--text-sub);
-          margin-top: 4px;
-        }
-
-        .store-console-footer {
-          position: fixed;
-          bottom: 58px;
-          left: 50%;
-          transform: translateX(-50%);
-          width: 100%;
-          max-width: 430px;
-          padding: 8px 12px;
-          background: linear-gradient(
-            to top,
-            rgba(247, 247, 250, 0.98),
-            rgba(247, 247, 250, 0.88)
-          );
-          border-top: 1px solid var(--border);
-          display: flex;
-          justify-content: center;
-          z-index: 25;
+        .store-save-wrap {
+          margin-top: 16px;
+          padding-bottom: 24px;
         }
 
         .store-save-btn {
@@ -660,160 +728,90 @@ export default function StoreConsolePage() {
           cursor: default;
         }
 
-        /* トグル（MyPageのものと似た感じに） */
-        .toggle-row {
-          width: 100%;
-          margin-top: 8px;
-          border-radius: 12px;
-          border: 1px solid var(--border);
-          background: var(--surface-soft);
-          padding: 10px 12px;
-          display: flex;
-          align-items: flex-start;
-          gap: 12px;
-          cursor: pointer;
+        /* セラピスト管理エリア */
+        .therapist-card {
+          margin-top: 16px;
         }
 
-        .toggle-main {
-          flex: 1;
-          text-align: left;
+        .therapist-helper {
+          font-size: 11px;
+          line-height: 1.6;
+          color: var(--text-sub);
+          margin-bottom: 6px;
+        }
+
+        .therapist-block {
+          margin-top: 10px;
+        }
+
+        .therapist-block + .therapist-block {
+          margin-top: 16px;
+          padding-top: 12px;
+          border-top: 1px solid var(--border-soft, rgba(0, 0, 0, 0.06));
+        }
+
+        .therapist-block-title {
+          font-size: 12px;
+          font-weight: 600;
+          margin-bottom: 4px;
+        }
+
+        .therapist-list {
+          margin-top: 6px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .therapist-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 8px 10px;
+          border-radius: 12px;
+          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
+          border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.04));
+        }
+
+        .therapist-row-main {
           display: flex;
           flex-direction: column;
           gap: 2px;
         }
 
-        .toggle-title {
+        .therapist-name {
           font-size: 13px;
-          font-weight: 500;
-          line-height: 1.3;
-        }
-
-        .toggle-caption {
-          font-size: 11px;
-          color: var(--text-sub);
-          line-height: 1.4;
-        }
-
-        .toggle-switch {
-          width: 40px;
-          height: 20px;
-          border-radius: 999px;
-          background: #c8cad3;
-          position: relative;
-          margin-top: 2px;
-          transition: background 0.2s ease;
-        }
-
-        .toggle-switch--on {
-          background: var(--accent);
-        }
-
-        .toggle-knob {
-          width: 18px;
-          height: 18px;
-          border-radius: 999px;
-          background: #ffffff;
-          position: absolute;
-          top: 1px;
-          left: 1px;
-          transition: transform 0.2s ease;
-        }
-
-        .toggle-switch--on .toggle-knob {
-          transform: translateX(20px);
-        }
-
-        .app-header-sub {
-          font-size: 11px;
-          color: var(--text-sub);
-        }
-
-        /* 在籍セラピスト管理 */
-        .member-input-row {
-          display: flex;
-          gap: 8px;
-          align-items: center;
-          margin-top: 2px;
-        }
-
-        .member-add-btn {
-          flex-shrink: 0;
-          border-radius: 999px;
-          border: none;
-          padding: 8px 12px;
-          font-size: 12px;
           font-weight: 600;
-          background: var(--accent);
-          color: #fff;
-          cursor: pointer;
-          white-space: nowrap;
         }
 
-        .member-empty {
-          font-size: 12px;
-          color: var(--text-sub);
-          margin-top: 8px;
-        }
-
-        .member-list {
-          margin-top: 8px;
-          list-style: none;
-          padding: 0;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-
-        .member-item {
-          display: flex;
-          align-items: flex-start;
-          gap: 8px;
-          padding: 8px 10px;
-          border-radius: 10px;
-          background: var(--surface-soft);
-        }
-
-        .member-main {
-          flex: 1;
-        }
-
-        .member-id {
-          font-size: 13px;
-          font-weight: 500;
-          margin-bottom: 4px;
-        }
-
-        .member-status-row {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .member-status-label {
+        .therapist-meta {
           font-size: 11px;
-          color: var(--text-sub);
+          opacity: 0.7;
         }
 
-        .member-status-select {
+        .therapist-tag {
+          font-size: 11px;
+          padding: 3px 8px;
           border-radius: 999px;
-          border: 1px solid var(--border);
-          padding: 4px 8px;
-          font-size: 12px;
-          background: #fff;
+          border: 1px solid rgba(0, 0, 0, 0.08);
         }
 
-        .member-remove-btn {
+        .therapist-attach-btn {
+          font-size: 12px;
+          padding: 6px 10px;
           border-radius: 999px;
           border: none;
-          padding: 4px 8px;
-          font-size: 11px;
-          cursor: pointer;
-          background: #f4d7da;
-          color: #8c2a3a;
-          align-self: center;
-          white-space: nowrap;
+          background: var(--accent, #d7b976);
+          color: #fff;
+          box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
+        }
+
+        .therapist-attach-btn[disabled] {
+          opacity: 0.6;
         }
       `}</style>
-    </>
+    </div>
   );
-}
+};
+
+export default StoreConsolePage;
