@@ -1,7 +1,7 @@
 // app/signup/creator/start/page.tsx
 "use client";
 
-import React, { useState, FormEvent } from "react";
+import React, { useEffect, useState, FormEvent } from "react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import { getCurrentUserId } from "@/lib/auth";
@@ -33,8 +33,17 @@ type TherapistForm = {
 };
 
 export default function CreatorSignupStartPage() {
-  const currentUserId = getCurrentUserId();
-  const isLoggedIn = !currentUserId.startsWith("guest-");
+  // ★ SSR / 初期描画時は null（まだ判定していない状態）
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const currentUserId = getCurrentUserId();
+    const loggedIn = !!currentUserId && !currentUserId.startsWith("guest-");
+    setIsLoggedIn(loggedIn);
+  }, []);
+
+  // 「未ログインなら注意文を出す」フラグ
+  const showLoginNotice = isLoggedIn === false;
 
   const [kind, setKind] = useState<CreatorKind>(null);
   const [completedKind, setCompletedKind] = useState<CreatorKind>(null);
@@ -59,7 +68,7 @@ export default function CreatorSignupStartPage() {
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!kind) return;
 
@@ -67,6 +76,9 @@ export default function CreatorSignupStartPage() {
     setError(null);
 
     try {
+      // ★ submit 時点の currentUserId をここで取得
+      const currentUserId = getCurrentUserId();
+
       if (kind === "store") {
         if (!storeForm.storeName.trim()) {
           setError("店舗名を入力してください。");
@@ -175,7 +187,7 @@ export default function CreatorSignupStartPage() {
                 店舗としての申請は、内容を確認したうえで掲載可否を判断させていただきます。
               </p>
 
-              {!isLoggedIn && (
+              {showLoginNotice && (
                 <p className="lead">
                   ※ ログインされていない場合、後からアカウントと申請内容をひも付けできないことがあります。
                   可能であれば先にメールアドレスでログインしてからご利用ください。
