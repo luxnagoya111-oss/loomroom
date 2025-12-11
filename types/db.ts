@@ -20,13 +20,13 @@ export type DbUserRow = {
 };
 
 // stores
-// stores
 export type DbStoreRow = {
   id: string;
   owner_user_id: UserId | null;
   name: string | null;
   catch_copy: string | null;
   area: string | null;
+  description: string | null;        // ★ 追加
   visit_type: "online" | "offline" | null;
   website_url: string | null;
   line_url: string | null;
@@ -127,9 +127,7 @@ export type DbSignupApplicationRow = {
   reviewed_at: string | null;
 };
 
-// ------------------------------
 // reports テーブル（通報）  C-4
-// ------------------------------
 export type DbReportTargetType = "post" | "user" | "store" | "therapist";
 
 export type DbReportRow = {
@@ -140,3 +138,6 @@ export type DbReportRow = {
   reason: string | null;
   created_at: string;
 };
+
+// 互換用：旧 postRepository 向けの別名
+export type DbPostReportRow = DbReportRow;
