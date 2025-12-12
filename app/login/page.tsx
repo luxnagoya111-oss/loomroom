@@ -59,23 +59,6 @@ export default function LoginPage() {
           return;
         }
 
-        // users テーブル upsert（最低限 name / role = "user"）
-        const { error: upsertError } = await supabase
-          .from("users")
-          .upsert(
-            {
-              id: user.id,
-              name: displayName || user.email || null,
-              role: "user",
-            },
-            { onConflict: "id" }
-          );
-
-        if (upsertError) {
-          console.error("Supabase users upsert (login) error:", upsertError);
-          // upsert失敗しても、とりあえずログイン自体は通す
-        }
-
         // localStorage に UUID を保存
         persistCurrentUserId(user.id);
 
@@ -88,6 +71,11 @@ export default function LoginPage() {
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          data: {
+            name: displayName.trim(), // ← ★ここ
+          }, 
+        },
       });
 
       if (error) {
@@ -103,22 +91,6 @@ export default function LoginPage() {
           "仮登録が完了しました。メールが届いている場合は、案内に従って登録を完了してください。"
         );
         return;
-      }
-
-      // users テーブル upsert
-      const { error: upsertError } = await supabase
-        .from("users")
-        .upsert(
-          {
-            id: user.id,
-            role: "user",
-          },
-          { onConflict: "id" }
-        );
-
-      if (upsertError) {
-        console.error("Supabase users upsert (signup) error:", upsertError);
-        // upsert失敗しても続行
       }
 
       // localStorage に UUID を保存
