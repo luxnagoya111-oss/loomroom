@@ -111,7 +111,6 @@ export default function LoginPage() {
         .upsert(
           {
             id: user.id,
-            name: displayName || user.email || null,
             role: "user",
           },
           { onConflict: "id" }
