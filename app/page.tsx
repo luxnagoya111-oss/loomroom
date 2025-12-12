@@ -262,7 +262,7 @@ export default function LoomRoomHome() {
 
         if (authorIds.length) {
           const { data: userData, error: userError } = await supabase
-            .from("users")
+            .from("public_profiles")
             .select("id, name, role, avatar_url")
             .in("id", authorIds);
 
