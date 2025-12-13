@@ -31,9 +31,22 @@ export async function createSignupApplication(
 ): Promise<DbSignupApplicationRow | null> {
   const { type, name, contact = null, payload } = params;
 
+  // ★ auth uid を取得（RLSの条件に必要）
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  const authUser = userData?.user;
+
+  if (userError || !authUser) {
+    console.error(
+      "[signupRepository.createSignupApplication] Not authenticated:",
+      userError
+    );
+    return null;
+  }
+
   const { data, error } = await supabase
     .from("signup_applications")
     .insert({
+      applicant_user_id: authUser.id, // ★これが必須
       type,
       status: "pending" as DbSignupStatus,
       name,
