@@ -7,6 +7,12 @@ import AppHeader from "@/components/AppHeader";
 import { supabase } from "@/lib/supabaseClient";
 import { persistCurrentUserId } from "@/lib/auth";
 
+// ★ 追加（auth.ts に入れた想定）
+import {
+  resendSignupConfirmation,
+  isEmailNotConfirmedError,
+} from "@/lib/auth";
+
 type Mode = "login" | "signup";
 
 export default function LoginPage() {
@@ -19,9 +25,14 @@ export default function LoginPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
+  // ★ 追加：未確認メールのときだけ再送導線を出す
+  const [showResend, setShowResend] = useState(false);
+  const [resending, setResending] = useState(false);
+
   const resetMessages = () => {
     setErrorMsg(null);
     setInfoMsg(null);
+    setShowResend(false); // ★追加
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -50,6 +61,11 @@ export default function LoginPage() {
         if (error) {
           console.error("Supabase login error:", error);
           setErrorMsg(error.message || "ログインに失敗しました。");
+
+          // ★ Email not confirmed のときだけ再送ボタンを表示
+          if (isEmailNotConfirmedError(error.message)) {
+            setShowResend(true);
+          }
           return;
         }
 
@@ -72,9 +88,10 @@ export default function LoginPage() {
         email,
         password,
         options: {
+          emailRedirectTo: "https://lroom.jp/auth/confirm",
           data: {
-            name: displayName.trim(), // ← ★ここ
-          }, 
+            data: { name: displayName.trim() },
+          },
         },
       });
 
@@ -88,7 +105,7 @@ export default function LoginPage() {
       if (!user) {
         // プロジェクトの設定によってはメール確認が必要な場合がある
         setInfoMsg(
-          "仮登録が完了しました。メールが届いている場合は、案内に従って登録を完了してください。"
+          "仮登録が完了しました。確認メールを送信しました。メール内のリンクを開いて登録を完了してください。"
         );
         return;
       }
@@ -109,6 +126,37 @@ export default function LoginPage() {
     }
   };
 
+  // ★ 追加：確認メール再送
+  const handleResend = async () => {
+    // 既存UIを崩さず、info/errorの枠に載せる
+    setErrorMsg(null);
+    setInfoMsg(null);
+
+    const mail = email.trim();
+    if (!mail) {
+      setErrorMsg("再送するメールアドレスを入力してください。");
+      return;
+    }
+
+    try {
+      setResending(true);
+      await resendSignupConfirmation(mail);
+
+      setInfoMsg(
+        "確認メールを再送しました。届いたメールのリンクを開いて登録を完了してください。"
+      );
+      setShowResend(false);
+    } catch (e: any) {
+      console.error("resend confirmation error:", e);
+      setErrorMsg(
+        e?.message ||
+          "確認メールの再送に失敗しました。時間をおいて再度お試しください。"
+      );
+    } finally {
+      setResending(false);
+    }
+  };
+
   const isLogin = mode === "login";
 
   return (
@@ -125,9 +173,7 @@ export default function LoginPage() {
           <div className="login-tabs" role="tablist" aria-label="ログインモード">
             <button
               type="button"
-              className={
-                "login-tab" + (isLogin ? " login-tab--active" : "")
-              }
+              className={"login-tab" + (isLogin ? " login-tab--active" : "")}
               role="tab"
               aria-selected={isLogin}
               onClick={() => {
@@ -139,9 +185,7 @@ export default function LoginPage() {
             </button>
             <button
               type="button"
-              className={
-                "login-tab" + (!isLogin ? " login-tab--active" : "")
-              }
+              className={"login-tab" + (!isLogin ? " login-tab--active" : "")}
               role="tab"
               aria-selected={!isLogin}
               onClick={() => {
@@ -176,9 +220,7 @@ export default function LoginPage() {
               )}
 
               <div className="form-row">
-                <label className="form-label">
-                  メールアドレス
-                </label>
+                <label className="form-label">メールアドレス</label>
                 <input
                   type="email"
                   className="form-input"
@@ -191,9 +233,7 @@ export default function LoginPage() {
               </div>
 
               <div className="form-row">
-                <label className="form-label">
-                  パスワード
-                </label>
+                <label className="form-label">パスワード</label>
                 <input
                   type="password"
                   className="form-input"
@@ -216,10 +256,22 @@ export default function LoginPage() {
                 </div>
               )}
 
+              {/* ★ 追加：Email not confirmed のときだけ表示 */}
+              {isLogin && showResend && (
+                <button
+                  type="button"
+                  className="login-resend-btn"
+                  onClick={handleResend}
+                  disabled={loading || resending}
+                >
+                  {resending ? "確認メールを再送中..." : "確認メールを再送する"}
+                </button>
+              )}
+
               <button
                 type="submit"
                 className="login-submit-btn"
-                disabled={loading}
+                disabled={loading || resending}
               >
                 {loading
                   ? isLogin
@@ -348,6 +400,23 @@ export default function LoginPage() {
           border: 1px solid #bfdbfe;
         }
 
+        /* ★追加：再送ボタン（既存トーンに合わせる） */
+        .login-resend-btn {
+          width: 100%;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          padding: 9px 12px;
+          font-size: 13px;
+          font-weight: 600;
+          background: rgba(255, 255, 255, 0.9);
+          color: var(--text-sub);
+          cursor: pointer;
+        }
+        .login-resend-btn:disabled {
+          opacity: 0.7;
+          cursor: default;
+        }
+
         .login-submit-btn {
           margin-top: 4px;
           width: 100%;
@@ -356,11 +425,7 @@ export default function LoginPage() {
           padding: 10px 12px;
           font-size: 14px;
           font-weight: 600;
-          background: linear-gradient(
-            135deg,
-            #f3c98b,
-            #e8b362
-          ); /* シャンパンゴールド系 */
+          background: linear-gradient(135deg, #f3c98b, #e8b362);
           color: #4a2b05;
           cursor: pointer;
           box-shadow: 0 8px 18px rgba(148, 98, 36, 0.25);
