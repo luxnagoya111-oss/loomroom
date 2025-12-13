@@ -10,6 +10,12 @@ import { persistCurrentUserId } from "@/lib/auth";
 
 type Step = "verifying" | "success" | "error";
 
+function readHashParams(): URLSearchParams {
+  if (typeof window === "undefined") return new URLSearchParams();
+  const hash = window.location.hash?.replace(/^#/, "") ?? "";
+  return new URLSearchParams(hash);
+}
+
 export default function ConfirmClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -18,40 +24,86 @@ export default function ConfirmClient() {
   const [message, setMessage] = useState<string>("確認リンクを検証しています…");
 
   const params = useMemo(() => {
-    const code = searchParams.get("code");
-    const token_hash = searchParams.get("token_hash");
-    const type = searchParams.get("type"); // signup / recovery / email_change など
-    const next = searchParams.get("next"); // 任意（自前で付けるなら）
-    return { code, token_hash, type, next };
+    // query
+    const q_code = searchParams.get("code");
+    const q_token_hash = searchParams.get("token_hash");
+    const q_type = searchParams.get("type");
+    const q_next = searchParams.get("next");
+
+    // hash
+    const hp = readHashParams();
+    const h_code = hp.get("code");
+    const h_token_hash = hp.get("token_hash");
+    const h_type = hp.get("type");
+    const h_next = hp.get("next");
+
+    // implicit session tokens（#access_token=...）
+    const h_access_token = hp.get("access_token");
+    const h_refresh_token = hp.get("refresh_token");
+
+    // error（#error=access_denied&error_code=...）
+    const h_error = hp.get("error");
+    const h_error_code = hp.get("error_code");
+    const h_error_desc = hp.get("error_description");
+
+    return {
+      code: q_code ?? h_code,
+      token_hash: q_token_hash ?? h_token_hash,
+      type: q_type ?? h_type,
+      next: q_next ?? h_next,
+      access_token: h_access_token,
+      refresh_token: h_refresh_token,
+      error: h_error,
+      error_code: h_error_code,
+      error_description: h_error_desc,
+    };
   }, [searchParams]);
 
   useEffect(() => {
     let cancelled = false;
 
+    const setSuccess = (userId?: string | null) => {
+      if (userId) persistCurrentUserId(userId);
+      if (cancelled) return;
+      setStep("success");
+      setMessage("メール確認が完了しました。ログインを続けてください。");
+    };
+
+    const setFailure = (msg: string) => {
+      if (cancelled) return;
+      setStep("error");
+      setMessage(msg);
+    };
+
     const run = async () => {
       try {
-        // 1) code=... が来るパターン（PKCE / email link）
+        // 0) hash にエラー情報が来ている（例：otp_expired）
+        if (params.error) {
+          const reason =
+            params.error_code || params.error_description || params.error;
+          setFailure(
+            `確認に失敗しました。リンクの期限切れ・無効の可能性があります。（${reason}）`
+          );
+          return;
+        }
+
+        // 1) code=...（PKCE / email link）
         if (params.code) {
           const { data, error } = await supabase.auth.exchangeCodeForSession(
             params.code
           );
           if (error) throw error;
 
-          // supabase-js のバージョン差分に耐える
           const userId =
             (data as any)?.user?.id ||
             (data as any)?.session?.user?.id ||
             null;
 
-          if (userId) persistCurrentUserId(userId);
-
-          if (cancelled) return;
-          setStep("success");
-          setMessage("メール確認が完了しました。ログインを続けてください。");
+          setSuccess(userId);
           return;
         }
 
-        // 2) token_hash&type=signup が来るパターン（verifyOtp）
+        // 2) token_hash&type=signup（verifyOtp）
         if (params.token_hash && params.type) {
           const { data, error } = await supabase.auth.verifyOtp({
             token_hash: params.token_hash,
@@ -64,21 +116,40 @@ export default function ConfirmClient() {
             (data as any)?.session?.user?.id ||
             null;
 
-          if (userId) persistCurrentUserId(userId);
-
-          if (cancelled) return;
-          setStep("success");
-          setMessage("メール確認が完了しました。ログインを続けてください。");
+          setSuccess(userId);
           return;
         }
 
-        // どちらのパラメータも無い
-        throw new Error("確認リンクの形式を判別できませんでした。");
+        // 3) implicit grant: #access_token & #refresh_token
+        if (params.access_token && params.refresh_token) {
+          const { data, error } = await supabase.auth.setSession({
+            access_token: params.access_token,
+            refresh_token: params.refresh_token,
+          });
+          if (error) throw error;
+
+          const userId =
+            (data as any)?.user?.id ||
+            (data as any)?.session?.user?.id ||
+            null;
+
+          setSuccess(userId);
+          return;
+        }
+
+        // 4) パラメータ無しでも、すでに session があるなら「確認済み」とみなす
+        const { data: sessionData } = await supabase.auth.getSession();
+        const sessionUserId = sessionData?.session?.user?.id ?? null;
+        if (sessionUserId) {
+          setSuccess(sessionUserId);
+          return;
+        }
+
+        // どれでもない
+        setFailure("確認リンクの形式を判別できませんでした。");
       } catch (e: any) {
         console.error("[auth/confirm] verify error:", e);
-        if (cancelled) return;
-        setStep("error");
-        setMessage(
+        setFailure(
           e?.message ||
             "確認に失敗しました。リンクの期限切れの可能性があります。"
         );
@@ -89,10 +160,18 @@ export default function ConfirmClient() {
     return () => {
       cancelled = true;
     };
-  }, [params.code, params.token_hash, params.type]);
+  }, [
+    params.code,
+    params.token_hash,
+    params.type,
+    params.access_token,
+    params.refresh_token,
+    params.error,
+    params.error_code,
+    params.error_description,
+  ]);
 
   const goNext = () => {
-    // next を使うならここ（安全な相対パスだけ許可）
     const next = params.next;
     if (next && next.startsWith("/")) {
       router.replace(next);
@@ -123,6 +202,7 @@ export default function ConfirmClient() {
                 ? "確認完了"
                 : "確認できませんでした"}
             </h1>
+
             <p className="confirm-text">{message}</p>
 
             {step === "success" && (
