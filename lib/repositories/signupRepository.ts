@@ -107,3 +107,60 @@ export async function createUserSignup(params: {
     payload: params.payload,
   });
 }
+
+// ===== 管理画面用（一覧取得 / ステータス更新）=====
+
+// 申請一覧（管理者ページ用）
+// ※RLSが厳しい場合は、後で /api 経由（supabaseAdmin）に切り替えるのが安全
+export async function listSignupApplications(params?: {
+  type?: DbSignupType;
+  status?: DbSignupStatus;
+  limit?: number;
+}): Promise<DbSignupApplicationRow[]> {
+  const type = params?.type;
+  const status = params?.status; // undefined の場合は全件
+  const limit = params?.limit ?? 50;
+
+  let q = supabase
+    .from("signup_applications")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (type) q = q.eq("type", type);
+  if (status) q = q.eq("status", status);
+
+  const { data, error } = await q;
+
+  if (error) {
+    console.error("[signupRepository] listSignupApplications error:", error);
+    return [];
+  }
+
+  return (data ?? []) as DbSignupApplicationRow[];
+}
+
+// 申請ステータス更新（管理者ページ用）
+export async function updateSignupStatus(params: {
+  id: string;
+  status: DbSignupStatus;
+}): Promise<DbSignupApplicationRow | null> {
+  const { id, status } = params;
+
+  const { data, error } = await supabase
+    .from("signup_applications")
+    .update({
+      status,
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("[signupRepository] updateSignupStatus error:", error);
+    return null;
+  }
+
+  return (data ?? null) as DbSignupApplicationRow | null;
+}

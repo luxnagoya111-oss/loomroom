@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { supabase } from "@/lib/supabaseClient";
 import { persistCurrentUserId } from "@/lib/auth";
+import { getAuthRedirectTo } from "@/lib/authRedirect";
 
 // ★ 追加（auth.ts に入れた想定）
 import {
@@ -88,7 +89,7 @@ export default function LoginPage() {
         email,
         password,
         options: {
-          emailRedirectTo: "https://lroom.jp/auth/confirm",
+          emailRedirectTo: getAuthRedirectTo("/auth/confirm?next=/login"),
           data: {
             data: { name: displayName.trim() },
           },
