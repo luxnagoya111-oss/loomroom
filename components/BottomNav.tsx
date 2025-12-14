@@ -3,8 +3,9 @@
 import React, { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import type { UserId } from "@/types/user";
-import { inferRoleFromId, isGuestId } from "@/types/user";
+import { isGuestId } from "@/types/user";
 import { getCurrentUserId } from "@/lib/auth";
+import { supabase } from "@/lib/supabaseClient";
 
 type NavKey =
   | "home"
@@ -30,26 +31,124 @@ function inferActiveFromPath(pathname: string | null): NavKey {
   if (path.startsWith("/compose")) return "compose";
   if (path.startsWith("/messages")) return "messages";
   if (path.startsWith("/notifications")) return "notifications";
+
+  // 公開プロフィール系は「マイ」扱いに寄せる
   if (path.startsWith("/mypage")) return "mypage";
+  if (path.startsWith("/store")) return "mypage";
+  if (path.startsWith("/therapist")) return "mypage";
 
   return "home";
 }
 
+type DbUserRow = {
+  id: string;
+  role: "user" | "therapist" | "store" | null;
+};
+
+type DbStoreRow = { id: string };
+type DbTherapistRow = { id: string };
+
 const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
   const router = useRouter();
   const pathname = usePathname();
+
   const [currentUserId, setCurrentUserId] = useState<UserId>("guest");
   const [isGuest, setIsGuest] = useState<boolean>(true);
 
+  // ★ 追加：通知ドットはローカルで即時に消せるようにする
+  const [hasUnreadLocal, setHasUnreadLocal] = useState<boolean>(hasUnread);
+
+  // 追加：DBロール & 紐づきID（URL遷移用）
+  const [dbRole, setDbRole] = useState<DbUserRow["role"]>(null);
+  const [storeId, setStoreId] = useState<string | null>(null);
+  const [therapistId, setTherapistId] = useState<string | null>(null);
+
+  // 初期：ID確定
   useEffect(() => {
-    // クライアント側で ID を確定させる
     const id = getCurrentUserId();
     setCurrentUserId(id);
     setIsGuest(isGuestId(id));
   }, []);
 
-  const resolvedActive: NavKey =
-    active ?? inferActiveFromPath(pathname ?? null);
+  // props で unread が更新されたときは同期（親が再計算した場合の保険）
+  useEffect(() => {
+    setHasUnreadLocal(hasUnread);
+  }, [hasUnread]);
+
+  // ★ UUID（ログイン済み）なら DB から role / storeId / therapistId を確定
+  useEffect(() => {
+    const id = currentUserId;
+    if (!id || isGuestId(id)) {
+      setDbRole(null);
+      setStoreId(null);
+      setTherapistId(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadRoleAndOwner = async () => {
+      try {
+        // users.role
+        const { data: u, error: uErr } = await supabase
+          .from("users")
+          .select("id, role")
+          .eq("id", id)
+          .maybeSingle<DbUserRow>();
+
+        if (cancelled) return;
+
+        if (uErr) {
+          console.error("[BottomNav] users.role fetch error:", uErr);
+          setDbRole(null);
+          return;
+        }
+
+        setDbRole(u?.role ?? null);
+
+        // role に応じて storeId / therapistId を引く（公開ページ遷移で必要）
+        if (u?.role === "store") {
+          const { data: s, error: sErr } = await supabase
+            .from("stores")
+            .select("id")
+            .eq("owner_user_id", id)
+            .maybeSingle<DbStoreRow>();
+
+          if (!cancelled) {
+            if (sErr) console.error("[BottomNav] stores fetch error:", sErr);
+            setStoreId(s?.id ?? null);
+            setTherapistId(null);
+          }
+        } else if (u?.role === "therapist") {
+          const { data: t, error: tErr } = await supabase
+            .from("therapists")
+            .select("id")
+            .eq("user_id", id)
+            .maybeSingle<DbTherapistRow>();
+
+          if (!cancelled) {
+            if (tErr) console.error("[BottomNav] therapists fetch error:", tErr);
+            setTherapistId(t?.id ?? null);
+            setStoreId(null);
+          }
+        } else {
+          // user
+          setStoreId(null);
+          setTherapistId(null);
+        }
+      } catch (e) {
+        if (!cancelled) console.error("[BottomNav] loadRoleAndOwner exception:", e);
+      }
+    };
+
+    loadRoleAndOwner();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
+  const resolvedActive: NavKey = active ?? inferActiveFromPath(pathname ?? null);
 
   const go = (href: string) => {
     router.push(href);
@@ -57,41 +156,72 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
 
   const handleMessagesClick = () => {
     if (isGuest) {
-      // 未ログイン → ログイン画面へ
       go("/login");
       return;
     }
-    // ログイン済み → メッセージ一覧へ
     go("/messages");
   };
 
-  const handleNotificationsClick = () => {
-    if (isGuest) {
-      // 未ログイン → ログイン画面へ
+  const handleNotificationsClick = async () => {
+    const id = currentUserId;
+
+    if (!id || isGuestId(id)) {
       go("/login");
       return;
     }
-    // ログイン済み → 通知ページへ
+
+    try {
+      // 未読通知を既読にする（ユーザーIDで統一）
+      const { error } = await supabase
+        .from("notifications")
+        .update({ is_read: true })
+        .eq("user_id", id)
+        .eq("is_read", false);
+
+      if (error) {
+        console.error("[BottomNav] mark notifications read error:", error);
+      } else {
+        // 🔔ドットを即時に消す
+        setHasUnreadLocal(false);
+      }
+    } catch (e) {
+      console.error("[BottomNav] mark notifications read failed:", e);
+    }
+
     go("/notifications");
   };
 
   const handleMypageClick = () => {
     const id = currentUserId;
-    const role = inferRoleFromId(id);
 
-    if (isGuestId(id)) {
-      // 未ログイン → /login へ
+    if (!id || isGuestId(id)) {
       go("/login");
       return;
     }
 
-    if (role === "therapist" || role === "store") {
-      // セラピスト／店舗アカウント → 従来どおり Console へ
-      go(`/mypage/${id}/console`);
+    // ★ DB role 優先で分岐
+    if (dbRole === "store") {
+      if (storeId) {
+        // 店舗の公開プロフィールへ
+        go(`/store/${storeId}`);
+      } else {
+        // フォールバック
+        go(`/mypage/${id}`);
+      }
       return;
     }
 
-    // 一般ユーザー（UUIDなど）は /mypage/[id] へ
+    if (dbRole === "therapist") {
+      if (therapistId) {
+        // セラピストの公開プロフィールへ
+        go(`/therapist/${therapistId}`);
+      } else {
+        go(`/mypage/${id}`);
+      }
+      return;
+    }
+
+    // 一般ユーザー
     go(`/mypage/${id}`);
   };
 
@@ -100,9 +230,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
       <nav className="bottom-nav">
         <button
           type="button"
-          className={
-            "nav-item" + (resolvedActive === "home" ? " is-active" : "")
-          }
+          className={"nav-item" + (resolvedActive === "home" ? " is-active" : "")}
           onClick={() => go("/")}
         >
           <span className="nav-icon">🏠</span>
@@ -111,9 +239,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
 
         <button
           type="button"
-          className={
-            "nav-item" + (resolvedActive === "search" ? " is-active" : "")
-          }
+          className={"nav-item" + (resolvedActive === "search" ? " is-active" : "")}
           onClick={() => go("/search")}
         >
           <span className="nav-icon">🔍</span>
@@ -122,9 +248,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
 
         <button
           type="button"
-          className={
-            "nav-item" + (resolvedActive === "compose" ? " is-active" : "")
-          }
+          className={"nav-item" + (resolvedActive === "compose" ? " is-active" : "")}
           onClick={() => go("/compose")}
         >
           <span className="nav-icon nav-icon-compose">＋</span>
@@ -132,9 +256,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
 
         <button
           type="button"
-          className={
-            "nav-item" + (resolvedActive === "messages" ? " is-active" : "")
-          }
+          className={"nav-item" + (resolvedActive === "messages" ? " is-active" : "")}
           onClick={handleMessagesClick}
         >
           <span className="nav-icon">✉</span>
@@ -144,23 +266,21 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
         <button
           type="button"
           className={
-            "nav-item" +
-            (resolvedActive === "notifications" ? " is-active" : "")
+            "nav-item" + (resolvedActive === "notifications" ? " is-active" : "")
           }
           onClick={handleNotificationsClick}
         >
           <span className="nav-icon-wrap">
             <span className="nav-icon">🔔</span>
-            {hasUnread && <span className="nav-badge-dot" />}
+            {/* ★ local を見る */}
+            {hasUnreadLocal && <span className="nav-badge-dot" />}
           </span>
           通知
         </button>
 
         <button
           type="button"
-          className={
-            "nav-item" + (resolvedActive === "mypage" ? " is-active" : "")
-          }
+          className={"nav-item" + (resolvedActive === "mypage" ? " is-active" : "")}
           onClick={handleMypageClick}
         >
           <span className="nav-icon">👤</span>
@@ -200,8 +320,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
           color: #666;
           cursor: pointer;
           border-radius: 999px;
-          transition: background 0.15s ease, color 0.15s ease,
-            transform 0.1s ease;
+          transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
         }
 
         .nav-item.is-active {
@@ -235,7 +354,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
           width: 8px;
           height: 8px;
           border-radius: 999px;
-          background: #f97316; /* オレンジ系 */
+          background: #f97316;
           border: 1px solid #fff;
         }
       `}</style>

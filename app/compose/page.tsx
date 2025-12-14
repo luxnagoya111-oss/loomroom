@@ -315,7 +315,7 @@ export default function ComposePage() {
         </form>
       </main>
 
-      <BottomNav active="home" hasUnread={hasUnread} />
+      <BottomNav active="compose" hasUnread={hasUnread} />
 
       <style jsx>{`
         .compose-main {

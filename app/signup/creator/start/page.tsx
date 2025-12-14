@@ -4,7 +4,8 @@
 import React, { useEffect, useState, FormEvent } from "react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
-import { getCurrentUserId } from "@/lib/auth";
+import { getCurrentUserId } from "@/lib/auth"; // ★追加（あなたの現コードで使っているため）
+import { supabase } from "@/lib/supabaseClient"; // ★追加（Supabase Authでログイン判定するため）
 import {
   createStoreSignup,
   createTherapistSignup,
@@ -36,10 +37,19 @@ export default function CreatorSignupStartPage() {
   // ★ SSR / 初期描画時は null（まだ判定していない状態）
   const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
 
+  // ★ログイン判定（UIは維持しつつ、RLSに必要なSupabase Authも併用）
   useEffect(() => {
+    // 既存の判定（guest- をログイン扱いしない）を維持
     const currentUserId = getCurrentUserId();
-    const loggedIn = !!currentUserId && !currentUserId.startsWith("guest-");
-    setIsLoggedIn(loggedIn);
+    const guestBasedLoggedIn =
+      !!currentUserId && !currentUserId.startsWith("guest-");
+
+    // 追加：実際にSupabase Authでログインしているか確認
+    supabase.auth.getUser().then(({ data }) => {
+      const authLoggedIn = !!data.user;
+      // UIの意味は維持：guest判定 AND Supabase auth の両方がtrueでログイン扱い
+      setIsLoggedIn(guestBasedLoggedIn && authLoggedIn);
+    });
   }, []);
 
   // 「未ログインなら注意文を出す」フラグ
@@ -76,8 +86,9 @@ export default function CreatorSignupStartPage() {
     setError(null);
 
     try {
-      // ★ submit 時点の currentUserId をここで取得
-      const currentUserId = getCurrentUserId();
+      // ★ currentUserId は「UI/表示用の概念」としては残してOK
+      // ただし「DB insert の payload には絶対に混ぜない（RLS邪魔）」が鉄則
+      // const currentUserId = getCurrentUserId();  // ←必要なら残してもいいが payload に入れない
 
       if (kind === "store") {
         if (!storeForm.storeName.trim()) {
@@ -86,9 +97,9 @@ export default function CreatorSignupStartPage() {
           return;
         }
 
+        // ★修正：payload から currentUserId を削除（UIは一切変えない）
         const payload = {
           ...storeForm,
-          currentUserId,
         };
 
         const result = await createStoreSignup({
@@ -109,9 +120,9 @@ export default function CreatorSignupStartPage() {
           return;
         }
 
+        // ★修正：payload から currentUserId を削除（UIは一切変えない）
         const payload = {
           ...therapistForm,
-          currentUserId,
         };
 
         const result = await createTherapistSignup({

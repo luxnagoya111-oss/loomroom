@@ -15,22 +15,32 @@ import {
   attachTherapistToStore,
 } from "@/lib/repositories/therapistRepository";
 
-const STORAGE_KEY_PREFIX = "loomroom_store_console_";
+function toPlainError(error: any) {
+  return {
+    name: error?.name,
+    message: error?.message,
+    code: error?.code,
+    details: error?.details,
+    hint: error?.hint,
+    status: error?.status,
+  };
+}
 
-type VisitType = "online" | "offline";
+const STORAGE_KEY_PREFIX = "loomroom_store_console_";
 
 type FormState = {
   storeName: string;
   avatarDataUrl?: string;
-  catchCopy: string;
+
   area: string;
-  visitType: VisitType;
   websiteUrl: string;
   lineUrl: string;
-  intro: string;
-  reserveNotice: boolean;
+
+  // 追加
+  xUrl: string;
+  twicas_url: string;
+
   dmNotice: boolean;
-  reviewNotice: boolean;
 };
 
 const StoreConsolePage: React.FC = () => {
@@ -45,15 +55,15 @@ const StoreConsolePage: React.FC = () => {
   const [state, setState] = useState<FormState>({
     storeName: "",
     avatarDataUrl: undefined,
-    catchCopy: "",
+
     area: "",
-    visitType: "offline",
     websiteUrl: "",
     lineUrl: "",
-    intro: "",
-    reserveNotice: true,
+
+    xUrl: "",
+    twicas_url: "",
+
     dmNotice: true,
-    reviewNotice: false,
   });
 
   const [loaded, setLoaded] = useState(false);
@@ -66,7 +76,7 @@ const StoreConsolePage: React.FC = () => {
   const [loadingTherapists, setLoadingTherapists] = useState(false);
   const [attachTargetId, setAttachTargetId] = useState<string | null>(null);
 
-  // ① localStorage から復元（旧仕様互換）
+  // ① localStorage から復元（壊れてたら自動リセット）
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -75,14 +85,21 @@ const StoreConsolePage: React.FC = () => {
         setLoaded(true);
         return;
       }
-      const data = JSON.parse(raw) as Partial<FormState>;
-      setState((prev) => ({
-        ...prev,
-        ...data,
-      }));
-      setLoaded(true);
+
+      try {
+        const data = JSON.parse(raw) as Partial<FormState>;
+        setState((prev) => ({
+          ...prev,
+          ...data,
+        }));
+      } catch (parseErr) {
+        console.warn("[StoreConsole] localStorage parse failed. reset:", parseErr);
+        window.localStorage.removeItem(storageKey);
+      } finally {
+        setLoaded(true);
+      }
     } catch (e) {
-      console.error(e);
+      console.error("[StoreConsole] localStorage read error:", e);
       setLoaded(true);
     }
   }, [storageKey]);
@@ -97,16 +114,15 @@ const StoreConsolePage: React.FC = () => {
       try {
         const { data, error } = await supabase
           .from("stores")
-          .select(
-            "name, catch_copy, area, visit_type, website_url, line_url, intro, avatar_url, reserve_notice, dm_notice, review_notice"
-          )
+          .select("name, area, website_url, line_url, avatar_url, dm_notice, x_url, twicas_url")
           .eq("id", storeId)
           .maybeSingle<DbStoreRow>();
 
         if (cancelled) return;
 
         if (error) {
-          console.error("[StoreConsole] loadStore error:", error);
+          console.error("[StoreConsole] loadStore error:", toPlainError(error));
+          console.error("[StoreConsole] loadStore error(raw):", error);
           return;
         }
         if (!data) return;
@@ -114,23 +130,19 @@ const StoreConsolePage: React.FC = () => {
         setState((prev) => ({
           ...prev,
           storeName: data.name ?? prev.storeName,
-          catchCopy: data.catch_copy ?? prev.catchCopy,
-          area: data.area ?? prev.area,
-          visitType: (data.visit_type as VisitType | null) ?? prev.visitType,
-          websiteUrl: data.website_url ?? prev.websiteUrl,
-          lineUrl: data.line_url ?? prev.lineUrl,
-          intro: data.intro ?? prev.intro,
-          avatarDataUrl: data.avatar_url ?? prev.avatarDataUrl,
-          reserveNotice:
-            typeof data.reserve_notice === "boolean"
-              ? data.reserve_notice
-              : prev.reserveNotice,
+          area: (data as any).area ?? prev.area,
+          websiteUrl: (data as any).website_url ?? prev.websiteUrl,
+          lineUrl: (data as any).line_url ?? prev.lineUrl,
+          avatarDataUrl: (data as any).avatar_url ?? prev.avatarDataUrl,
+
+          // 追加
+          xUrl: (data as any).x_url ?? prev.xUrl,
+          twicas_url: (data as any).twicas_url ?? prev.twicas_url,
+
           dmNotice:
-            typeof data.dm_notice === "boolean" ? data.dm_notice : prev.dmNotice,
-          reviewNotice:
-            typeof data.review_notice === "boolean"
-              ? data.review_notice
-              : prev.reviewNotice,
+            typeof (data as any).dm_notice === "boolean"
+              ? (data as any).dm_notice
+              : prev.dmNotice,
         }));
       } catch (e) {
         if (!cancelled) {
@@ -145,7 +157,7 @@ const StoreConsolePage: React.FC = () => {
     };
   }, [storeId]);
 
-  // ③ localStorage への自動保存（見た目の挙動は従来通り）
+  // ③ localStorage への自動保存
   useEffect(() => {
     if (!loaded) return;
     if (typeof window === "undefined") return;
@@ -204,9 +216,7 @@ const StoreConsolePage: React.FC = () => {
   const handleChange =
     (key: keyof FormState) =>
     (
-      e: ChangeEvent<
-        HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
-      >
+      e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
     ) => {
       const value = e.target.value;
       setState((prev) => ({
@@ -222,9 +232,9 @@ const StoreConsolePage: React.FC = () => {
     }));
   };
 
-  // Avatar 選択時：プレビュー → Storage → stores.avatar_url 更新
+  // Avatar 選択：プレビュー → Storage → stores.avatar_url 更新
   const handleAvatarFileSelect = async (file: File) => {
-    // まずは即時プレビュー（Base64）
+    // 即時プレビュー
     try {
       const reader = new FileReader();
       reader.onload = () => {
@@ -241,32 +251,24 @@ const StoreConsolePage: React.FC = () => {
       console.warn("[StoreConsole] avatar preview error:", e);
     }
 
-    // storeId が無ければサーバーには書き込めない
     if (!storeId) return;
 
     try {
       setAvatarUploading(true);
 
-      // Storage へのアップロード。ID は stores.id をそのまま使ってOK。
       const publicUrl = await uploadAvatar(file, storeId);
 
       const { error } = await supabase
         .from("stores")
-        .update({ avatar_url: publicUrl })
+        .update({ avatar_url: publicUrl } as any)
         .eq("id", storeId);
 
       if (error) {
-        console.error(
-          "[StoreConsole] failed to update stores.avatar_url:",
-          error
-        );
-        alert(
-          "アイコン画像の保存に失敗しました。時間をおいて再度お試しください。"
-        );
+        console.error("[StoreConsole] failed to update stores.avatar_url:", error);
+        alert("アイコン画像の保存に失敗しました。時間をおいて再度お試しください。");
         return;
       }
 
-      // 最終的には Storage URL で上書き
       setState((prev) => ({
         ...prev,
         avatarDataUrl: publicUrl,
@@ -281,13 +283,12 @@ const StoreConsolePage: React.FC = () => {
 
   const canSave = state.storeName.trim().length > 0;
 
-  // 「この内容で保存する」クリック時：stores テーブル更新
+  // 保存：stores テーブル更新
   const handleSave = async () => {
     if (!storeId) {
       alert("店舗IDが取得できませんでした。URLをご確認ください。");
       return;
     }
-
     if (!canSave) return;
 
     try {
@@ -295,45 +296,36 @@ const StoreConsolePage: React.FC = () => {
 
       const payload: Partial<DbStoreRow> = {
         name: state.storeName || null,
-        catch_copy: state.catchCopy || null,
         area: state.area || null,
-        visit_type: state.visitType,
         website_url: state.websiteUrl || null,
         line_url: state.lineUrl || null,
-        intro: state.intro || null,
         avatar_url: state.avatarDataUrl || null,
-        reserve_notice: state.reserveNotice,
-        dm_notice: state.dmNotice,
-        review_notice: state.reviewNotice,
-      };
 
-      const { error } = await supabase
-        .from("stores")
-        .update(payload)
-        .eq("id", storeId);
+        // 追加
+        x_url: state.xUrl || null,
+        twicas_url: state.twicas_url || null,
+
+        dm_notice: state.dmNotice,
+      } as any;
+
+      const { error } = await supabase.from("stores").update(payload as any).eq("id", storeId);
 
       if (error) {
         console.error("[StoreConsole] failed to update stores:", error);
-        alert(
-          "店舗情報の保存に失敗しました。時間をおいて再度お試しください。"
-        );
+        alert("店舗情報の保存に失敗しました。時間をおいて再度お試しください。");
         return;
       }
 
-      alert(
-        "店舗情報を保存しました。（この端末と LoomRoom アカウントの両方に保存されています）"
-      );
+      alert("店舗情報を保存しました。");
     } catch (e) {
       console.error("[StoreConsole] handleSave error:", e);
-      alert(
-        "店舗情報の保存に失敗しました。通信環境をご確認ください。"
-      );
+      alert("店舗情報の保存に失敗しました。通信環境をご確認ください。");
     } finally {
       setSaving(false);
     }
   };
 
-  // 候補セラピストをこの店舗に紐づけ
+  // 候補セラピストを紐づけ
   const handleAttachTherapist = async (therapistId: string) => {
     if (!storeId) return;
     try {
@@ -341,7 +333,6 @@ const StoreConsolePage: React.FC = () => {
       const updated = await attachTherapistToStore(therapistId, storeId);
       if (!updated) return;
 
-      // 在籍リストへ追加 / 候補から削除
       setTherapists((prev) => [...prev, updated]);
       setCandidates((prev) => prev.filter((t) => t.id !== therapistId));
     } catch (e) {
@@ -385,23 +376,13 @@ const StoreConsolePage: React.FC = () => {
                   種別: 女性向けリラクゼーション
                 </div>
               </div>
+
               {avatarUploading && (
                 <div className="store-sub-pill store-sub-pill--soft">
                   アイコン画像を保存しています…
                 </div>
               )}
             </div>
-          </div>
-
-          <div className="field-row">
-            <label className="field-label">一言キャッチ（任意）</label>
-            <input
-              type="text"
-              className="field-input"
-              value={state.catchCopy}
-              onChange={handleChange("catchCopy")}
-              placeholder="例）静かな時間と甘やかしのデートを"
-            />
           </div>
         </section>
 
@@ -418,18 +399,6 @@ const StoreConsolePage: React.FC = () => {
               onChange={handleChange("area")}
               placeholder="例）名古屋 / 関西 / オンラインメイン など"
             />
-          </div>
-
-          <div className="field-row">
-            <label className="field-label">対応スタイル</label>
-            <select
-              className="field-input"
-              value={state.visitType}
-              onChange={handleChange("visitType")}
-            >
-              <option value="offline">対面（訪問 / 来店）メイン</option>
-              <option value="online">オンラインメイン</option>
-            </select>
           </div>
 
           <div className="field-row">
@@ -453,41 +422,35 @@ const StoreConsolePage: React.FC = () => {
               placeholder="https://lin.ee/..."
             />
           </div>
-        </section>
 
-        {/* 店舗紹介 */}
-        <section className="store-card">
-          <div className="store-section-title">店舗紹介（任意）</div>
-          <textarea
-            className="field-textarea"
-            value={state.intro}
-            onChange={handleChange("intro")}
-            placeholder="お店の雰囲気や大切にしていることを書いてみてください"
-          />
+          {/* 追加：X */}
+          <div className="field-row">
+            <label className="field-label">X（旧Twitter）URL（任意）</label>
+            <input
+              type="url"
+              className="field-input"
+              value={state.xUrl}
+              onChange={handleChange("xUrl")}
+              placeholder="https://x.com/..."
+            />
+          </div>
+
+          {/* 追加：ツイキャス */}
+          <div className="field-row">
+            <label className="field-label">ツイキャスURL（任意）</label>
+            <input
+              type="url"
+              className="field-input"
+              value={state.twicas_url}
+              onChange={handleChange("twicas_url")}
+              placeholder="https://twitcasting.tv/..."
+            />
+          </div>
         </section>
 
         {/* 通知設定 */}
         <section className="store-card">
           <div className="store-section-title">通知設定</div>
-
-          <div className="toggle-row" onClick={handleToggle("reserveNotice")}>
-            <div className="toggle-main">
-              <div className="toggle-title">予約に関する通知</div>
-              <div className="toggle-caption">
-                予約が入ったときに通知を受け取ります（外部システムの場合もメモとして利用できます）
-              </div>
-            </div>
-            <div className="toggle-switch">
-              <div
-                className="toggle-knob"
-                style={{
-                  transform: state.reserveNotice
-                    ? "translateX(20px)"
-                    : "translateX(0)",
-                }}
-              />
-            </div>
-          </div>
 
           <div className="toggle-row" onClick={handleToggle("dmNotice")}>
             <div className="toggle-main">
@@ -496,34 +459,13 @@ const StoreConsolePage: React.FC = () => {
                 セラピスト / ユーザーからのDMに関する通知を受け取ります
               </div>
             </div>
-            <div className="toggle-switch">
-              <div
-                className="toggle-knob"
-                style={{
-                  transform: state.dmNotice
-                    ? "translateX(20px)"
-                    : "translateX(0)",
-                }}
-              />
-            </div>
-          </div>
 
-          <div className="toggle-row" onClick={handleToggle("reviewNotice")}>
-            <div className="toggle-main">
-              <div className="toggle-title">レビューの通知</div>
-              <div className="toggle-caption">
-                店舗やセラピストにレビューがついたときに通知を受け取ります
-              </div>
-            </div>
-            <div className="toggle-switch">
-              <div
-                className="toggle-knob"
-                style={{
-                  transform: state.reviewNotice
-                    ? "translateX(20px)"
-                    : "translateX(0)",
-                }}
-              />
+            <div
+              className={
+                "toggle-switch" + (state.dmNotice ? " is-on" : "")
+              }
+            >
+              <div className="toggle-knob" />
             </div>
           </div>
         </section>
@@ -535,7 +477,6 @@ const StoreConsolePage: React.FC = () => {
             この店舗で一緒に活動するセラピストを選ぶことができます。
           </p>
 
-          {/* 在籍中 */}
           <div className="therapist-block">
             <h3 className="therapist-block-title">
               現在いっしょに活動しているセラピスト
@@ -565,7 +506,6 @@ const StoreConsolePage: React.FC = () => {
             )}
           </div>
 
-          {/* 仮参加中（候補） */}
           <div className="therapist-block">
             <h3 className="therapist-block-title">仮参加中のセラピスト</h3>
             <p className="therapist-helper">
@@ -596,9 +536,7 @@ const StoreConsolePage: React.FC = () => {
                       onClick={() => handleAttachTherapist(t.id)}
                       disabled={attachTargetId === t.id}
                     >
-                      {attachTargetId === t.id
-                        ? "紐づけ中…"
-                        : "この店舗に紐づける"}
+                      {attachTargetId === t.id ? "紐づけ中…" : "この店舗に紐づける"}
                     </button>
                   </li>
                 ))}
@@ -694,17 +632,6 @@ const StoreConsolePage: React.FC = () => {
           background: #fff;
         }
 
-        .field-textarea {
-          width: 100%;
-          border-radius: 12px;
-          border: 1px solid var(--border);
-          padding: 8px 10px;
-          font-size: 13px;
-          min-height: 80px;
-          resize: none;
-          background: #fff;
-        }
-
         .store-save-wrap {
           margin-top: 16px;
           padding-bottom: 24px;
@@ -728,7 +655,70 @@ const StoreConsolePage: React.FC = () => {
           cursor: default;
         }
 
-        /* セラピスト管理エリア */
+        .toggle-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 10px 10px;
+          border-radius: 12px;
+          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
+          border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.04));
+          cursor: pointer;
+        }
+
+        .toggle-main {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .toggle-title {
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .toggle-caption {
+          font-size: 11px;
+          color: var(--text-sub);
+          line-height: 1.5;
+        }
+
+        .toggle-switch {
+          width: 44px;
+          height: 24px;
+          border-radius: 999px;
+          background: #e5e5e5;          /* OFF時：グレー */
+          position: relative;
+          transition: background 0.2s ease;
+          flex-shrink: 0;
+        }
+
+        .toggle-switch.is-on {
+          background: linear-gradient(
+            135deg,
+            #e6c87a,
+            #d7b976
+          );
+        } 
+
+        .toggle-knob {
+          width: 20px;
+          height: 20px;
+          border-radius: 999px;
+          background: #9ca3af;          /* OFF時ノブ */
+          position: absolute;
+          top: 2px;
+          left: 2px;
+          transition: transform 0.2s ease, background 0.2s ease;
+        }
+
+        .toggle-switch.is-on .toggle-knob {
+          transform: translateX(20px);
+          background: #ffffff;          /* ON時ノブ */
+        }
+          
         .therapist-card {
           margin-top: 16px;
         }
@@ -793,7 +783,7 @@ const StoreConsolePage: React.FC = () => {
           font-size: 11px;
           padding: 3px 8px;
           border-radius: 999px;
-          border: 1px solid rgba(0, 0, 0, 0.08);
+          border: 1px solid rgba(0, 0, 0, 0.08));
         }
 
         .therapist-attach-btn {

@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import BottomNav from "@/components/BottomNav";
 import AppHeader from "@/components/AppHeader";
@@ -143,6 +143,9 @@ const PublicMyPage: React.FC = () => {
     handle: `@${userId}`,
   }));
   const [loading, setLoading] = useState<boolean>(true);
+  // ★追加：role別の実体ID（stores.id / therapists.id）を保持
+  const [storeId, setStoreId] = useState<string | null>(null);
+  const [therapistId, setTherapistId] = useState<string | null>(null);
 
   const [posts, setPosts] = useState<UserPost[]>([]);
   const [postError, setPostError] = useState<string | null>(null);
@@ -163,125 +166,126 @@ const PublicMyPage: React.FC = () => {
   }, []);
 
   // ▼ Supabase からプロフィール取得
-  useEffect(() => {
-    let cancelled = false;
+useEffect(() => {
+  let cancelled = false;
 
-    const fetchProfile = async () => {
-      try {
-        setLoading(true);
+  const fetchProfile = async () => {
+    try {
+      setLoading(true);
 
-        // 1) users を取得
-        const { data: user, error: userError } = await supabase
-          .from("users")
-          .select("id, name, role, avatar_url")
-          .eq("id", userId)
+      // ★ role 切替時に古いIDが残らないようリセット
+      setTherapistId(null);
+      setStoreId(null);
+
+      // 1) users を取得
+      const { data: user, error: userError } = await supabase
+        .from("users")
+        .select("id, name, role, avatar_url")
+        .eq("id", userId)
+        .maybeSingle();
+
+      if (cancelled) return;
+
+      if (userError) {
+        console.error("Supabase users fetch error:", userError);
+        return;
+      }
+
+      const u = user as DbUserRow | null;
+      if (!u) return;
+
+      let baseProfile: UserProfile = {
+        ...DEFAULT_PROFILE,
+        handle: `@${userId}`,
+        displayName:
+          u.name ??
+          (u.role === "store"
+            ? "店舗アカウント"
+            : u.role === "therapist"
+            ? "セラピスト"
+            : "ユーザー"),
+        accountType: "会員",
+        role: (u.role as UserProfile["role"]) ?? "user",
+        avatarDataUrl: u.avatar_url ?? undefined,
+        area: "",
+      };
+
+      // 2) role に応じて therapists / stores も見る
+      if (u.role === "therapist") {
+        const { data: t, error: tError } = await supabase
+          .from("therapists")
+          .select("id, display_name, area, profile")
+          .eq("user_id", userId)
           .maybeSingle();
 
-        if (cancelled) return;
+        if (!cancelled && !tError && t) {
+          const th = t as (DbTherapistRow & { id: string });
 
-        if (userError) {
-          console.error("Supabase users fetch error:", userError);
-          setLoading(false);
-          return;
+          // ★ therapistId を保持（console遷移などに使える）
+          setTherapistId(th.id);
+
+          const areaValue: Area = knownAreas.includes((th.area ?? "") as Area)
+            ? ((th.area as Area) ?? "")
+            : "";
+
+          baseProfile = {
+            ...baseProfile,
+            displayName: th.display_name ?? baseProfile.displayName,
+            area: areaValue,
+            intro:
+              th.profile && th.profile.trim().length > 0
+                ? th.profile
+                : baseProfile.intro,
+          };
         }
+      } else if (u.role === "store") {
+        const { data: s, error: sError } = await supabase
+          .from("stores")
+          .select("id, name, area, description")
+          .eq("owner_user_id", userId)
+          .maybeSingle();
 
-        const u = user as DbUserRow | null;
+        if (!cancelled && !sError && s) {
+          const st = s as (DbStoreRow & { id: string });
 
-        if (!u) {
-          setLoading(false);
-          return;
-        }
+          // ★ storeId を保持（console遷移などに使える）
+          setStoreId(st.id);
 
-        let baseProfile: UserProfile = {
-          ...DEFAULT_PROFILE,
-          handle: `@${userId}`,
-          displayName:
-            u.name ??
-            (u.role === "store"
-              ? "店舗アカウント"
-              : u.role === "therapist"
-              ? "セラピスト"
-              : "ユーザー"),
-          accountType: "会員",
-          role: (u.role as UserProfile["role"]) ?? "user",
-          avatarDataUrl: u.avatar_url ?? undefined,
-          area: "",
-        };
+          const areaValue: Area = knownAreas.includes((st.area ?? "") as Area)
+            ? ((st.area as Area) ?? "")
+            : "";
 
-        // 2) role に応じて therapists / stores も見る
-        if (u.role === "therapist") {
-          const { data: t, error: tError } = await supabase
-            .from("therapists")
-            .select("display_name, area, profile")
-            .eq("user_id", userId)
-            .maybeSingle();
-
-          if (!cancelled && !tError && t) {
-            const th = t as DbTherapistRow;
-
-            const areaValue: Area = knownAreas.includes(
-              (th.area ?? "") as Area
-            )
-              ? ((th.area as Area) ?? "")
-              : "";
-
-            baseProfile = {
-              ...baseProfile,
-              displayName: th.display_name ?? baseProfile.displayName,
-              area: areaValue,
-              intro:
-                th.profile && th.profile.trim().length > 0
-                  ? th.profile
-                  : baseProfile.intro,
-            };
-          }
-        } else if (u.role === "store") {
-          const { data: s, error: sError } = await supabase
-            .from("stores")
-            .select("name, area, description")
-            .eq("owner_user_id", userId)
-            .maybeSingle();
-
-          if (!cancelled && !sError && s) {
-            const st = s as DbStoreRow;
-
-            const areaValue: Area = knownAreas.includes(
-              (st.area ?? "") as Area
-            )
-              ? ((st.area as Area) ?? "")
-              : "";
-
-            baseProfile = {
-              ...baseProfile,
-              displayName: st.name ?? baseProfile.displayName,
-              area: areaValue,
-              intro:
-                st.description && st.description.trim().length > 0
-                  ? st.description
-                  : baseProfile.intro,
-            };
-          }
-        }
-
-        setProfile((prev) => ({
-          ...prev,
-          ...baseProfile,
-        }));
-      } catch (e) {
-        console.error("Supabase profile unexpected error:", e);
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
+          baseProfile = {
+            ...baseProfile,
+            displayName: st.name ?? baseProfile.displayName,
+            area: areaValue,
+            intro:
+              st.description && st.description.trim().length > 0
+                ? st.description
+                : baseProfile.intro,
+          };
         }
       }
-    };
 
-    fetchProfile();
+      if (cancelled) return;
 
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
+      setProfile((prev) => ({
+        ...prev,
+        ...baseProfile,
+      }));
+    } catch (e) {
+      console.error("Supabase profile unexpected error:", e);
+    } finally {
+      if (!cancelled) setLoading(false);
+    }
+  };
+
+  fetchProfile();
+
+  return () => {
+    cancelled = true;
+  };
+}, [userId]);
 
   // ▼ 自分と userId の relations を復元（uuid 同士かつ別人のときだけ）
   useEffect(() => {
@@ -524,12 +528,30 @@ const PublicMyPage: React.FC = () => {
                     )}
 
                     {currentUserId === userId && (
-                      <Link
-                        href={`/mypage/${userId}/console`}
-                        className="edit-inline-btn no-link-style"
-                      >
-                        ✎
-                      </Link>
+                      <>
+                        {profile.role === "store" && storeId ? (
+                          <Link
+                            href={`/store/${storeId}/console`}
+                            className="edit-inline-btn no-link-style"
+                          >
+                            ✎
+                          </Link>
+                        ) : profile.role === "therapist" && therapistId ? (
+                          <Link
+                            href={`/therapist/${therapistId}/console`}
+                            className="edit-inline-btn no-link-style"
+                          >
+                            ✎
+                          </Link>
+                        ) : (
+                          <Link
+                            href={`/mypage/${userId}/console`}
+                            className="edit-inline-btn no-link-style"
+                          >
+                            ✎
+                          </Link>
+                        )}
+                      </>
                     )}
                   </span>
                 </div>

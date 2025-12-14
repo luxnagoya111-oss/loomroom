@@ -78,21 +78,20 @@ export default function ConfirmClient() {
     const run = async () => {
       try {
         // 0) hash にエラー情報が来ている（例：otp_expired）
-        if (params.error) {
-          const reason =
-            params.error_code || params.error_description || params.error;
-          setFailure(
-            `確認に失敗しました。リンクの期限切れ・無効の可能性があります。（${reason}）`
-          );
-          return;
-        }
-
-        // 1) code=...（PKCE / email link）
         if (params.code) {
-          const { data, error } = await supabase.auth.exchangeCodeForSession(
-            params.code
-          );
-          if (error) throw error;
+          const { data, error } = await supabase.auth.exchangeCodeForSession(params.code);
+
+          if (error) {
+            const msg = String(error?.message ?? "");
+            // ★ PKCEの code_verifier が無い典型
+            if (msg.includes("code verifier") || msg.includes("code_verifier")) {
+              setFailure(
+                "確認に失敗しました。登録したときと同じ端末・同じブラウザでリンクを開いてください。別端末で開いた場合は、ログイン画面から確認メールを再送してください。（code_verifier_missing）"
+              );
+              return;
+            }
+            throw error;
+          }
 
           const userId =
             (data as any)?.user?.id ||
