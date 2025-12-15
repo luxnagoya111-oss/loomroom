@@ -1,6 +1,8 @@
+// app/therapist/[id]/console/page.tsx
 "use client";
 
 import React, { useEffect, useState, ChangeEvent } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import AvatarUploader from "@/components/AvatarUploader";
 import BottomNav from "@/components/BottomNav";
@@ -22,91 +24,110 @@ type Area =
 
 type TherapistProfile = {
   displayName: string;
-  handle: string;
   area: Area | "";
-  intro: string;
-  messagePolicy: string;
+  intro: string; // UI上は intro のまま。DBには profile として保存する
   snsX?: string;
   snsLine?: string;
   snsOther?: string;
   avatarDataUrl?: string;
+  dmNotice: boolean;
 };
 
-// Supabase therapists テーブルの型（想定カラム名）
-// 必要に応じて、実際のテーブルに合わせてリネームしてください。
+// DB: therapists テーブル
 type DbTherapistRow = {
+  id: string;
+  user_id: string;
   display_name: string | null;
-  handle: string | null;
   area: string | null;
-  intro: string | null;
-  message_policy: string | null;
+  profile: string | null;
+  avatar_url: string | null;
   sns_x: string | null;
   sns_line: string | null;
   sns_other: string | null;
+  dm_notice: boolean | null;
+  store_id?: string | null;
+};
+
+type DbStoreLite = {
+  id: string;
+  name: string | null;
   avatar_url: string | null;
+};
+
+type DbTherapistStoreRequestRow = {
+  id: string;
+  store_id: string;
+  therapist_id: string;
+  status: "pending" | "approved" | "rejected" | "cancelled" | string;
+  created_at: string;
+  store?: DbStoreLite | null;
 };
 
 const STORAGE_PREFIX = "loomroom_therapist_profile_";
 
-const DEFAULT_PROFILES: Record<string, TherapistProfile> = {
-  taki: {
-    displayName: "TAKI",
-    handle: "@taki_lux",
-    area: "中部",
-    intro:
-      "「大丈夫かな」と力が入りすぎてしまう方が、少しずつ呼吸をゆるめられる時間をイメージしています。",
-    messagePolicy:
-      "返信はできるだけ当日中を心がけていますが、遅くなることもあります。ゆっくりお待ちいただけたら嬉しいです。",
-    snsX: "https://x.com/taki_lux",
-    snsLine: "",
-    snsOther: "",
-  },
-  default: {
-    displayName: "セラピスト",
-    handle: "@loomroom_therapist",
-    area: "中部",
-    intro:
-      "落ち着いた会話と、静かに安心できる時間を大切にしています。はじめての方も、そのままの言葉で大丈夫です。",
-    messagePolicy:
-      "メッセージはなるべく早くお返事しますが、少しお時間をいただくこともあります。",
-    snsX: "",
-    snsLine: "",
-    snsOther: "",
-  },
+const DEFAULT_PROFILE: TherapistProfile = {
+  displayName: "",
+  area: "",
+  intro: "",
+  snsX: "",
+  snsLine: "",
+  snsOther: "",
+  dmNotice: true,
 };
+
+type ModalMode = "cancel_request" | "detach" | null;
 
 const TherapistConsolePage: React.FC = () => {
   const params = useParams<{ id: string }>();
-  const therapistId = (params?.id as string) || "taki"; // URLの [id]。therapists.slug 想定
+  const therapistId = (params?.id as string) || ""; // URLの [id] = therapists.id(uuid)
   const storageKey = `${STORAGE_PREFIX}${therapistId}`;
 
-  const [data, setData] = useState<TherapistProfile>(() => {
-    return DEFAULT_PROFILES[therapistId] || DEFAULT_PROFILES.default;
-  });
+  const [data, setData] = useState<TherapistProfile>(() => DEFAULT_PROFILE);
+
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
+
+  // ★追加：therapists.user_id を保持（保存時に users.name 更新に使う）
+  const [therapistUserId, setTherapistUserId] = useState<string | null>(null);
+
+  // ===== 店舗とのつながり =====
+  const [loadingLink, setLoadingLink] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+
+  // therapists.store_id
+  const [linkedStoreId, setLinkedStoreId] = useState<string | null>(null);
+  const [linkedStore, setLinkedStore] = useState<DbStoreLite | null>(null);
+
+  // therapist_store_requests（pending）
+  const [pendingRequest, setPendingRequest] =
+    useState<DbTherapistStoreRequestRow | null>(null);
+
+  // ===== パスワード必須モーダル（キャンセル/解除 共通）=====
+  const [modalMode, setModalMode] = useState<ModalMode>(null);
+  const [modalPassword, setModalPassword] = useState("");
+  const [modalBusy, setModalBusy] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
 
   const updateField = <K extends keyof TherapistProfile>(
     key: K,
     value: TherapistProfile[K]
   ) => {
-    setData((prev) => ({
-      ...prev,
-      [key]: value,
-    }));
+    setData((prev) => ({ ...prev, [key]: value }));
   };
 
-  // ① localStorage から復元（旧仕様との互換）
+  // ① localStorage 復元（互換）
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       const raw = window.localStorage.getItem(storageKey);
       if (raw) {
-        const parsed = JSON.parse(raw) as TherapistProfile;
+        const parsed = JSON.parse(raw) as Partial<TherapistProfile>;
         setData((prev) => ({
           ...prev,
           ...parsed,
+          dmNotice:
+            typeof parsed.dmNotice === "boolean" ? parsed.dmNotice : prev.dmNotice,
         }));
       }
     } catch (e) {
@@ -116,8 +137,10 @@ const TherapistConsolePage: React.FC = () => {
     }
   }, [storageKey]);
 
-  // ② Supabase therapists から基本プロフィールを取得
+  // ② Supabase therapists から取得（★ id）
   useEffect(() => {
+    if (!therapistId) return;
+
     let cancelled = false;
 
     const loadTherapistFromSupabase = async () => {
@@ -125,35 +148,43 @@ const TherapistConsolePage: React.FC = () => {
         const { data: dbRow, error } = await supabase
           .from("therapists")
           .select(
-            "display_name, handle, area, intro, message_policy, sns_x, sns_line, sns_other, avatar_url"
+            "id, user_id, display_name, area, profile, avatar_url, sns_x, sns_line, sns_other, dm_notice, store_id"
           )
-          .eq("slug", therapistId) // therapists.slug が URL の [id] 想定
+          .eq("id", therapistId)
           .maybeSingle<DbTherapistRow>();
 
         if (cancelled) return;
 
         if (error) {
-          console.error("[TherapistConsole] loadTherapist error:", error);
+          console.error("[TherapistConsole] loadTherapist error:", {
+            message: (error as any)?.message,
+            code: (error as any)?.code,
+            details: (error as any)?.details,
+            hint: (error as any)?.hint,
+          });
           return;
         }
         if (!dbRow) return;
 
+        // ★ user_id を保持
+        setTherapistUserId(dbRow.user_id ?? null);
+
         setData((prev) => ({
           ...prev,
           displayName: dbRow.display_name ?? prev.displayName,
-          handle: dbRow.handle ?? prev.handle,
           area: (dbRow.area as Area) ?? prev.area,
-          intro: dbRow.intro ?? prev.intro,
-          messagePolicy: dbRow.message_policy ?? prev.messagePolicy,
+          intro: dbRow.profile ?? prev.intro,
           snsX: dbRow.sns_x ?? prev.snsX,
           snsLine: dbRow.sns_line ?? prev.snsLine,
           snsOther: dbRow.sns_other ?? prev.snsOther,
           avatarDataUrl: dbRow.avatar_url ?? prev.avatarDataUrl,
+          dmNotice:
+            typeof dbRow.dm_notice === "boolean" ? dbRow.dm_notice : prev.dmNotice,
         }));
+
+        setLinkedStoreId((dbRow as any).store_id ?? null);
       } catch (e) {
-        if (!cancelled) {
-          console.error("[TherapistConsole] loadTherapist exception:", e);
-        }
+        if (!cancelled) console.error("[TherapistConsole] loadTherapist exception:", e);
       }
     };
 
@@ -163,136 +194,424 @@ const TherapistConsolePage: React.FC = () => {
     };
   }, [therapistId]);
 
-  // ③ Avatar 選択時：即プレビュー → Storage アップロード → therapists.avatar_url 更新
+  // ③ 店舗とのつながり：取得
+  const loadConnectionState = async (tid: string) => {
+    setLoadingLink(true);
+    setLinkError(null);
+
+    try {
+      const { data: tRow, error: tErr } = await supabase
+        .from("therapists")
+        .select("id, store_id")
+        .eq("id", tid)
+        .maybeSingle<{ id: string; store_id: string | null }>();
+
+      if (tErr) throw tErr;
+
+      const storeId = tRow?.store_id ?? null;
+      setLinkedStoreId(storeId);
+
+      if (storeId) {
+        const { data: sRow, error: sErr } = await supabase
+          .from("stores")
+          .select("id, name, avatar_url")
+          .eq("id", storeId)
+          .maybeSingle<DbStoreLite>();
+
+        if (sErr) throw sErr;
+
+        setLinkedStore(sRow ?? null);
+        setPendingRequest(null);
+        return;
+      }
+
+      const { data: reqRow, error: rErr } = await supabase
+        .from("therapist_store_requests")
+        .select(
+          "id, store_id, therapist_id, status, created_at, store:stores(id, name, avatar_url)"
+        )
+        .eq("therapist_id", tid)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle<DbTherapistStoreRequestRow>();
+
+      if (rErr) throw rErr;
+
+      setPendingRequest(reqRow ?? null);
+      setLinkedStore(null);
+    } catch (e: any) {
+      console.error("[TherapistConsole] loadConnectionState failed:", e);
+      setLinkError(e?.message ?? "店舗とのつながり情報の取得に失敗しました。");
+      setLinkedStore(null);
+      setPendingRequest(null);
+      setLinkedStoreId(null);
+    } finally {
+      setLoadingLink(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!therapistId) return;
+    let cancelled = false;
+
+    (async () => {
+      await loadConnectionState(therapistId);
+      if (cancelled) return;
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [therapistId]);
+
+  // ④ Avatar：Storage → therapists.avatar_url 更新
   const handleAvatarFileSelect = async (file: File) => {
     try {
-      // まずはローカルプレビュー（Base64）を即反映
       const reader = new FileReader();
       reader.onload = () => {
-        if (typeof reader.result === "string") {
-          updateField("avatarDataUrl", reader.result);
-        }
+        if (typeof reader.result === "string") updateField("avatarDataUrl", reader.result);
       };
       reader.readAsDataURL(file);
-    } catch (e) {
-      console.warn("[TherapistConsole] preview read error:", e);
-    }
+    } catch {}
 
-    // Storage ＋ DB 更新
     try {
       setAvatarUploading(true);
 
-      // Storage パスには therapistId をそのまま使う（uploadAvatar 内で users/{id}/... だが、
-      // 「id」として therapistId を流用して問題はない）
       const publicUrl = await uploadAvatar(file, therapistId);
 
       const { error } = await supabase
         .from("therapists")
         .update({ avatar_url: publicUrl })
-        .eq("slug", therapistId);
+        .eq("id", therapistId);
 
       if (error) {
-        console.error(
-          "[TherapistConsole] failed to update therapists.avatar_url:",
-          error
-        );
-        alert(
-          "アイコン画像をサーバーに保存できませんでした。時間をおいて再度お試しください。"
-        );
+        console.error("[TherapistConsole] failed to update therapists.avatar_url:", error);
+        alert("アイコン画像をサーバーに保存できませんでした。");
         return;
       }
 
-      // 最終的には Storage の URL を反映
       updateField("avatarDataUrl", publicUrl);
     } catch (e) {
       console.error("[TherapistConsole] handleAvatarFileSelect error:", e);
-      alert("画像のアップロードに失敗しました。通信環境をご確認ください。");
+      alert("画像のアップロードに失敗しました。");
     } finally {
       setAvatarUploading(false);
+    }
+  };
+
+  // ★ 正規化ルール：displayName 更新時に users.name も上書き
+  const syncUserNameIfPossible = async (nextDisplayName: string) => {
+    const name = (nextDisplayName ?? "").trim();
+    if (!name) return;
+
+    if (!therapistUserId) {
+      // user_id がまだ取れてない場合は何もしない（保存自体は続行）
+      console.warn("[TherapistConsole] therapistUserId is missing; skip users.name sync");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("users")
+      .update({ name })
+      .eq("id", therapistUserId);
+
+    if (error) {
+      console.error("[TherapistConsole] failed to update users.name:", {
+        message: (error as any)?.message,
+        code: (error as any)?.code,
+        details: (error as any)?.details,
+        hint: (error as any)?.hint,
+      });
+      throw error;
     }
   };
 
   const handleSave = async () => {
     if (typeof window === "undefined") return;
 
-    // 1) 端末ローカルに保存（旧仕様互換）
+    // 1) localStorage 保存（互換）
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(data));
     } catch (e) {
       console.warn("Failed to save therapist profile (localStorage)", e);
-      alert("ローカル保存に失敗しました。ストレージ容量などをご確認ください。");
+      alert("ローカル保存に失敗しました。");
     }
 
-    // 2) therapists テーブルに保存
+    // 2) Supabase 保存
     try {
       setSaving(true);
 
+      // 2-A) users.name 同期（失敗したら保存全体を止める方針）
+      await syncUserNameIfPossible(data.displayName);
+
+      // 2-B) therapists 更新（display_name も互換として同期）
       const updatePayload: Partial<DbTherapistRow> = {
-        display_name: data.displayName,
-        handle: data.handle,
+        display_name: (data.displayName || "").trim() || null,
         area: data.area || null,
-        intro: data.intro,
-        message_policy: data.messagePolicy,
+        profile: data.intro || null,
         sns_x: data.snsX || null,
         sns_line: data.snsLine || null,
         sns_other: data.snsOther || null,
-        // avatar_url はアイコン変更時に個別更新しているが、
-        // data.avatarDataUrl が Storage URL になっていればここで上書きしても良い
         avatar_url: data.avatarDataUrl || null,
+        dm_notice: !!data.dmNotice,
       };
 
-      const { error } = await supabase
+      const { data: updated, error } = await supabase
         .from("therapists")
         .update(updatePayload)
-        .eq("slug", therapistId);
+        .eq("id", therapistId)
+        .select("id")
+        .maybeSingle();
 
-      if (error) {
-        console.error("[TherapistConsole] failed to update therapists:", error);
-        alert(
-          "サーバー側のプロフィール保存に失敗しました。時間をおいて再度お試しください。"
-        );
-      } else {
-        alert(
-          "プロフィールを保存しました。（この端末と LoomRoom アカウントの両方に保存されています）"
-        );
+      if (error || !updated) {
+        console.error("[TherapistConsole] failed to update therapists:", {
+          message: (error as any)?.message,
+          code: (error as any)?.code,
+          details: (error as any)?.details,
+          hint: (error as any)?.hint,
+        });
+        alert("サーバー側のプロフィール保存に失敗しました。");
+        return;
       }
-    } catch (e) {
+
+      alert("プロフィールを保存しました。");
+    } catch (e: any) {
       console.error("[TherapistConsole] handleSave error:", e);
-      alert(
-        "サーバー側のプロフィール保存に失敗しました。通信環境をご確認ください。"
-      );
+      alert(e?.message ?? "サーバー側の保存に失敗しました。");
     } finally {
       setSaving(false);
     }
   };
 
+  // ====== パスワード必須モーダル（共通）======
+  const openModal = (mode: ModalMode) => {
+    setModalMode(mode);
+    setModalPassword("");
+    setModalError(null);
+    setModalBusy(false);
+  };
+  const closeModal = () => {
+    setModalMode(null);
+    setModalPassword("");
+    setModalError(null);
+    setModalBusy(false);
+  };
+
+  const reauthWithPassword = async (password: string) => {
+    const { data: userRes, error: userErr } = await supabase.auth.getUser();
+    if (userErr) throw userErr;
+
+    const email = userRes.user?.email;
+    if (!email) {
+      throw new Error("メール情報が取得できませんでした。再ログインしてからお試しください。");
+    }
+
+    const { error: signInErr } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (signInErr) {
+      throw new Error("パスワードが正しくありません。");
+    }
+  };
+
+  const doCancelRequest = async () => {
+    if (!therapistId) return;
+    if (!pendingRequest?.id) return;
+
+    setModalBusy(true);
+    setModalError(null);
+
+    try {
+      if (!modalPassword.trim()) {
+        setModalError("パスワードを入力してください。");
+        setModalBusy(false);
+        return;
+      }
+
+      await reauthWithPassword(modalPassword);
+
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_cancel_therapist_store_request",
+        { p_request_id: pendingRequest.id }
+      );
+      if (rpcErr) throw rpcErr;
+
+      setPendingRequest(null);
+      setLinkedStore(null);
+
+      closeModal();
+      await loadConnectionState(therapistId);
+    } catch (e: any) {
+      console.error("[TherapistConsole] cancel request failed:", e);
+      setModalError(e?.message ?? "申請のキャンセルに失敗しました。");
+      setModalBusy(false);
+    }
+  };
+
+  // ※ detach はあなたのRPC設計（store_id=null）に合わせて差し替える想定。
+  // 現状コードは pendingRequest 前提になっているので、今回は既存挙動を崩さず残します。
+  const doDetach = async () => {
+    if (!therapistId) return;
+
+    setModalBusy(true);
+    setModalError(null);
+
+    try {
+      if (!modalPassword.trim()) {
+        setModalError("パスワードを入力してください。");
+        setModalBusy(false);
+        return;
+      }
+
+      await reauthWithPassword(modalPassword);
+
+      if (!pendingRequest?.id) {
+        throw new Error("申請情報が取得できませんでした。");
+      }
+
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_cancel_therapist_store_request",
+        { p_request_id: pendingRequest.id }
+      );
+      if (rpcErr) throw rpcErr;
+
+      setPendingRequest(null);
+      setLinkedStore(null);
+
+      closeModal();
+      await loadConnectionState(therapistId);
+    } catch (e: any) {
+      console.error("[TherapistConsole] detach failed:", e);
+      setModalError(e?.message ?? "在籍解除に失敗しました。");
+      setModalBusy(false);
+    }
+  };
+
+  const pendingStore = pendingRequest?.store ?? null;
+
   return (
     <>
       <div className="app-shell">
-        {/* ヘッダー */}
         <header className="app-header">
-          <button
-            type="button"
-            className="header-icon-btn"
-            onClick={() => history.back()}
-          >
+          <button type="button" className="header-icon-btn" onClick={() => history.back()}>
             ←
           </button>
           <div className="app-header-center">
             <div className="app-title">セラピスト用コンソール</div>
-            <div className="app-header-sub">LoomRoom ID：@{therapistId}</div>
+            <div className="app-header-sub">Therapist ID：{therapistId}</div>
           </div>
           <div style={{ width: 30 }} />
         </header>
 
-        {/* メイン */}
         <main className="app-main therapist-console-main">
           {/* 店舗とのつながり */}
           <section className="surface-card tc-card">
-            <h2 className="tc-title">店舗とのつながり</h2>
-            <p className="tc-caption">
-              現在、新しい在籍リクエストは届いていません。
-            </p>
+            <div className="tc-head-row">
+              <h2 className="tc-title">店舗とのつながり</h2>
+              {loadingLink && <span className="tc-badge">読み込み中…</span>}
+            </div>
+
+            {linkError && <p className="tc-caption">{linkError}</p>}
+
+            {!!linkedStoreId && linkedStore && (
+              <div className="tc-link-card">
+                <Link href={`/store/${linkedStore.id}`} className="tc-link-left">
+                  <div
+                    className="tc-link-avatar"
+                    style={
+                      linkedStore.avatar_url
+                        ? {
+                            backgroundImage: `url(${linkedStore.avatar_url})`,
+                            backgroundSize: "cover",
+                            backgroundPosition: "center",
+                          }
+                        : undefined
+                    }
+                    aria-hidden="true"
+                  >
+                    {!linkedStore.avatar_url && (
+                      <span className="tc-link-avatar-text">
+                        {(linkedStore.name || "S").trim().charAt(0).toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="tc-link-meta">
+                    <div className="tc-link-name">{linkedStore.name || "店舗名未設定"}</div>
+                    <div className="tc-link-sub">
+                      <span className="tc-pill is-approved">在籍中</span>
+                      <span className="tc-link-hint">タップで店舗プロフィールへ</span>
+                    </div>
+                  </div>
+                </Link>
+
+                <div className="tc-link-right">
+                  <button
+                    type="button"
+                    className="tc-btn-danger-outline"
+                    onClick={() => openModal("detach")}
+                    disabled={loadingLink}
+                  >
+                    在籍解除
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!linkedStoreId && pendingRequest && pendingStore && (
+              <div className="tc-link-card">
+                <Link href={`/store/${pendingStore.id}`} className="tc-link-left">
+                  <div
+                    className="tc-link-avatar"
+                    style={
+                      pendingStore.avatar_url
+                        ? {
+                            backgroundImage: `url(${pendingStore.avatar_url})`,
+                            backgroundSize: "cover",
+                            backgroundPosition: "center",
+                          }
+                        : undefined
+                    }
+                    aria-hidden="true"
+                  >
+                    {!pendingStore.avatar_url && (
+                      <span className="tc-link-avatar-text">
+                        {(pendingStore.name || "S").trim().charAt(0).toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="tc-link-meta">
+                    <div className="tc-link-name">{pendingStore.name || "店舗名未設定"}</div>
+                    <div className="tc-link-sub">
+                      <span className="tc-pill is-pending">申請中</span>
+                      <span className="tc-link-hint">承認されると在籍になります</span>
+                    </div>
+                  </div>
+                </Link>
+
+                <div className="tc-link-right">
+                  <button
+                    type="button"
+                    className="tc-btn-outline"
+                    onClick={() => openModal("cancel_request")}
+                    disabled={loadingLink}
+                  >
+                    キャンセル
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!linkedStoreId && !pendingRequest && !loadingLink && (
+              <p className="tc-caption">現在、新しい在籍リクエストは届いていません。</p>
+            )}
+
+            {!!linkedStoreId && !linkedStore && !loadingLink && (
+              <p className="tc-caption">在籍情報を確認しています…</p>
+            )}
           </section>
 
           {/* 表示情報 */}
@@ -302,13 +621,12 @@ const TherapistConsolePage: React.FC = () => {
             <div className="tc-profile-row">
               <AvatarUploader
                 avatarDataUrl={data.avatarDataUrl}
-                displayName={data.displayName}
-                // Base64 を使ったローカル保存はもう不要なので onChange は渡さない
+                displayName={data.displayName || "T"}
                 onFileSelect={handleAvatarFileSelect}
               />
 
               <div className="tc-profile-main">
-                <div className="tc-id-pill">LoomRoom ID：@{therapistId}</div>
+                <div className="tc-id-pill">Therapist ID：{therapistId}</div>
 
                 <div className="field">
                   <label className="field-label">表示名</label>
@@ -321,10 +639,9 @@ const TherapistConsolePage: React.FC = () => {
                     placeholder="例）TAKI / Hiyo / ひより など"
                   />
                 </div>
+
                 {avatarUploading && (
-                  <div className="tc-caption">
-                    アイコン画像を保存しています…
-                  </div>
+                  <div className="tc-caption">アイコン画像を保存しています…</div>
                 )}
               </div>
             </div>
@@ -334,9 +651,7 @@ const TherapistConsolePage: React.FC = () => {
               <select
                 className="field-input"
                 value={data.area}
-                onChange={(e) =>
-                  updateField("area", e.target.value as TherapistProfile["area"])
-                }
+                onChange={(e) => updateField("area", e.target.value as Area)}
               >
                 <option value="">未設定</option>
                 <option value="北海道">北海道</option>
@@ -359,28 +674,30 @@ const TherapistConsolePage: React.FC = () => {
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
                   updateField("intro", e.target.value)
                 }
-                placeholder="例）緊張しやすい方・人見知りの方でも、呼吸がしやすくなる時間をイメージしています。"
+                placeholder="例）緊張しやすい方でも、呼吸がしやすくなる時間をイメージしています。"
               />
             </div>
           </section>
 
-          {/* メッセージについて */}
+          {/* DM通知 */}
           <section className="surface-card tc-card">
-            <h2 className="tc-title">メッセージについて</h2>
-
-            <div className="field">
-              <label className="field-label">返信のペースや考え方</label>
-              <textarea
-                className="field-input tc-textarea"
-                value={data.messagePolicy}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                  updateField("messagePolicy", e.target.value)
-                }
-                placeholder="例）できるだけ当日中にお返事しますが、夜遅い時間は翌日になることがあります。ゆっくりお待ちいただけたら嬉しいです。"
-              />
-              <div className="tc-caption">
-                DMの雰囲気やペースについて、安心してもらうための説明に使います。
+            <h2 className="tc-title">DM通知</h2>
+            <div className="dm-toggle-row">
+              <div className="dm-toggle-text">
+                <div className="dm-toggle-title">DM通知を受け取る</div>
+                <div className="tc-caption">
+                  ONにすると、新しいDMが届いたときに通知対象になります。
+                </div>
               </div>
+
+              <button
+                type="button"
+                className={"dm-switch" + (data.dmNotice ? " is-on" : " is-off")}
+                onClick={() => updateField("dmNotice", !data.dmNotice)}
+                aria-pressed={data.dmNotice}
+              >
+                <span className="dm-knob" />
+              </button>
             </div>
           </section>
 
@@ -423,19 +740,14 @@ const TherapistConsolePage: React.FC = () => {
                 placeholder="ツイキャス / プロフィールサイトなど"
               />
             </div>
-
-            <div className="tc-caption">
-              この端末だけでなく、LoomRoom アカウント側にも順次反映されます。
-            </div>
           </section>
         </main>
 
-        {/* フッター保存バー */}
         <footer className="tc-footer-bar">
           <button
             type="button"
             className="btn-primary btn-primary--full"
-            disabled={!loaded || saving}
+            disabled={!loaded || saving || !therapistId}
             onClick={handleSave}
           >
             {saving ? "保存中..." : loaded ? "プロフィールを保存する" : "読み込み中..."}
@@ -443,79 +755,372 @@ const TherapistConsolePage: React.FC = () => {
         </footer>
 
         <BottomNav active="mypage" hasUnread={hasUnread} />
-
-        {/* このページ専用のスタイル（差分だけ） */}
-        <style jsx>{`
-          .therapist-console-main {
-            padding: 12px 16px 140px;
-          }
-
-          .tc-card {
-          }
-
-          .tc-title {
-            font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            color: var(--text-sub);
-          }
-
-          .tc-profile-row {
-            display: flex;
-            gap: 12px;
-            align-items: flex-start;
-            margin-bottom: 8px;
-          }
-
-          .tc-profile-main {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-          }
-
-          .tc-id-pill {
-            display: inline-flex;
-            align-items: center;
-            padding: 2px 8px;
-            border-radius: 999px;
-            background: var(--surface-soft);
-            font-size: 11px;
-            color: var(--text-sub);
-          }
-
-          .tc-textarea {
-            min高さ: 80px;
-            line-height: 1.7;
-            resize: vertical;
-          }
-
-          .tc-caption {
-            font-size: 11px;
-            color: var(--text-sub);
-            margin-top: 4px;
-          }
-
-          .tc-footer-bar {
-            position: fixed;
-            bottom: 58px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 100%;
-            max-width: 430px;
-            padding: 8px 16px;
-            background: linear-gradient(
-              to top,
-              rgba(247, 247, 250, 0.98),
-              rgba(247, 247, 250, 0.88)
-            );
-            border-top: 1px solid var(--border);
-            display: flex;
-            justify-content: center;
-            z-index: 25;
-          }
-        `}</style>
       </div>
+
+      {/* ===== パスワード必須モーダル ===== */}
+      {modalMode && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <div className="modal-title">
+              {modalMode === "cancel_request" ? "申請キャンセルの確認" : "在籍解除の確認"}
+            </div>
+
+            <p className="modal-text">
+              {modalMode === "cancel_request"
+                ? "承認される前の在籍申請をキャンセルします。"
+                : "在籍を解除します。"}
+              <br />
+              誤操作防止のため、ログイン時のパスワードを入力してください。
+            </p>
+
+            <input
+              type="password"
+              className="modal-input"
+              placeholder="パスワード"
+              value={modalPassword}
+              onChange={(e) => setModalPassword(e.target.value)}
+              autoFocus
+            />
+
+            {modalError && <div className="modal-error">{modalError}</div>}
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="modal-cancel"
+                onClick={closeModal}
+                disabled={modalBusy}
+              >
+                キャンセル
+              </button>
+
+              <button
+                type="button"
+                className="modal-danger"
+                onClick={async () => {
+                  if (modalMode === "cancel_request") await doCancelRequest();
+                  if (modalMode === "detach") await doDetach();
+                }}
+                disabled={modalBusy}
+              >
+                {modalBusy
+                  ? "処理中…"
+                  : modalMode === "cancel_request"
+                  ? "キャンセルする"
+                  : "解除する"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* styles は既存のまま */}
+      <style jsx>{`
+        .therapist-console-main {
+          padding: 12px 16px 140px;
+        }
+        .tc-card {
+          margin-top: 12px;
+        }
+        .tc-title {
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 8px;
+          color: var(--text-sub);
+        }
+        .tc-profile-row {
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+          margin-bottom: 8px;
+        }
+        .tc-profile-main {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .tc-id-pill {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 8px;
+          border-radius: 999px;
+          background: var(--surface-soft);
+          font-size: 11px;
+          color: var(--text-sub);
+        }
+        .tc-textarea {
+          min-height: 80px;
+          line-height: 1.7;
+          resize: vertical;
+        }
+        .tc-caption {
+          font-size: 11px;
+          color: var(--text-sub);
+          margin-top: 4px;
+          line-height: 1.6;
+        }
+        .tc-footer-bar {
+          position: fixed;
+          bottom: 58px;
+          left: 50%;
+          transform: translateX(-50%);
+          width: 100%;
+          max-width: 430px;
+          padding: 8px 16px;
+          background: linear-gradient(
+            to top,
+            rgba(247, 247, 250, 0.98),
+            rgba(247, 247, 250, 0.88)
+          );
+          border-top: 1px solid var(--border);
+          display: flex;
+          justify-content: center;
+          z-index: 25;
+        }
+
+        .dm-toggle-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        .dm-toggle-text {
+          flex: 1;
+        }
+        .dm-toggle-title {
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 2px;
+        }
+        .dm-switch {
+          width: 48px;
+          height: 28px;
+          border-radius: 999px;
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          position: relative;
+          padding: 0;
+        }
+        .dm-switch.is-on {
+          background: linear-gradient(135deg, #d9b07c, #b4895a);
+        }
+        .dm-switch.is-off {
+          background: #d1d5db;
+        }
+        .dm-knob {
+          position: absolute;
+          top: 3px;
+          left: 3px;
+          width: 22px;
+          height: 22px;
+          border-radius: 999px;
+          background: #fff;
+          transition: transform 0.15s ease;
+        }
+        .dm-switch.is-on .dm-knob {
+          transform: translateX(20px);
+        }
+
+        .modal-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(15, 23, 42, 0.42);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+          z-index: 9999;
+        }
+        .modal-card {
+          width: 100%;
+          max-width: 420px;
+          border-radius: 16px;
+          background: #fff;
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+          padding: 12px;
+        }
+        .modal-title {
+          font-size: 13px;
+          font-weight: 700;
+          margin-bottom: 8px;
+        }
+        .modal-text {
+          font-size: 12px;
+          line-height: 1.7;
+          color: var(--text-sub);
+          margin: 0 0 10px;
+        }
+        .modal-input {
+          width: 100%;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          padding: 8px 12px;
+          font-size: 13px;
+          background: #fff;
+        }
+        .modal-error {
+          margin-top: 8px;
+          font-size: 12px;
+          color: #b91c1c;
+        }
+        .modal-actions {
+          margin-top: 12px;
+          display: flex;
+          gap: 8px;
+          justify-content: flex-end;
+        }
+        .modal-cancel {
+          font-size: 12px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(0, 0, 0, 0.14);
+          background: #fff;
+          cursor: pointer;
+        }
+        .modal-danger {
+          font-size: 12px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: none;
+          background: #ef4444;
+          color: #fff;
+          cursor: pointer;
+          box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25);
+        }
+        .modal-cancel[disabled],
+        .modal-danger[disabled] {
+          opacity: 0.6;
+          cursor: default;
+        }
+
+        :global(.no-link-style) {
+          color: inherit;
+          text-decoration: none;
+        }
+
+        .tc-head-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+        .tc-badge {
+          font-size: 11px;
+          color: var(--text-sub);
+          padding: 3px 8px;
+          border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.08));
+          border-radius: 999px;
+          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
+          white-space: nowrap;
+        }
+        .tc-link-card {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 10px 10px;
+          border-radius: 14px;
+          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
+          border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.06));
+          margin-top: 8px;
+        }
+        .tc-link-left {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+          text-decoration: none;
+          color: inherit;
+          flex: 1;
+        }
+        .tc-link-avatar {
+          width: 42px;
+          height: 42px;
+          border-radius: 999px;
+          border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.08));
+          background: #fff;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          overflow: hidden;
+        }
+        .tc-link-avatar-text {
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--text-sub);
+        }
+        .tc-link-meta {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          min-width: 0;
+        }
+        .tc-link-name {
+          font-size: 13px;
+          font-weight: 700;
+          line-height: 1.2;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .tc-link-sub {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+        .tc-link-hint {
+          font-size: 11px;
+          color: var(--text-sub);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .tc-pill {
+          font-size: 11px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          white-space: nowrap;
+        }
+        .tc-pill.is-approved {
+          background: rgba(215, 185, 118, 0.18);
+        }
+        .tc-pill.is-pending {
+          background: rgba(148, 163, 184, 0.18);
+        }
+        .tc-link-right {
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+        }
+        .tc-btn-outline {
+          font-size: 12px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(0, 0, 0, 0.14);
+          background: #fff;
+          color: var(--text-sub);
+          cursor: pointer;
+          white-space: nowrap;
+        }
+        .tc-btn-danger-outline {
+          font-size: 12px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(239, 68, 68, 0.35);
+          background: #fff;
+          color: #b91c1c;
+          cursor: pointer;
+          white-space: nowrap;
+        }
+        .tc-btn-outline:active,
+        .tc-btn-danger-outline:active {
+          transform: translateY(1px);
+        }
+      `}</style>
     </>
   );
 };

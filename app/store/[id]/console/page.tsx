@@ -1,3 +1,4 @@
+// app/store/[id]/console/page.tsx
 "use client";
 
 import React, { useState, useEffect, ChangeEvent } from "react";
@@ -9,11 +10,18 @@ import { supabase } from "@/lib/supabaseClient";
 import { uploadAvatar } from "@/lib/avatarStorage";
 
 import type { DbStoreRow, DbTherapistRow } from "@/types/db";
-import {
-  listTherapistsForStore,
-  listTherapistCandidates,
-  attachTherapistToStore,
-} from "@/lib/repositories/therapistRepository";
+import { listTherapistsForStore } from "@/lib/repositories/therapistRepository";
+
+async function safeReadJson(res: Response) {
+  const text = await res.text();
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { _raw: text };
+  }
+}
 
 function toPlainError(error: any) {
   return {
@@ -36,11 +44,29 @@ type FormState = {
   websiteUrl: string;
   lineUrl: string;
 
-  // 追加
   xUrl: string;
   twicas_url: string;
 
+  description: string;
+
   dmNotice: boolean;
+};
+
+/**
+ * therapist_store_requests の pending を表示するための最小型
+ * - therapist は JOIN して表示する
+ */
+type DbTherapistStoreRequestRow = {
+  id: string;
+  store_id: string;
+  therapist_id: string;
+  status: "pending" | "approved" | "rejected" | string;
+  created_at: string;
+  therapist?: {
+    id: string;
+    display_name: string | null;
+    area: string | null;
+  } | null;
 };
 
 const StoreConsolePage: React.FC = () => {
@@ -63,6 +89,8 @@ const StoreConsolePage: React.FC = () => {
     xUrl: "",
     twicas_url: "",
 
+    description: "",
+
     dmNotice: true,
   });
 
@@ -70,11 +98,29 @@ const StoreConsolePage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
+  // ★ stores.owner_user_id を保持（users.name 同期用）
+  const [ownerUserId, setOwnerUserId] = useState<string | null>(null);
+
   // セラピスト管理用
   const [therapists, setTherapists] = useState<DbTherapistRow[]>([]);
-  const [candidates, setCandidates] = useState<DbTherapistRow[]>([]);
   const [loadingTherapists, setLoadingTherapists] = useState(false);
-  const [attachTargetId, setAttachTargetId] = useState<string | null>(null);
+
+  // ★ 申請一覧（pending）
+  const [requests, setRequests] = useState<DbTherapistStoreRequestRow[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(
+    null
+  );
+
+  // ★ 在籍解除（モーダル + パスワード再入力）
+  const [detachOpen, setDetachOpen] = useState(false);
+  const [detachTarget, setDetachTarget] = useState<{
+    therapistId: string;
+    displayName: string;
+  } | null>(null);
+  const [detachPassword, setDetachPassword] = useState("");
+  const [detaching, setDetaching] = useState(false);
+  const [detachError, setDetachError] = useState<string | null>(null);
 
   // ① localStorage から復元（壊れてたら自動リセット）
   useEffect(() => {
@@ -91,9 +137,16 @@ const StoreConsolePage: React.FC = () => {
         setState((prev) => ({
           ...prev,
           ...data,
+          description:
+            typeof (data as any)?.description === "string"
+              ? (data as any).description
+              : prev.description,
         }));
       } catch (parseErr) {
-        console.warn("[StoreConsole] localStorage parse failed. reset:", parseErr);
+        console.warn(
+          "[StoreConsole] localStorage parse failed. reset:",
+          parseErr
+        );
         window.localStorage.removeItem(storageKey);
       } finally {
         setLoaded(true);
@@ -104,7 +157,7 @@ const StoreConsolePage: React.FC = () => {
     }
   }, [storageKey]);
 
-  // ② Supabase の stores から店舗情報を取得
+  // ② Supabase の stores から店舗情報を取得（owner_user_id も取る）
   useEffect(() => {
     if (!storeId) return;
 
@@ -114,18 +167,26 @@ const StoreConsolePage: React.FC = () => {
       try {
         const { data, error } = await supabase
           .from("stores")
-          .select("name, area, website_url, line_url, avatar_url, dm_notice, x_url, twicas_url")
+          .select(
+            "id, owner_user_id, name, area, website_url, line_url, avatar_url, dm_notice, x_url, twicas_url, description"
+          )
           .eq("id", storeId)
           .maybeSingle<DbStoreRow>();
 
         if (cancelled) return;
 
         if (error) {
-          console.error("[StoreConsole] loadStore error:", toPlainError(error));
+          console.error(
+            "[StoreConsole] loadStore error:",
+            toPlainError(error)
+          );
           console.error("[StoreConsole] loadStore error(raw):", error);
           return;
         }
         if (!data) return;
+
+        // ★ owner_user_id 保存（users.name 同期用）
+        setOwnerUserId(((data as any).owner_user_id as string) ?? null);
 
         setState((prev) => ({
           ...prev,
@@ -135,9 +196,10 @@ const StoreConsolePage: React.FC = () => {
           lineUrl: (data as any).line_url ?? prev.lineUrl,
           avatarDataUrl: (data as any).avatar_url ?? prev.avatarDataUrl,
 
-          // 追加
           xUrl: (data as any).x_url ?? prev.xUrl,
           twicas_url: (data as any).twicas_url ?? prev.twicas_url,
+
+          description: (data as any).description ?? prev.description,
 
           dmNotice:
             typeof (data as any).dm_notice === "boolean"
@@ -168,34 +230,70 @@ const StoreConsolePage: React.FC = () => {
     }
   }, [loaded, state, storageKey]);
 
-  // ④ セラピスト一覧 / 候補の読み込み
+  // ★ pending 申請取得
+  const loadPendingRequests = async (sid: string) => {
+    setLoadingRequests(true);
+
+    try {
+      const res = await fetch(
+        `/api/therapist-store-requests?storeId=${encodeURIComponent(sid)}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+
+      const json = await safeReadJson(res);
+
+      if (!res.ok || !json || (json as any).ok !== true) {
+        const contentType = res.headers.get("content-type");
+        console.error(
+          "[StoreConsole] loadPendingRequests failed",
+          "status=",
+          res.status,
+          "content-type=",
+          contentType,
+          "json=",
+          JSON.stringify(json)
+        );
+        setRequests([]);
+        return;
+      }
+
+      setRequests(((json as any).data ?? []) as DbTherapistStoreRequestRow[]);
+    } catch (e) {
+      console.error("[StoreConsole] loadPendingRequests exception:", e);
+      setRequests([]);
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
+
+  // ④ セラピスト一覧 / 申請一覧の読み込み
   useEffect(() => {
     if (!storeId) return;
 
     let cancelled = false;
 
-    const loadTherapists = async () => {
+    const load = async () => {
       setLoadingTherapists(true);
       try {
-        const [joined, candidateList] = await Promise.all([
-          listTherapistsForStore(storeId),
-          listTherapistCandidates(),
-        ]);
+        const [joined] = await Promise.all([listTherapistsForStore(storeId)]);
         if (cancelled) return;
         setTherapists(joined);
-        setCandidates(candidateList);
+
+        // pending申請
+        await loadPendingRequests(storeId);
       } catch (e) {
         if (!cancelled) {
-          console.error("[StoreConsole] loadTherapists error:", e);
+          console.error("[StoreConsole] load error:", e);
         }
       } finally {
-        if (!cancelled) {
-          setLoadingTherapists(false);
-        }
+        if (!cancelled) setLoadingTherapists(false);
       }
     };
 
-    loadTherapists();
+    load();
     return () => {
       cancelled = true;
     };
@@ -264,8 +362,13 @@ const StoreConsolePage: React.FC = () => {
         .eq("id", storeId);
 
       if (error) {
-        console.error("[StoreConsole] failed to update stores.avatar_url:", error);
-        alert("アイコン画像の保存に失敗しました。時間をおいて再度お試しください。");
+        console.error(
+          "[StoreConsole] failed to update stores.avatar_url:",
+          error
+        );
+        alert(
+          "アイコン画像の保存に失敗しました。時間をおいて再度お試しください。"
+        );
         return;
       }
 
@@ -283,7 +386,27 @@ const StoreConsolePage: React.FC = () => {
 
   const canSave = state.storeName.trim().length > 0;
 
-  // 保存：stores テーブル更新
+  // ★ stores.name → users.name 同期（店舗コンソール版）
+  const syncOwnerUserNameIfPossible = async (newName: string) => {
+    const name = (newName ?? "").trim();
+    if (!name) return;
+    if (!ownerUserId) return;
+
+    try {
+      const { error } = await supabase
+        .from("users")
+        .update({ name })
+        .eq("id", ownerUserId);
+
+      if (error) {
+        console.error("[StoreConsole] users.name sync failed:", error);
+      }
+    } catch (e) {
+      console.error("[StoreConsole] users.name sync exception:", e);
+    }
+  };
+
+  // 保存：stores テーブル更新 → 成功後に users.name も同期
   const handleSave = async () => {
     if (!storeId) {
       alert("店舗IDが取得できませんでした。URLをご確認ください。");
@@ -301,20 +424,29 @@ const StoreConsolePage: React.FC = () => {
         line_url: state.lineUrl || null,
         avatar_url: state.avatarDataUrl || null,
 
-        // 追加
         x_url: state.xUrl || null,
         twicas_url: state.twicas_url || null,
+
+        description: state.description || null,
 
         dm_notice: state.dmNotice,
       } as any;
 
-      const { error } = await supabase.from("stores").update(payload as any).eq("id", storeId);
+      const { error } = await supabase
+        .from("stores")
+        .update(payload as any)
+        .eq("id", storeId);
 
       if (error) {
         console.error("[StoreConsole] failed to update stores:", error);
-        alert("店舗情報の保存に失敗しました。時間をおいて再度お試しください。");
+        alert(
+          "店舗情報の保存に失敗しました。時間をおいて再度お試しください。"
+        );
         return;
       }
+
+      // ★ 追加：users.name 同期（失敗しても stores 保存は成功扱い）
+      await syncOwnerUserNameIfPossible(state.storeName);
 
       alert("店舗情報を保存しました。");
     } catch (e) {
@@ -325,21 +457,126 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  // 候補セラピストを紐づけ
-  const handleAttachTherapist = async (therapistId: string) => {
-    if (!storeId) return;
-    try {
-      setAttachTargetId(therapistId);
-      const updated = await attachTherapistToStore(therapistId, storeId);
-      if (!updated) return;
+  // ★ 在籍解除：モーダル制御
+  const openDetachModal = (t: DbTherapistRow) => {
+    setDetachError(null);
+    setDetachPassword("");
+    setDetachTarget({
+      therapistId: String(t.id),
+      displayName: t.display_name || "名前未設定",
+    });
+    setDetachOpen(true);
+  };
 
-      setTherapists((prev) => [...prev, updated]);
-      setCandidates((prev) => prev.filter((t) => t.id !== therapistId));
+  const closeDetachModal = () => {
+    setDetachOpen(false);
+    setDetachTarget(null);
+    setDetachPassword("");
+    setDetachError(null);
+    setDetaching(false);
+  };
+
+  // ★ 在籍解除：パスワード再入力 → RPC で therapists.store_id = null
+  const confirmDetach = async () => {
+    if (!storeId) return;
+    if (!detachTarget) return;
+
+    if (!detachPassword.trim()) {
+      setDetachError("パスワードを入力してください。");
+      return;
+    }
+
+    setDetaching(true);
+    setDetachError(null);
+
+    try {
+      // 1) email 取得
+      const { data: userRes, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+
+      const email = userRes.user?.email;
+      if (!email) {
+        throw new Error(
+          "メール情報が取得できませんでした。再ログインしてからお試しください。"
+        );
+      }
+
+      // 2) パスワード再入力で再認証（誤操作防止）
+      const { error: signInErr } = await supabase.auth.signInWithPassword({
+        email,
+        password: detachPassword,
+      });
+      if (signInErr) {
+        throw new Error("パスワードが正しくありません。");
+      }
+
+      // 3) RPCで解除
+      // ※ Supabase 側で「自店舗の在籍セラピストだけ解除できる」制約を必ず入れてください
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_detach_therapist_from_store",
+        { p_therapist_id: detachTarget.therapistId }
+      );
+      if (rpcErr) throw rpcErr;
+
+      // 4) 再読込
+      const joined = await listTherapistsForStore(storeId);
+      setTherapists(joined);
+
+      closeDetachModal();
+    } catch (e: any) {
+      console.error("[StoreConsole] detach failed:", e);
+      setDetachError(e?.message ?? "解除に失敗しました。");
+      setDetaching(false);
+    }
+  };
+
+  // ★ 申請の承認/却下
+  const handleReviewRequest = async (
+    requestId: string,
+    decision: "approved" | "rejected"
+  ) => {
+    try {
+      setReviewingRequestId(requestId);
+
+      const res = await fetch("/api/therapist-store-requests/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestId,
+          action: decision === "approved" ? "approve" : "reject",
+        }),
+      });
+
+      // ★ ここがポイント：先に text() で受けて、JSON化できる時だけ parse
+      const text = await res.text();
+      const json = text
+        ? (() => {
+            try {
+              return JSON.parse(text);
+            } catch {
+              return null;
+            }
+          })()
+        : null;
+
+      if (!res.ok) {
+        // 何が返ってきてるか見えるようにする（空 / HTML / JSON）
+        console.error("[review] status:", res.status, "body:", text);
+        throw new Error(
+          (json as any)?.error ||
+            `failed to review request (status ${res.status})`
+        );
+      }
+
+      // 再読込
+      const joined = await listTherapistsForStore(storeId!);
+      setTherapists(joined);
+      await loadPendingRequests(storeId!);
     } catch (e) {
-      console.error("[StoreConsole] handleAttachTherapist error:", e);
-      alert("セラピストの紐づけに失敗しました。時間をおいてお試しください。");
+      console.error(e);
+      alert("申請の処理に失敗しました");
     } finally {
-      setAttachTargetId(null);
+      setReviewingRequestId(null);
     }
   };
 
@@ -423,7 +660,6 @@ const StoreConsolePage: React.FC = () => {
             />
           </div>
 
-          {/* 追加：X */}
           <div className="field-row">
             <label className="field-label">X（旧Twitter）URL（任意）</label>
             <input
@@ -435,7 +671,6 @@ const StoreConsolePage: React.FC = () => {
             />
           </div>
 
-          {/* 追加：ツイキャス */}
           <div className="field-row">
             <label className="field-label">ツイキャスURL（任意）</label>
             <input
@@ -444,6 +679,16 @@ const StoreConsolePage: React.FC = () => {
               value={state.twicas_url}
               onChange={handleChange("twicas_url")}
               placeholder="https://twitcasting.tv/..."
+            />
+          </div>
+
+          <div className="field-row">
+            <label className="field-label">自己紹介（任意）</label>
+            <textarea
+              className="field-textarea"
+              value={state.description}
+              onChange={handleChange("description")}
+              placeholder="お店の雰囲気や大切にしていることなど"
             />
           </div>
         </section>
@@ -460,11 +705,7 @@ const StoreConsolePage: React.FC = () => {
               </div>
             </div>
 
-            <div
-              className={
-                "toggle-switch" + (state.dmNotice ? " is-on" : "")
-              }
-            >
+            <div className={"toggle-switch" + (state.dmNotice ? " is-on" : "")}>
               <div className="toggle-knob" />
             </div>
           </div>
@@ -474,13 +715,15 @@ const StoreConsolePage: React.FC = () => {
         <section className="store-card therapist-card">
           <div className="store-section-title">セラピスト管理</div>
           <p className="therapist-helper">
-            この店舗で一緒に活動するセラピストを選ぶことができます。
+            在籍申請が届いたセラピストを承認すると、この店舗に紐づきます。
           </p>
 
+          {/* 1) 在籍中 */}
           <div className="therapist-block">
             <h3 className="therapist-block-title">
               現在いっしょに活動しているセラピスト
             </h3>
+
             {loadingTherapists && therapists.length === 0 ? (
               <p className="therapist-helper">読み込み中です…</p>
             ) : therapists.length === 0 ? (
@@ -499,47 +742,74 @@ const StoreConsolePage: React.FC = () => {
                         {t.area || "エリア未設定"}
                       </span>
                     </div>
-                    <span className="therapist-tag">店舗に参加中</span>
+
+                    <div className="therapist-actions">
+                      <span className="therapist-tag">店舗に参加中</span>
+
+                      <button
+                        type="button"
+                        className="therapist-detach-btn"
+                        onClick={() => openDetachModal(t)}
+                      >
+                        在籍解除
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
             )}
           </div>
 
+          {/* 2) ★在籍申請（pending） */}
           <div className="therapist-block">
-            <h3 className="therapist-block-title">仮参加中のセラピスト</h3>
+            <h3 className="therapist-block-title">在籍申請（承認待ち）</h3>
             <p className="therapist-helper">
-              まだどの店舗にも紐づいていないセラピストです。「この店舗に紐づける」で一緒に活動できます。
+              セラピスト側から「在籍申請」が届いた一覧です。承認/却下できます。
             </p>
 
-            {loadingTherapists && candidates.length === 0 ? (
+            {loadingRequests && requests.length === 0 ? (
               <p className="therapist-helper">読み込み中です…</p>
-            ) : candidates.length === 0 ? (
+            ) : requests.length === 0 ? (
               <p className="therapist-helper">
-                現在、紐づけ候補のセラピストはいません。
+                現在、承認待ちの申請はありません。
               </p>
             ) : (
               <ul className="therapist-list">
-                {candidates.map((t) => (
-                  <li key={t.id} className="therapist-row">
-                    <div className="therapist-row-main">
-                      <span className="therapist-name">
-                        {t.display_name || "名前未設定"}
-                      </span>
-                      <span className="therapist-meta">
-                        {t.area || "エリア未設定"}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className="therapist-attach-btn"
-                      onClick={() => handleAttachTherapist(t.id)}
-                      disabled={attachTargetId === t.id}
-                    >
-                      {attachTargetId === t.id ? "紐づけ中…" : "この店舗に紐づける"}
-                    </button>
-                  </li>
-                ))}
+                {requests.map((r) => {
+                  const t = r.therapist;
+                  const labelName = t?.display_name || "名前未設定";
+                  const labelArea = t?.area || "エリア未設定";
+                  const busy = reviewingRequestId === r.id;
+
+                  return (
+                    <li key={r.id} className="therapist-row">
+                      <div className="therapist-row-main">
+                        <span className="therapist-name">{labelName}</span>
+                        <span className="therapist-meta">{labelArea}</span>
+                      </div>
+
+                      <div className="therapist-actions">
+                        <button
+                          type="button"
+                          className="therapist-approve-btn"
+                          onClick={() => handleReviewRequest(r.id, "approved")}
+                          disabled={busy}
+                        >
+                          {busy ? "処理中…" : "承認"}
+                        </button>
+
+                        <button
+                          type="button"
+                          className="therapist-reject-btn"
+                          onClick={() => handleReviewRequest(r.id, "rejected")}
+                          disabled={busy}
+                        >
+                          {busy ? "処理中…" : "却下"}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -556,6 +826,50 @@ const StoreConsolePage: React.FC = () => {
           </button>
         </div>
       </main>
+
+      {/* ★ 在籍解除モーダル */}
+      {detachOpen && detachTarget && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <div className="modal-title">在籍解除の確認</div>
+            <p className="modal-text">
+              {detachTarget.displayName} を在籍解除します。
+              <br />
+              誤操作防止のため、ログイン時のパスワードを入力してください。
+            </p>
+
+            <input
+              type="password"
+              className="modal-input"
+              placeholder="パスワード"
+              value={detachPassword}
+              onChange={(e) => setDetachPassword(e.target.value)}
+              autoFocus
+            />
+
+            {detachError && <div className="modal-error">{detachError}</div>}
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="modal-cancel"
+                onClick={closeDetachModal}
+                disabled={detaching}
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                className="modal-danger"
+                onClick={confirmDetach}
+                disabled={detaching}
+              >
+                {detaching ? "解除中…" : "解除する"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <BottomNav />
 
@@ -632,6 +946,18 @@ const StoreConsolePage: React.FC = () => {
           background: #fff;
         }
 
+        .field-textarea {
+          width: 100%;
+          border-radius: 16px;
+          border: 1px solid var(--border);
+          padding: 10px 12px;
+          font-size: 13px;
+          background: #fff;
+          line-height: 1.7;
+          min-height: 120px;
+          resize: vertical;
+        }
+
         .store-save-wrap {
           margin-top: 16px;
           padding-bottom: 24px;
@@ -689,25 +1015,21 @@ const StoreConsolePage: React.FC = () => {
           width: 44px;
           height: 24px;
           border-radius: 999px;
-          background: #e5e5e5;          /* OFF時：グレー */
+          background: #e5e5e5;
           position: relative;
           transition: background 0.2s ease;
           flex-shrink: 0;
         }
 
         .toggle-switch.is-on {
-          background: linear-gradient(
-            135deg,
-            #e6c87a,
-            #d7b976
-          );
-        } 
+          background: linear-gradient(135deg, #e6c87a, #d7b976);
+        }
 
         .toggle-knob {
           width: 20px;
           height: 20px;
           border-radius: 999px;
-          background: #9ca3af;          /* OFF時ノブ */
+          background: #9ca3af;
           position: absolute;
           top: 2px;
           left: 2px;
@@ -716,9 +1038,9 @@ const StoreConsolePage: React.FC = () => {
 
         .toggle-switch.is-on .toggle-knob {
           transform: translateX(20px);
-          background: #ffffff;          /* ON時ノブ */
+          background: #ffffff;
         }
-          
+
         .therapist-card {
           margin-top: 16px;
         }
@@ -751,6 +1073,8 @@ const StoreConsolePage: React.FC = () => {
           display: flex;
           flex-direction: column;
           gap: 8px;
+          padding-left: 0;
+          list-style: none;
         }
 
         .therapist-row {
@@ -783,21 +1107,140 @@ const StoreConsolePage: React.FC = () => {
           font-size: 11px;
           padding: 3px 8px;
           border-radius: 999px;
-          border: 1px solid rgba(0, 0, 0, 0.08));
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          white-space: nowrap;
         }
 
-        .therapist-attach-btn {
+        .therapist-actions {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+          flex-shrink: 0;
+        }
+
+        .therapist-approve-btn {
           font-size: 12px;
           padding: 6px 10px;
           border-radius: 999px;
           border: none;
+          cursor: pointer;
           background: var(--accent, #d7b976);
           color: #fff;
           box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
         }
 
-        .therapist-attach-btn[disabled] {
+        .therapist-reject-btn {
+          font-size: 12px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(0, 0, 0, 0.14);
+          cursor: pointer;
+          background: #fff;
+          color: var(--text-sub, #666);
+        }
+
+        .therapist-approve-btn[disabled],
+        .therapist-reject-btn[disabled] {
           opacity: 0.6;
+          cursor: default;
+        }
+
+        .therapist-detach-btn {
+          font-size: 12px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(239, 68, 68, 0.35);
+          cursor: pointer;
+          background: #fff;
+          color: #b91c1c;
+          white-space: nowrap;
+        }
+
+        .therapist-detach-btn:hover {
+          background: rgba(239, 68, 68, 0.06);
+        }
+
+        /* --- modal --- */
+        .modal-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(15, 23, 42, 0.42);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+          z-index: 9999;
+        }
+
+        .modal-card {
+          width: 100%;
+          max-width: 420px;
+          border-radius: 16px;
+          background: #fff;
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+          padding: 12px;
+        }
+
+        .modal-title {
+          font-size: 13px;
+          font-weight: 700;
+          margin-bottom: 8px;
+        }
+
+        .modal-text {
+          font-size: 12px;
+          line-height: 1.7;
+          color: var(--text-sub);
+          margin: 0 0 10px;
+        }
+
+        .modal-input {
+          width: 100%;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          padding: 8px 12px;
+          font-size: 13px;
+          background: #fff;
+        }
+
+        .modal-error {
+          margin-top: 8px;
+          font-size: 12px;
+          color: #b91c1c;
+        }
+
+        .modal-actions {
+          margin-top: 12px;
+          display: flex;
+          gap: 8px;
+          justify-content: flex-end;
+        }
+
+        .modal-cancel {
+          font-size: 12px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(0, 0, 0, 0.14);
+          background: #fff;
+          cursor: pointer;
+        }
+
+        .modal-danger {
+          font-size: 12px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: none;
+          background: #ef4444;
+          color: #fff;
+          cursor: pointer;
+          box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25);
+        }
+
+        .modal-cancel[disabled],
+        .modal-danger[disabled] {
+          opacity: 0.6;
+          cursor: default;
         }
       `}</style>
     </div>

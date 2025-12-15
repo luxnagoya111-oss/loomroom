@@ -15,12 +15,11 @@ async function adminFetch(input: string, init?: RequestInit) {
   const headers = new Headers(init?.headers);
   headers.set("Content-Type", headers.get("Content-Type") ?? "application/json");
   if (ADMIN_KEY) headers.set("x-admin-key", ADMIN_KEY);
-
   return fetch(input, { ...init, headers, cache: "no-store" });
 }
 
 async function apiGetStoreSignups(): Promise<StoreSignup[]> {
-  const res = await adminFetch("/api/admin/store-signups?type=store", { // ★ここ
+  const res = await adminFetch("/api/admin/store-signups?type=store", {
     method: "GET",
   });
   const text = await res.text();
@@ -30,24 +29,28 @@ async function apiGetStoreSignups(): Promise<StoreSignup[]> {
 }
 
 async function apiApproveStore(appId: string): Promise<StoreSignup> {
-  const res = await adminFetch("/api/admin/approve-store", {   // ★ここ
+  const res = await adminFetch("/api/admin/approve-store", {
     method: "POST",
     body: JSON.stringify({ appId }),
   });
 
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
-
   if (!res.ok) throw new Error(json.error ?? "failed");
   return json.data as StoreSignup;
 }
 
-async function apiUpdateSignupStatus(id: string, status: DbSignupStatus): Promise<StoreSignup> {
-  const res = await adminFetch("/api/admin/approve-store", {
+// ★ 承認とは別APIへ（pending / rejected 用）
+async function apiUpdateSignupStatus(
+  id: string,
+  status: DbSignupStatus
+): Promise<StoreSignup> {
+  const res = await adminFetch("/api/admin/store-signups/status", {
     method: "POST",
     body: JSON.stringify({ id, status }),
   });
-  const json = await res.json();
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
   if (!res.ok) throw new Error(json.error ?? "failed");
   return json.data as StoreSignup;
 }
@@ -77,8 +80,6 @@ export default function AdminStoresPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
-
-  // ★ 追加：簡易検索（UI向上の即効薬）
   const [q, setQ] = useState("");
 
   useEffect(() => {
@@ -127,9 +128,10 @@ export default function AdminStoresPage() {
     setUpdatingId(id);
     setError(null);
 
-    // ★ 追加：承認だけは誤操作防止（UIは変えずに確認だけ入れる）
     if (status === "approved") {
-      const ok = window.confirm("この申請を承認しますか？（店舗の本登録・role更新まで実行されます）");
+      const ok = window.confirm(
+        "この申請を承認しますか？（店舗の本登録・users.role 更新まで実行されます）"
+      );
       if (!ok) {
         setUpdatingId(null);
         return;
@@ -262,7 +264,6 @@ export default function AdminStoresPage() {
             /signup/creator から送信された店舗向けの申請一覧です。承認（approved）にすると「店舗の本登録」「users.role の更新」まで自動で行われます。
           </p>
 
-          {/* ★追加：検索 */}
           <div className="toolbar">
             <input
               className="search"
@@ -281,7 +282,6 @@ export default function AdminStoresPage() {
             <div className="status-message">該当する申請はありません。</div>
           ) : (
             <>
-              {/* PC/タブレット：テーブル */}
               <div className="table-only">
                 <div className="table-wrapper">
                   <table className="table">
@@ -298,7 +298,6 @@ export default function AdminStoresPage() {
                 </div>
               </div>
 
-              {/* スマホ：カード */}
               <div className="card-only">{filtered.map(renderCard)}</div>
             </>
           )}
@@ -359,7 +358,6 @@ export default function AdminStoresPage() {
           color: #b94a48;
         }
 
-        /* ===== テーブル（現行を強化） ===== */
         .table-wrapper {
           overflow-x: auto;
           border-radius: 12px;
@@ -480,7 +478,6 @@ export default function AdminStoresPage() {
           max-width: 160px;
         }
 
-        /* ===== モバイル：カード表示 ===== */
         .card {
           background: #fff;
           border: 1px solid rgba(220, 210, 200, 0.9);
@@ -536,7 +533,6 @@ export default function AdminStoresPage() {
           margin-top: 10px;
         }
 
-        /* 表示切替 */
         .table-only {
           display: block;
         }

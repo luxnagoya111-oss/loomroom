@@ -2,10 +2,11 @@
 "use client";
 
 import React, { useEffect, useState, FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
-import { getCurrentUserId } from "@/lib/auth"; // ★追加（あなたの現コードで使っているため）
-import { supabase } from "@/lib/supabaseClient"; // ★追加（Supabase Authでログイン判定するため）
+import { getCurrentUserId } from "@/lib/auth"; // 既存概念（guest-判定）を残す
+import { supabase } from "@/lib/supabaseClient";
 import {
   createStoreSignup,
   createTherapistSignup,
@@ -33,23 +34,54 @@ type TherapistForm = {
   note: string;
 };
 
+function buildLoginUrl(nextPath: string) {
+  // next は相対パスのみ許可（安全）
+  const next = nextPath.startsWith("/") ? nextPath : "/signup/creator/start";
+  return `/login?next=${encodeURIComponent(next)}`;
+}
+
 export default function CreatorSignupStartPage() {
-  // ★ SSR / 初期描画時は null（まだ判定していない状態）
+  const router = useRouter();
+
+  // SSR / 初期描画時は null（まだ判定していない状態）
   const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
 
-  // ★ログイン判定（UIは維持しつつ、RLSに必要なSupabase Authも併用）
+  // セッション（Auth）を基準にログイン判定
   useEffect(() => {
-    // 既存の判定（guest- をログイン扱いしない）を維持
-    const currentUserId = getCurrentUserId();
-    const guestBasedLoggedIn =
-      !!currentUserId && !currentUserId.startsWith("guest-");
+    let cancelled = false;
 
-    // 追加：実際にSupabase Authでログインしているか確認
-    supabase.auth.getUser().then(({ data }) => {
-      const authLoggedIn = !!data.user;
-      // UIの意味は維持：guest判定 AND Supabase auth の両方がtrueでログイン扱い
-      setIsLoggedIn(guestBasedLoggedIn && authLoggedIn);
+    const run = async () => {
+      // 既存のUI判定（guest- をログイン扱いしない）を維持
+      const currentUserId = getCurrentUserId();
+      const guestBasedLoggedIn =
+        !!currentUserId && !currentUserId.startsWith("guest-");
+
+      // Authセッションを確認（例外が出ない getSession を使用）
+      const { data, error } = await supabase.auth.getSession();
+      const authLoggedIn = !!data.session?.user;
+
+      if (!cancelled) {
+        // UI意味は維持：guest判定 AND Supabase auth の両方がtrueでログイン扱い
+        setIsLoggedIn(guestBasedLoggedIn && authLoggedIn);
+      }
+
+      // もし error があっても、ここでは落とさない（利用者に影響を出さない）
+      if (error) {
+        console.warn("[CreatorSignupStartPage] getSession error:", error);
+      }
+    };
+
+    run();
+
+    // セッションが後から入るケースもあるので、Auth状態変化を購読
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      run();
     });
+
+    return () => {
+      cancelled = true;
+      sub?.subscription?.unsubscribe();
+    };
   }, []);
 
   // 「未ログインなら注意文を出す」フラグ
@@ -66,6 +98,7 @@ export default function CreatorSignupStartPage() {
     website: "",
     note: "",
   });
+
   const [therapistForm, setTherapistForm] = useState<TherapistForm>({
     name: "",
     area: "",
@@ -74,6 +107,7 @@ export default function CreatorSignupStartPage() {
     wishStore: "",
     note: "",
   });
+
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,18 +120,37 @@ export default function CreatorSignupStartPage() {
     setError(null);
 
     try {
-      // ★ currentUserId は「UI/表示用の概念」としては残してOK
-      // ただし「DB insert の payload には絶対に混ぜない（RLS邪魔）」が鉄則
-      // const currentUserId = getCurrentUserId();  // ←必要なら残してもいいが payload に入れない
+      // ★ 実運用での事故をここで吸収：申請はログイン必須にする
+      // 判定がまだ (null) の場合もあるので、submit時点で session を必ず確認する
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+
+      const sessionUser = sessionData.session?.user ?? null;
+
+      // guest-判定も維持（UIロジックと整合）
+      const currentUserId = getCurrentUserId();
+      const guestBasedLoggedIn =
+        !!currentUserId && !currentUserId.startsWith("guest-");
+
+      const canSubmit = !!sessionUser && guestBasedLoggedIn;
+
+      if (!canSubmit) {
+        // ログインへ誘導（この画面に戻す）
+        router.push(buildLoginUrl("/signup/creator/start"));
+        return;
+      }
+
+      if (sessionError) {
+        console.warn("[CreatorSignupStartPage] getSession error:", sessionError);
+      }
 
       if (kind === "store") {
         if (!storeForm.storeName.trim()) {
           setError("店舗名を入力してください。");
-          setSubmitting(false);
           return;
         }
 
-        // ★修正：payload から currentUserId を削除（UIは一切変えない）
+        // payload はフォームのみ（currentUserId 等は絶対に混ぜない）
         const payload = {
           ...storeForm,
         };
@@ -108,19 +161,17 @@ export default function CreatorSignupStartPage() {
           payload,
         });
 
+        // result が null の場合は「未ログイン/セッション欠落」が多いのでログイン誘導
         if (!result) {
-          setError("送信に失敗しました。時間をおいて再度お試しください。");
-          setSubmitting(false);
+          router.push(buildLoginUrl("/signup/creator/start"));
           return;
         }
       } else if (kind === "therapist") {
         if (!therapistForm.name.trim()) {
           setError("お名前を入力してください。");
-          setSubmitting(false);
           return;
         }
 
-        // ★修正：payload から currentUserId を削除（UIは一切変えない）
         const payload = {
           ...therapistForm,
         };
@@ -132,8 +183,7 @@ export default function CreatorSignupStartPage() {
         });
 
         if (!result) {
-          setError("送信に失敗しました。時間をおいて再度お試しください。");
-          setSubmitting(false);
+          router.push(buildLoginUrl("/signup/creator/start"));
           return;
         }
       }
@@ -208,9 +258,7 @@ export default function CreatorSignupStartPage() {
               <div className="kind-selector">
                 <button
                   type="button"
-                  className={
-                    kind === "store" ? "kind-btn kind-btn-active" : "kind-btn"
-                  }
+                  className={kind === "store" ? "kind-btn kind-btn-active" : "kind-btn"}
                   onClick={() => setKind("store")}
                 >
                   店舗として申し込む
@@ -218,9 +266,7 @@ export default function CreatorSignupStartPage() {
                 <button
                   type="button"
                   className={
-                    kind === "therapist"
-                      ? "kind-btn kind-btn-active"
-                      : "kind-btn"
+                    kind === "therapist" ? "kind-btn kind-btn-active" : "kind-btn"
                   }
                   onClick={() => setKind("therapist")}
                 >
@@ -286,9 +332,7 @@ export default function CreatorSignupStartPage() {
                       </div>
 
                       <div className="field">
-                        <label className="label">
-                          連絡先（メール / LINE など）
-                        </label>
+                        <label className="label">連絡先（メール / LINE など）</label>
                         <input
                           type="text"
                           className="input"
@@ -391,9 +435,7 @@ export default function CreatorSignupStartPage() {
                       </div>
 
                       <div className="field">
-                        <label className="label">
-                          所属希望の店舗（あれば）
-                        </label>
+                        <label className="label">所属希望の店舗（あれば）</label>
                         <input
                           type="text"
                           className="input"
@@ -409,9 +451,7 @@ export default function CreatorSignupStartPage() {
                       </div>
 
                       <div className="field">
-                        <label className="label">
-                          連絡先（メール / LINE など）
-                        </label>
+                        <label className="label">連絡先（メール / LINE など）</label>
                         <input
                           type="text"
                           className="input"

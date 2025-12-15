@@ -7,9 +7,7 @@ import AppHeader from "@/components/AppHeader";
 import { getCurrentUserId } from "@/lib/auth";
 import { timeAgo } from "@/lib/timeAgo";
 import { supabase } from "@/lib/supabaseClient";
-import {
-  getRelationsForUser,
-} from "@/lib/repositories/relationRepository";
+import { getRelationsForUser } from "@/lib/repositories/relationRepository";
 import type { UserId } from "@/types/user";
 import type { DbRelationRow } from "@/types/db";
 
@@ -28,7 +26,7 @@ type AuthorKind = "therapist" | "store" | "user";
 
 type Post = {
   id: string;
-  authorId: string; // users.id（uuid） or demo用文字列
+  authorId: string; // users.id（uuid）
   authorName: string;
   authorKind: AuthorKind;
   avatarUrl?: string | null;
@@ -38,7 +36,7 @@ type Post = {
   likeCount: number;
   liked: boolean;
   replyCount: number;
-  profilePath: string | null; // ★ 追加：プロフィールに飛ぶURL
+  profilePath: string | null; // プロフィールに飛ぶURL
 };
 
 // Supabase posts テーブルから取得する行
@@ -53,7 +51,7 @@ type DbPostRow = {
   reply_count: number | null;
 };
 
-// Supabase users テーブルの最小限
+// Supabase users テーブル（TL表示に必要な最小限）
 type DbUserRow = {
   id: string;
   name: string | null;
@@ -85,52 +83,21 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
-// ★ ゲストのいいね用ダミーID（DB側のポリシー次第で後で変えてOK）
+// ゲストのいいね用ダミーID（DB側のポリシー次第で後で変えてOK）
 const GUEST_DB_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 const hasUnread = false;
 
-// 初期表示用のデモ投稿
-const DEMO_POSTS: Post[] = [
-  {
-    id: "demo_p1",
-    authorId: "taki",
-    authorName: "TAKI",
-    authorKind: "therapist",
-    area: "中部",
-    body: "少し寒い日が続いていますね。\n\nあったかいお風呂と、\nふわっと力を抜いて過ごせる時間、\nどこかでちゃんと作れていますか？",
-    timeAgo: "3時間前",
-    likeCount: 12,
-    liked: false,
-    replyCount: 3,
-    profilePath: "/therapist/taki", // デモ用：従来通り id = "taki"
-  },
-  {
-    id: "demo_p2",
-    authorId: "loomroom",
-    authorName: "LoomRoom運営",
-    authorKind: "store",
-    area: "中部",
-    body: "LoomRoom はまだプレ版の空間ですが、\n\n「女風界隈の、静かな居場所」\n\nとして少しずつ整えていきます。",
-    timeAgo: "1日前",
-    likeCount: 23,
-    liked: false,
-    replyCount: 5,
-    profilePath: "/store/loomroom",
-  },
-  {
-    id: "demo_p3",
-    authorId: "u_demo",
-    authorName: "名無しユーザー",
-    authorKind: "user",
-    area: "関東",
-    body: "最近ちょっと、女風のことを誰かと話したくて。\n\nまだ勇気は出てないけど、\nここを見つけてから、少しだけ気持ちが楽になりました。",
-    timeAgo: "2日前",
-    likeCount: 5,
-    liked: false,
-    replyCount: 1,
-    profilePath: "/mypage/u_demo",
-  },
+const knownAreas: Area[] = [
+  "北海道",
+  "東北",
+  "関東",
+  "中部",
+  "近畿",
+  "中国",
+  "四国",
+  "九州",
+  "沖縄",
 ];
 
 // 認証バッジ（セラピスト ✦ / 店舗 🏛）
@@ -143,20 +110,21 @@ const renderGoldBadge = (kind: AuthorKind) => {
 // ちょっとしたハンドル名
 const getHandle = (post: Post): string | null => {
   if (!post.authorId) return null;
-
-  if (post.authorKind === "therapist") {
+  if (post.authorKind === "therapist")
     return `@therapist_${post.authorId.slice(0, 4)}`;
-  }
-  if (post.authorKind === "store") {
+  if (post.authorKind === "store")
     return `@store_${post.authorId.slice(0, 4)}`;
-  }
-  if (post.authorKind === "user") {
-    return `@user_${post.authorId.slice(0, 4)}`;
-  }
+  if (post.authorKind === "user") return `@user_${post.authorId.slice(0, 4)}`;
   return null;
 };
 
-// プロフィール遷移（Post 単位で扱うように変更）
+// イニシャル
+function initialFromName(name: string | null | undefined): string {
+  const s = (name ?? "").trim();
+  return s ? s.charAt(0).toUpperCase() : "?";
+}
+
+// プロフィール遷移
 const goToProfile = (post: Post) => {
   if (typeof window === "undefined") return;
   if (!post.profilePath) return;
@@ -169,8 +137,8 @@ export default function LoomRoomHome() {
   // relations（自分 → 相手）一覧
   const [relations, setRelations] = useState<DbRelationRow[]>([]);
 
-  // 初期状態は DEMO_POSTS
-  const [posts, setPosts] = useState<Post[]>(DEMO_POSTS);
+  // 初期状態は空（デモ撤去）
+  const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -213,7 +181,7 @@ export default function LoomRoomHome() {
     };
   }, [currentUserId]);
 
-  // Supabase から TL を読み込む（posts + users + post_likes + therapists/stores ID）
+  // Supabase から TL を読み込む
   useEffect(() => {
     let cancelled = false;
 
@@ -242,17 +210,28 @@ export default function LoomRoomHome() {
 
         const rows = (postData ?? []) as DbPostRow[];
 
-        // 投稿がない場合は DEMO のまま
+        // 投稿がない場合は空のまま
         if (!rows.length) {
-          setPosts(DEMO_POSTS);
+          setPosts([]);
           setLoading(false);
           return;
         }
 
-        // 2) 著者ID一覧 → users を取得
+        // ★ author_id が null の投稿は除外（TLの前提を安定させる）
+        const rowsWithAuthor = rows.filter(
+          (r) => !!r.author_id && isUuid(r.author_id)
+        );
+
+        if (!rowsWithAuthor.length) {
+          setPosts([]);
+          setLoading(false);
+          return;
+        }
+
+        // 2) 著者ID一覧 → users を取得（avatar_url は users を正とする）
         const authorIds = Array.from(
           new Set(
-            rows
+            rowsWithAuthor
               .map((r) => r.author_id)
               .filter((id): id is string => !!id)
           )
@@ -262,66 +241,47 @@ export default function LoomRoomHome() {
 
         if (authorIds.length) {
           const { data: userData, error: userError } = await supabase
-            .from("public_profiles")
+            .from("users")
             .select("id, name, role, avatar_url")
             .in("id", authorIds);
 
           if (userError) {
             console.error("Supabase users join error:", userError);
           } else {
-            (userData ?? []).forEach((u) => {
-              userMap.set(u.id, u as DbUserRow);
-            });
+            (userData ?? []).forEach((u) => userMap.set(u.id, u as DbUserRow));
           }
         }
 
-        // 3) セラピストID・店舗ID マッピング
-        const therapistUserIds: string[] = [];
-        const storeUserIds: string[] = [];
-
-        userMap.forEach((u) => {
-          if (u.role === "therapist") {
-            therapistUserIds.push(u.id);
-          } else if (u.role === "store") {
-            storeUserIds.push(u.id);
-          }
-        });
-
+        // 3) therapists / stores の実在で “確定” 用マップを作る
         const therapistRouteMap = new Map<string, string>(); // user_id → therapists.id
         const storeRouteMap = new Map<string, string>(); // owner_user_id → stores.id
 
-        if (therapistUserIds.length) {
+        if (authorIds.length) {
           const { data: therData, error: therError } = await supabase
             .from("therapists")
             .select("id, user_id")
-            .in("user_id", therapistUserIds);
+            .in("user_id", authorIds);
 
           if (therError) {
             console.error("Supabase therapist id map error:", therError);
           } else {
             (therData ?? []).forEach((t) => {
-              const row = t as DbTherapistIdRow;
-              if (row.user_id) {
-                therapistRouteMap.set(row.user_id, row.id);
-              }
+              const r = t as DbTherapistIdRow;
+              if (r.user_id) therapistRouteMap.set(r.user_id, r.id);
             });
           }
-        }
 
-        if (storeUserIds.length) {
           const { data: storeData, error: storeError } = await supabase
             .from("stores")
             .select("id, owner_user_id")
-            .in("owner_user_id", storeUserIds);
+            .in("owner_user_id", authorIds);
 
           if (storeError) {
             console.error("Supabase store id map error:", storeError);
           } else {
             (storeData ?? []).forEach((s) => {
-              const row = s as DbStoreIdRow;
-              if (row.owner_user_id) {
-                storeRouteMap.set(row.owner_user_id, row.id);
-              }
+              const r = s as DbStoreIdRow;
+              if (r.owner_user_id) storeRouteMap.set(r.owner_user_id, r.id);
             });
           }
         }
@@ -344,91 +304,68 @@ export default function LoomRoomHome() {
           likedIdSet = new Set(likeRows.map((r) => r.post_id));
         }
 
-        const knownAreas: Area[] = [
-          "北海道",
-          "東北",
-          "関東",
-          "中部",
-          "近畿",
-          "中国",
-          "四国",
-          "九州",
-          "沖縄",
-        ];
-
         // 5) TL データを最終形にマッピング
-        const mapped: Post[] = rows.map((row) => {
-          const user = row.author_id ? userMap.get(row.author_id) : undefined;
+        const mapped: Post[] = rowsWithAuthor
+          .map((row) => {
+            const authorId = row.author_id!;
+            const user = userMap.get(authorId);
 
-          // role は posts.author_kind を優先、なければ users.role
-          const roleFromPost = row.author_kind ?? "user";
-          const roleFromUser = user?.role ?? "user";
-          const kind: AuthorKind =
-            roleFromPost === "therapist" || roleFromUser === "therapist"
-              ? "therapist"
-              : roleFromPost === "store" || roleFromUser === "store"
-              ? "store"
-              : "user";
+            const hasTherapist = therapistRouteMap.has(authorId);
+            const hasStore = storeRouteMap.has(authorId);
 
-          const area: Area = knownAreas.includes(
-            (row.area ?? "") as Area
-          )
-            ? ((row.area as Area) ?? "中部")
-            : "中部";
+            const kind: AuthorKind =
+              row.author_kind === "therapist" || hasTherapist
+                ? "therapist"
+                : row.author_kind === "store" || hasStore
+                ? "store"
+                : "user";
 
-          const likeCount = row.like_count ?? 0;
-          const liked = likedIdSet.has(row.id);
+            const area: Area = knownAreas.includes((row.area ?? "") as Area)
+              ? ((row.area as Area) ?? "中部")
+              : "中部";
 
-          const authorId = row.author_id ?? "guest";
-          const authorName =
-            user?.name ??
-            (kind === "store"
-              ? "店舗アカウント"
-              : kind === "therapist"
-              ? "セラピスト"
-              : "名無し");
+            const likeCount = row.like_count ?? 0;
+            const liked = likedIdSet.has(row.id);
 
-          // ★ プロフィールURLの決定
-          let profilePath: string | null = null;
-          if (kind === "therapist") {
-            if (isUuid(authorId)) {
+            const authorName =
+              user?.name ??
+              (kind === "store"
+                ? "店舗アカウント"
+                : kind === "therapist"
+                ? "セラピスト"
+                : "名無し");
+
+            // プロフィールURLの決定（uuidなら必ず DB の id に寄せる）
+            let profilePath: string | null = null;
+
+            if (kind === "therapist") {
               const therapistId = therapistRouteMap.get(authorId);
               profilePath = therapistId
                 ? `/therapist/${therapistId}`
-                : `/therapist/${authorId}`; // 万一マッピングない場合のフォールバック
-            } else {
-              // デモなど従来形式
-              profilePath = `/therapist/${authorId}`;
-            }
-          } else if (kind === "store") {
-            if (isUuid(authorId)) {
+                : `/mypage/${authorId}`;
+            } else if (kind === "store") {
               const storeId = storeRouteMap.get(authorId);
-              profilePath = storeId
-                ? `/store/${storeId}`
-                : `/store/${authorId}`;
+              profilePath = storeId ? `/store/${storeId}` : `/mypage/${authorId}`;
             } else {
-              profilePath = `/store/${authorId}`;
+              profilePath = `/mypage/${authorId}`;
             }
-          } else {
-            // 一般ユーザーは users.id ベースで /mypage/[id]
-            profilePath = `/mypage/${authorId}`;
-          }
 
-          return {
-            id: row.id,
-            authorId,
-            authorName,
-            authorKind: kind,
-            avatarUrl: user?.avatar_url ?? null,
-            area,
-            body: row.body ?? "",
-            timeAgo: timeAgo(row.created_at),
-            likeCount,
-            liked,
-            replyCount: row.reply_count ?? 0,
-            profilePath,
-          };
-        });
+            return {
+              id: row.id,
+              authorId,
+              authorName,
+              authorKind: kind,
+              avatarUrl: user?.avatar_url ?? null,
+              area,
+              body: row.body ?? "",
+              timeAgo: timeAgo(row.created_at),
+              likeCount,
+              liked,
+              replyCount: row.reply_count ?? 0,
+              profilePath,
+            };
+          })
+          .filter(Boolean);
 
         setPosts(mapped);
         setLoading(false);
@@ -447,7 +384,7 @@ export default function LoomRoomHome() {
     };
   }, [currentUserId]);
 
-  // いいね ON/OFF（Supabase 連携）は元のまま（省略せずに残す）
+  // いいね ON/OFF（Supabase 連携）
   const handleToggleLike = async (post: Post) => {
     const previousLiked = post.liked;
     const previousCount = post.likeCount;
@@ -471,19 +408,14 @@ export default function LoomRoomHome() {
     try {
       if (!previousLiked) {
         const { error: likeError } = await supabase.from("post_likes").insert([
-          {
-            post_id: post.id,
-            user_id: effectiveUserIdForDb,
-          },
+          { post_id: post.id, user_id: effectiveUserIdForDb },
         ]);
-
         if (likeError) throw likeError;
 
         const { error: updateError } = await supabase
           .from("posts")
           .update({ like_count: previousCount + 1 })
           .eq("id", post.id);
-
         if (updateError) throw updateError;
       } else {
         const { error: deleteError } = await supabase
@@ -491,14 +423,12 @@ export default function LoomRoomHome() {
           .delete()
           .eq("post_id", post.id)
           .eq("user_id", effectiveUserIdForDb);
-
         if (deleteError) throw deleteError;
 
         const { error: updateError } = await supabase
           .from("posts")
           .update({ like_count: Math.max(previousCount - 1, 0) })
           .eq("id", post.id);
-
         if (updateError) throw updateError;
       }
     } catch (e: any) {
@@ -578,11 +508,9 @@ export default function LoomRoomHome() {
   return (
     <div className="page-root">
       <AppHeader title="LoomRoom" />
+
       <main className="page-main">
-        {/* フィルタエリア（元のまま） */}
-        {/* ... ここから下は JSX はほぼ元のまま ... */}
         <section className="feed-filters">
-          {/* （中略：フィルタUI） */}
           <div className="filter-group">
             <label className="filter-label">エリア</label>
             <select
@@ -590,9 +518,7 @@ export default function LoomRoomHome() {
               value={areaFilter}
               onChange={(e) =>
                 setAreaFilter(
-                  e.target.value === "all"
-                    ? "all"
-                    : (e.target.value as Area)
+                  e.target.value === "all" ? "all" : (e.target.value as Area)
                 )
               }
             >
@@ -630,7 +556,6 @@ export default function LoomRoomHome() {
           </div>
         </section>
 
-        {/* タイムライン本体 */}
         <section className="feed-list">
           {error && (
             <div className="feed-message feed-error">
@@ -639,26 +564,29 @@ export default function LoomRoomHome() {
           )}
           {loading && !error && (
             <div className="feed-message feed-loading">
-              タイムラインを読み込んでいます…</div>
+              タイムラインを読み込んでいます…
+            </div>
+          )}
+
+          {!loading && !error && filteredPosts.length === 0 && (
+            <div className="feed-message">まだ投稿がありません。</div>
           )}
 
           {filteredPosts.map((post) => {
             const handle = getHandle(post);
             const profileClickable = !!post.profilePath;
+            const initial = initialFromName(post.authorName);
 
             return (
               <article key={post.id} className="feed-item">
                 <div className="feed-item-inner">
-                  {/* 左：アイコン（タップでプロフィールへ） */}
                   <div
                     className="avatar"
                     onClick={(e) => {
                       e.stopPropagation();
                       goToProfile(post);
                     }}
-                    style={{
-                      cursor: profileClickable ? "pointer" : "default",
-                    }}
+                    style={{ cursor: profileClickable ? "pointer" : "default" }}
                   >
                     {post.avatarUrl ? (
                       <img
@@ -666,35 +594,25 @@ export default function LoomRoomHome() {
                         alt={post.authorName}
                         className="avatar-img"
                       />
-                    ) : post.authorKind === "therapist" ? (
-                      "🧑‍🦱"
-                    ) : post.authorKind === "store" ? (
-                      "🏬"
                     ) : (
-                      "🙂"
+                      <span className="avatar-initial">{initial}</span>
                     )}
                   </div>
 
-                  {/* 右：本文 */}
                   <div className="feed-main">
-                    {/* 名前／ハンドルもタップでプロフィール */}
                     <div
                       className="feed-header"
                       onClick={(e) => {
                         e.stopPropagation();
                         goToProfile(post);
                       }}
-                      style={{
-                        cursor: profileClickable ? "pointer" : "default",
-                      }}
+                      style={{ cursor: profileClickable ? "pointer" : "default" }}
                     >
                       <div className="feed-name-row">
                         <span className="post-name">{post.authorName}</span>
                         {renderGoldBadge(post.authorKind)}
                       </div>
-                      {handle && (
-                        <div className="post-username">{handle}</div>
-                      )}
+                      {handle && <div className="post-username">{handle}</div>}
                     </div>
 
                     <div className="post-meta">
@@ -706,9 +624,7 @@ export default function LoomRoomHome() {
                     <div className="post-body">
                       {post.body.split("\n").map((line, idx) => (
                         <p key={idx}>
-                          {line || (
-                            <span style={{ opacity: 0.3 }}>　</span>
-                          )}
+                          {line || <span style={{ opacity: 0.3 }}>　</span>}
                         </p>
                       ))}
                     </div>
@@ -716,18 +632,14 @@ export default function LoomRoomHome() {
                     <div className="post-footer">
                       <button
                         type="button"
-                        className={`post-like-btn ${
-                          post.liked ? "liked" : ""
-                        }`}
+                        className={`post-like-btn ${post.liked ? "liked" : ""}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           void handleToggleLike(post);
                         }}
                       >
                         <span className="post-like-icon">♥</span>
-                        <span className="post-like-count">
-                          {post.likeCount}
-                        </span>
+                        <span className="post-like-count">{post.likeCount}</span>
                       </button>
 
                       <button
@@ -741,12 +653,9 @@ export default function LoomRoomHome() {
                         }}
                       >
                         <span className="post-reply-icon">💬</span>
-                        <span className="post-reply-count">
-                          {post.replyCount}
-                        </span>
+                        <span className="post-reply-count">{post.replyCount}</span>
                       </button>
 
-                      {/* ・・・メニュー（通報ボタン） */}
                       <div className="post-more-wrapper">
                         <button
                           type="button"
@@ -785,10 +694,7 @@ export default function LoomRoomHome() {
         </section>
       </main>
 
-      <BottomNav
-        active="home"
-        hasUnread={hasUnread}
-      />
+      <BottomNav active="home" hasUnread={hasUnread} />
 
       <style jsx>{`
         .page-root {
@@ -853,14 +759,20 @@ export default function LoomRoomHome() {
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 20px;
           overflow: hidden;
+          flex-shrink: 0;
         }
 
         .avatar-img {
           width: 100%;
           height: 100%;
           object-fit: cover;
+        }
+
+        .avatar-initial {
+          font-size: 14px;
+          font-weight: 700;
+          color: rgba(0, 0, 0, 0.65);
         }
 
         .feed-main {

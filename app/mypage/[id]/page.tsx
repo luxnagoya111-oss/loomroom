@@ -397,7 +397,7 @@ useEffect(() => {
         snsLine: data.snsLine ?? prev.snsLine,
         snsOther: data.snsOther ?? prev.snsOther,
         avatarDataUrl:
-          data.avatarDataUrl || data.avatarUrl || prev.avatarDataUrl,
+          prev.avatarDataUrl || data.avatarDataUrl || data.avatarUrl,
         accountType: data.accountType
           ? data.accountType
           : typeof data.isMember === "boolean"

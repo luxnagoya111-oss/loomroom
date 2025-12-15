@@ -1,3 +1,4 @@
+// app/store/[id]/page.tsx
 "use client";
 
 import React, { useEffect, useState, type CSSProperties } from "react";
@@ -10,16 +11,19 @@ import { makeThreadId } from "@/lib/dmThread";
 import { getCurrentUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
+
 import {
   getRelation,
   setRelation as setRelationOnServer,
   toRelationFlags,
   type RelationFlags,
 } from "@/lib/repositories/relationRepository";
+
 import {
   getRelationFlags as getLocalRelationFlags,
   setRelation as setLocalRelation,
 } from "@/lib/relationStorage";
+
 import type { UserId } from "@/types/user";
 import { RelationActions } from "@/components/RelationActions";
 
@@ -50,6 +54,13 @@ type DbPostRow = {
   body: string | null;
   area: string | null;
   created_at: string;
+};
+
+// ★ 在籍セラピスト（therapistsテーブル）表示用
+type DbTherapistRow = {
+  id: string;
+  display_name: string | null;
+  avatar_url: string | null;
 };
 
 // relations は users.id（uuid）で持つ前提
@@ -136,9 +147,21 @@ const StoreProfilePage: React.FC = () => {
   // 店舗オーナーの users.id（uuid）を relations 用に保持
   const [storeOwnerUserId, setStoreOwnerUserId] = useState<string | null>(null);
 
+  // ==============================
+  // ★ FIX: 自分判定（users.id === stores.owner_user_id）
+  // ==============================
+  const isOwner =
+    !!currentUserId &&
+    !!storeOwnerUserId &&
+    currentUserId === storeOwnerUserId;
+
+  // ==============================
+  // ★ FIX: DMスレッドは「自分(users.id) × 店舗オーナー(users.id)」で作る
+  // （自分のページでは threadId を作らない）
+  // ==============================
   const threadId =
-    currentUserId && currentUserId !== storeId
-      ? makeThreadId(currentUserId, storeId)
+    currentUserId && storeOwnerUserId && !isOwner
+      ? makeThreadId(currentUserId, storeOwnerUserId)
       : null;
 
   const [relations, setRelations] = useState<RelationFlags>({
@@ -147,8 +170,9 @@ const StoreProfilePage: React.FC = () => {
     blocked: false,
   });
 
+  // ★ therapistsテーブル（display_name / avatar_url）で表示する
   const [therapists, setTherapists] = useState<
-    { id: string; displayName: string; avatarDataUrl?: string }[]
+    { id: string; display_name: string; avatar_url?: string | null }[]
   >([]);
 
   const [storeAvatarDataUrl, setStoreAvatarDataUrl] = useState<
@@ -160,6 +184,11 @@ const StoreProfilePage: React.FC = () => {
   const [posts, setPosts] = useState<StorePost[]>([]);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
+
+  // 在籍申請用
+  const [canApplyMembership, setCanApplyMembership] = useState(false);
+  const [applyLoading, setApplyLoading] = useState(false);
+  const [applyDone, setApplyDone] = useState(false);
 
   // currentUserId をクライアント側で初期化
   useEffect(() => {
@@ -193,14 +222,67 @@ const StoreProfilePage: React.FC = () => {
     }
 
     // 2) それ以外（guest 等）は旧ローカルストレージ版で復元
-    if (currentUserId !== storeId) {
-      const flags = getLocalRelationFlags(
-        currentUserId as UserId,
-        storeId as UserId
-      );
+    const localTargetId = (storeOwnerUserId ?? storeId) as UserId;
+
+    if (currentUserId !== (storeOwnerUserId ?? storeId)) {
+      const flags = getLocalRelationFlags(currentUserId as UserId, localTargetId);
       setRelations(flags);
     }
   }, [currentUserId, storeOwnerUserId, storeId]);
+
+  // ==============================
+  // 在籍申請ボタン表示判定
+  // ==============================
+  useEffect(() => {
+    let cancelled = false;
+
+    const checkEligibility = async () => {
+      // 未ログイン or uuid でない → 出さない
+      if (!currentUserId || !isUuid(currentUserId)) {
+        setCanApplyMembership(false);
+        return;
+      }
+
+      // 店舗オーナー自身 → 出さない
+      if (currentUserId === storeOwnerUserId) {
+        setCanApplyMembership(false);
+        return;
+      }
+
+      // therapist か確認
+      const { data: userRow } = await supabase
+        .from("users")
+        .select("role")
+        .eq("id", currentUserId)
+        .maybeSingle();
+
+      if (cancelled || userRow?.role !== "therapist") {
+        setCanApplyMembership(false);
+        return;
+      }
+
+      // therapist 未所属か確認（store_id が NULL なら申請可）
+      const { data: therapistRow } = await supabase
+        .from("therapists")
+        .select("store_id")
+        .eq("user_id", currentUserId)
+        .maybeSingle();
+
+      if (cancelled) return;
+
+      if (therapistRow && therapistRow.store_id == null) {
+        setCanApplyMembership(true);
+      } else {
+        setCanApplyMembership(false);
+      }
+    };
+
+    checkEligibility();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, storeOwnerUserId]);
 
   // ==============================
   // フォロー / ミュート / ブロック
@@ -230,10 +312,12 @@ const StoreProfilePage: React.FC = () => {
     }
 
     // 2) ローカル版（guest 等）
-    if (currentUserId !== storeId) {
+    const localTargetId = (storeOwnerUserId ?? storeId) as UserId;
+
+    if (currentUserId !== (storeOwnerUserId ?? storeId)) {
       const updated = setLocalRelation(
         currentUserId as UserId,
-        storeId as UserId,
+        localTargetId,
         "follow",
         nextEnabled
       );
@@ -266,10 +350,12 @@ const StoreProfilePage: React.FC = () => {
     }
 
     // 2) ローカル版
-    if (currentUserId !== storeId) {
+    const localTargetId = (storeOwnerUserId ?? storeId) as UserId;
+
+    if (currentUserId !== (storeOwnerUserId ?? storeId)) {
       const updated = setLocalRelation(
         currentUserId as UserId,
-        storeId as UserId,
+        localTargetId,
         "mute",
         nextEnabled
       );
@@ -309,10 +395,12 @@ const StoreProfilePage: React.FC = () => {
     }
 
     // 2) ローカル版
-    if (currentUserId !== storeId) {
+    const localTargetId = (storeOwnerUserId ?? storeId) as UserId;
+
+    if (currentUserId !== (storeOwnerUserId ?? storeId)) {
       const updated = setLocalRelation(
         currentUserId as UserId,
-        storeId as UserId,
+        localTargetId,
         "block",
         nextEnabled
       );
@@ -349,15 +437,11 @@ const StoreProfilePage: React.FC = () => {
           setProfileError(
             (sError as any)?.message ?? "店舗プロフィールの取得に失敗しました。"
           );
-          setLoadingProfile(false);
-          setLoadingPosts(false);
           return;
         }
 
         if (!storeRow) {
           setProfileError("店舗プロフィールが見つかりませんでした。");
-          setLoadingProfile(false);
-          setLoadingPosts(false);
           return;
         }
 
@@ -437,22 +521,17 @@ const StoreProfilePage: React.FC = () => {
             );
             setPosts([]);
           } else {
-            const postsMapped: StorePost[] = (postRows ?? []).map(
-              (r: DbPostRow) => ({
-                id: r.id,
-                body: r.body ?? "",
-                timeAgo: timeAgo(r.created_at),
-                areaLabel: r.area ?? null,
-              })
-            );
+            const postsMapped: StorePost[] = (postRows ?? []).map((r: any) => ({
+              id: (r as DbPostRow).id,
+              body: (r as DbPostRow).body ?? "",
+              timeAgo: timeAgo((r as DbPostRow).created_at),
+              areaLabel: (r as DbPostRow).area ?? null,
+            }));
             setPosts(postsMapped);
           }
         } else {
-          // owner_user_id が無ければ投稿は0扱い
           setPosts([]);
         }
-
-        setLoadingProfile(false);
       } catch (e: any) {
         if (cancelled) return;
         console.error("Supabase store(fetch) unexpected error:", e);
@@ -476,91 +555,115 @@ const StoreProfilePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-    // storeAvatarDataUrl は「未設定なら users.avatar_url を使う」判定で参照
   }, [storeId, storeAvatarDataUrl]);
 
   // ==============================
-  // 店舗プロフィール ＋ 在籍セラピスト（localStorage）読み込み
+  // 在籍セラピスト（DB → fallbackでlocalStorage）
   // ==============================
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    let cancelled = false;
 
-    try {
-      const storeKey = `${STORE_STORAGE_PREFIX}${storeId}`;
-      const rawStore = window.localStorage.getItem(storeKey);
+    const load = async () => {
+      // 1) DB（正）：therapists テーブルの display_name / avatar_url を使う
+      try {
+        const { data, error } = await supabase
+          .from("therapists")
+          .select("id, display_name, avatar_url, store_id")
+          .eq("store_id", storeId);
 
-      if (!rawStore) {
-        setTherapists([]);
-        return;
-      }
+        if (cancelled) return;
+        if (error) throw error;
 
-      const storeProfile = JSON.parse(rawStore) as StoreLocalProfile;
-
-      // 店舗アイコン（ローカル設定があれば Supabase より優先）
-      if (storeProfile.avatarDataUrl) {
-        setStoreAvatarDataUrl(storeProfile.avatarDataUrl);
-      }
-
-      let members: TherapistMember[] = Array.isArray(storeProfile.members)
-        ? storeProfile.members
-        : [];
-
-      if ((!members || members.length === 0) && storeProfile.therapistIdsText) {
-        const ids = storeProfile.therapistIdsText
-          .split(/\r?\n|,|、|\s+/)
-          .map((s) => s.trim())
-          .filter(Boolean);
-
-        members = ids.map((id) => ({
-          therapistId: id,
-          status: "approved",
+        const rows = (data ?? []).map((t: any) => ({
+          id: (t as DbTherapistRow).id,
+          display_name:
+            ((t as DbTherapistRow).display_name ?? "").trim() || (t as DbTherapistRow).id,
+          avatar_url: (t as DbTherapistRow).avatar_url ?? null,
         }));
+
+        setTherapists(rows);
+        return;
+      } catch (e) {
+        console.warn(
+          "[store page] therapists db load failed, fallback to localStorage",
+          e
+        );
       }
 
-      const approvedIds = members
-        .filter((m) => m.status === "approved")
-        .map((m) => m.therapistId);
+      // 2) fallback: localStorage
+      if (typeof window === "undefined") return;
 
-      const result: {
-        id: string;
-        displayName: string;
-        avatarDataUrl?: string;
-      }[] = [];
+      try {
+        const storeKey = `${STORE_STORAGE_PREFIX}${storeId}`;
+        const rawStore = window.localStorage.getItem(storeKey);
 
-      approvedIds.forEach((id) => {
-        const tKey = `${THERAPIST_STORAGE_PREFIX}${id}`;
-        const rawTherapist = window.localStorage.getItem(tKey);
-
-        if (rawTherapist) {
-          try {
-            const t = JSON.parse(rawTherapist) as TherapistLocalProfile;
-            result.push({
-              id,
-              displayName:
-                t.displayName && t.displayName.trim() !== ""
-                  ? t.displayName
-                  : id,
-              avatarDataUrl: t.avatarDataUrl,
-            });
-          } catch {
-            result.push({
-              id,
-              displayName: id,
-            });
-          }
-        } else {
-          result.push({
-            id,
-            displayName: id,
-          });
+        if (!rawStore) {
+          setTherapists([]);
+          return;
         }
-      });
 
-      setTherapists(result);
-    } catch (e) {
-      console.warn("Failed to load store memberships", e);
-      setTherapists([]);
-    }
+        const storeProfile = JSON.parse(rawStore) as StoreLocalProfile;
+
+        // 店舗アイコン（ローカル設定があれば Supabase より優先）
+        if (storeProfile.avatarDataUrl) {
+          setStoreAvatarDataUrl(storeProfile.avatarDataUrl);
+        }
+
+        let members: TherapistMember[] = Array.isArray(storeProfile.members)
+          ? storeProfile.members
+          : [];
+
+        if ((!members || members.length === 0) && storeProfile.therapistIdsText) {
+          const ids = storeProfile.therapistIdsText
+            .split(/\r?\n|,|、|\s+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+
+          members = ids.map((id) => ({
+            therapistId: id,
+            status: "approved",
+          }));
+        }
+
+        const approvedIds = members
+          .filter((m) => m.status === "approved")
+          .map((m) => m.therapistId);
+
+        const result: { id: string; display_name: string; avatar_url?: string | null }[] =
+          [];
+
+        approvedIds.forEach((id) => {
+          const tKey = `${THERAPIST_STORAGE_PREFIX}${id}`;
+          const rawTherapist = window.localStorage.getItem(tKey);
+
+          if (rawTherapist) {
+            try {
+              const t = JSON.parse(rawTherapist) as TherapistLocalProfile;
+              result.push({
+                id,
+                display_name: t.displayName?.trim() ? t.displayName.trim() : id,
+                avatar_url: t.avatarDataUrl ?? null,
+              });
+            } catch {
+              result.push({ id, display_name: id, avatar_url: null });
+            }
+          } else {
+            result.push({ id, display_name: id, avatar_url: null });
+          }
+        });
+
+        setTherapists(result);
+      } catch (e) {
+        console.warn("Failed to load store memberships", e);
+        setTherapists([]);
+      }
+    };
+
+    load();
+
+    return () => {
+      cancelled = true;
+    };
   }, [storeId]);
 
   const storeInitial =
@@ -583,10 +686,9 @@ const StoreProfilePage: React.FC = () => {
     }));
   };
 
+  // ★ フォローUIは「自分（オーナー）」なら非表示
   const canShowRelationUi =
-    !!currentUserId &&
-    // 自分のストアプロフィールには出さない（guest の場合は常に true で OK）
-    currentUserId !== storeId;
+    !!currentUserId && !!storeOwnerUserId && !isOwner;
 
   return (
     <div className="app-shell">
@@ -618,7 +720,9 @@ const StoreProfilePage: React.FC = () => {
                 <span className="store-name">{storeName}</span>
                 <span className="store-handle">
                   {storeHandle}
-                  {threadId && (
+
+                  {/* 自分の店舗ページでは ✉ を出さない */}
+                  {!isOwner && threadId && (
                     <Link
                       href={`/messages/${threadId}`}
                       className="dm-inline-btn no-link-style"
@@ -639,10 +743,12 @@ const StoreProfilePage: React.FC = () => {
                     )}
                 </span>
               </div>
+
               <div className="store-meta-row">
                 <span>アカウント種別：店舗</span>
                 <span>対応エリア：{areaLabel}</span>
               </div>
+
               <div className="store-stats-row">
                 <span>
                   投稿 <strong>{posts.length}</strong>
@@ -660,34 +766,80 @@ const StoreProfilePage: React.FC = () => {
                   onToggleBlock={handleToggleBlock}
                   onReport={() => {
                     console.log("report:", "profile", storeId);
-                    alert(
-                      "この店舗の通報を受け付けました（現在はテスト用です）。"
-                    );
+                    alert("この店舗の通報を受け付けました（現在はテスト用です）。");
                   }}
                 />
+              )}
+
+              {canApplyMembership && (
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    disabled={applyLoading || applyDone}
+                    onClick={async () => {
+                      try {
+                        setApplyLoading(true);
+
+                        const res = await fetch("/api/therapist-store-requests", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ store_id: storeId }),
+                        });
+
+                        const json = await res.json();
+
+                        if (!res.ok) {
+                          // すでに申請済みは成功扱い
+                          if (
+                            typeof json?.error === "string" &&
+                            json.error.includes("already pending")
+                          ) {
+                            setApplyDone(true);
+                            return;
+                          }
+                          throw new Error(json?.error || "申請に失敗しました");
+                        }
+
+                        setApplyDone(true);
+                      } catch (e: any) {
+                        alert(e.message ?? "在籍申請に失敗しました");
+                      } finally {
+                        setApplyLoading(false);
+                      }
+                    }}
+                    style={{
+                      width: "100%",
+                      borderRadius: 999,
+                      padding: "10px 12px",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      border: "none",
+                      background: applyDone ? "#ddd" : "var(--accent)",
+                      color: applyDone ? "#666" : "#fff",
+                      cursor: applyDone ? "default" : "pointer",
+                    }}
+                  >
+                    {applyDone
+                      ? "在籍申請済み"
+                      : applyLoading
+                      ? "申請中…"
+                      : "この店舗に在籍申請する"}
+                  </button>
+                </div>
               )}
             </div>
           </div>
 
           <p className="store-hero-lead">
-            LoomRoom の中で、この店舗とゆるやかに繋がるためのプロフィールです。
-            予約や詳細なご案内は、各店舗が案内している公式窓口をご利用ください。
+            {storeProfileText && storeProfileText.trim().length > 0
+              ? storeProfileText.split("\n").map((line, idx, arr) => (
+                  <React.Fragment key={idx}>
+                    {line}
+                    {idx < arr.length - 1 && <br />}
+                  </React.Fragment>
+                ))
+              : null}
           </p>
-        </section>
-
-        {/* お店について */}
-        <section className="surface-card store-card">
-          <h2 className="store-section-title">お店について</h2>
-          <p className="store-text">
-            {storeProfileText ??
-              "落ち着いた雰囲気の中で、ゆっくりと自分のペースで過ごしていただくことを大切にしているお店です。「はじめてで不安」「少し距離を取りながら様子を見たい」という方も、無理のない形で関われるようにしています。"}
-          </p>
-          {!storeProfileText && (
-            <p className="store-text">
-              LoomRoom 上では、このお店に所属するセラピストの空気感や、ささやかな
-              お知らせを中心に発信していきます。
-            </p>
-          )}
         </section>
 
         {/* 在籍セラピスト一覧 */}
@@ -701,41 +853,34 @@ const StoreProfilePage: React.FC = () => {
           ) : (
             <ul className="therapist-list">
               {therapists.map((t) => {
-                const initialSource = (t.displayName || t.id || "").trim();
-                const initial =
-                  initialSource.length > 0
-                    ? initialSource.charAt(0).toUpperCase()
-                    : "?";
+                const name = (t.display_name || t.id || "").trim();
+                const initial = name ? name.charAt(0).toUpperCase() : "?";
 
                 return (
                   <li
                     key={t.id}
                     className="therapist-item"
-                    onClick={() =>
-                      (window.location.href = `/therapist/${t.id}`)
-                    }
+                    onClick={() => (window.location.href = `/therapist/${t.id}`)}
                   >
                     <div
                       className="avatar-circle therapist-avatar"
                       style={
-                        t.avatarDataUrl
+                        t.avatar_url
                           ? {
-                              backgroundImage: `url(${t.avatarDataUrl})`,
+                              backgroundImage: `url(${t.avatar_url})`,
                               backgroundSize: "cover",
                               backgroundPosition: "center",
                             }
                           : {}
                       }
                     >
-                      {!t.avatarDataUrl && (
+                      {!t.avatar_url && (
                         <span className="avatar-circle-text">{initial}</span>
                       )}
                     </div>
 
                     <div className="therapist-item-main">
-                      <div className="therapist-item-name">
-                        {t.displayName}
-                      </div>
+                      <div className="therapist-item-name">{t.display_name}</div>
                       <div className="therapist-item-id">@{t.id}</div>
                     </div>
                   </li>
@@ -796,8 +941,7 @@ const StoreProfilePage: React.FC = () => {
           </div>
 
           <p className="store-caption">
-            ※ 上記リンクは LoomRoom 外のサービスです。
-            各サービスごとの利用規約・ポリシーをご確認のうえご利用ください。
+            ※ 上記リンクは LoomRoom 外のサービスです。各サービスごとの利用規約・ポリシーをご確認のうえご利用ください。
           </p>
         </section>
 
@@ -805,9 +949,7 @@ const StoreProfilePage: React.FC = () => {
         <section className="surface-card store-card store-posts-section">
           <h2 className="store-section-title">お店の発信</h2>
 
-          {loadingPosts && (
-            <p className="store-caption">投稿を読み込んでいます…</p>
-          )}
+          {loadingPosts && <p className="store-caption">投稿を読み込んでいます…</p>}
           {postsError && !loadingPosts && (
             <p className="store-caption" style={{ color: "#b00020" }}>
               {postsError}
@@ -815,8 +957,7 @@ const StoreProfilePage: React.FC = () => {
           )}
           {!loadingPosts && !postsError && posts.length === 0 && (
             <p className="store-caption">
-              まだこのお店からの投稿はありません。
-              少しずつ、雰囲気が分かる言葉を並べていく予定です。
+              まだこのお店からの投稿はありません。少しずつ、雰囲気が分かる言葉を並べていく予定です。
             </p>
           )}
           {!loadingPosts && !postsError && posts.length > 0 && (
@@ -828,57 +969,46 @@ const StoreProfilePage: React.FC = () => {
                 return (
                   <div key={p.id} className="feed-item">
                     <div className="feed-item-inner">
-                      <div className="avatar" style={avatarStyle}>
-                        {!storeAvatarDataUrl && "🏠"}
+                      <div className="avatar" style={avatarStyle} aria-hidden="true">
+                        {!storeAvatarDataUrl && (
+                          <span className="avatar-fallback">{storeInitial}</span>
+                        )}
                       </div>
 
                       <div className="feed-main">
                         <div className="feed-header">
                           <div className="feed-name-row">
                             <span className="post-name">{storeName}</span>
-                            <span className="post-username">
-                              {storeHandle}
-                            </span>
+                            <span className="post-username">{storeHandle}</span>
                           </div>
                           <div className="post-meta">
-                            <span>
-                              {p.areaLabel ? p.areaLabel : areaLabel}
-                            </span>
+                            <span>{p.areaLabel ? p.areaLabel : areaLabel}</span>
                             <span>・</span>
                             <span>{p.timeAgo}</span>
                           </div>
                         </div>
 
                         <div className="post-body">
-                          {p.body.split("\n").map(
-                            (line: string, idx: number) => (
-                              <p key={idx}>
-                                {line || (
-                                  <span style={{ opacity: 0.3 }}>　</span>
-                                )}
-                              </p>
-                            )
-                          )}
+                          {p.body.split("\n").map((line: string, idx: number) => (
+                            <p key={idx}>
+                              {line || <span style={{ opacity: 0.3 }}>　</span>}
+                            </p>
+                          ))}
                         </div>
 
                         <div className="post-actions">
                           <button
                             type="button"
                             className={
-                              "post-like-btn" +
-                              (liked ? " post-like-btn--liked" : "")
+                              "post-like-btn" + (liked ? " post-like-btn--liked" : "")
                             }
                             onClick={(e) => {
                               e.stopPropagation();
                               toggleLike(p.id);
                             }}
                           >
-                            <span className="post-like-icon">
-                              {liked ? "♥" : "♡"}
-                            </span>
-                            <span className="post-like-count">
-                              {likeCount}
-                            </span>
+                            <span className="post-like-icon">{liked ? "♥" : "♡"}</span>
+                            <span className="post-like-count">{likeCount}</span>
                           </button>
                           <span className="post-action-text">コメント</span>
                         </div>
@@ -974,13 +1104,6 @@ const StoreProfilePage: React.FC = () => {
           margin-bottom: 6px;
         }
 
-        .store-text {
-          font-size: 13px;
-          line-height: 1.7;
-          color: var(--text-main);
-          margin-bottom: 6px;
-        }
-
         .store-links {
           display: flex;
           flex-direction: column;
@@ -1054,9 +1177,6 @@ const StoreProfilePage: React.FC = () => {
           color: var(--text-sub);
         }
 
-        .store-posts-section {
-        }
-
         .edit-inline-btn {
           margin-left: 6px;
           font-size: 14px;
@@ -1066,6 +1186,25 @@ const StoreProfilePage: React.FC = () => {
         .edit-inline-btn:hover {
           opacity: 1;
         }
+
+      .avatar {
+        width: 38px;
+        height: 38px;
+        border-radius: 999px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        background: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 38px;
+        overflow: hidden;
+      }
+
+      .avatar-fallback {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-sub);
+      }  
       `}</style>
     </div>
   );
