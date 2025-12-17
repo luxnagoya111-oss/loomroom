@@ -5,7 +5,7 @@ import React, { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { supabase } from "@/lib/supabaseClient";
-import { persistCurrentUserId } from "@/lib/auth";
+import { persistCurrentUserId, resetAuthFlow } from "@/lib/auth";
 
 type Step = "processing" | "success" | "error";
 
@@ -20,12 +20,31 @@ function pickNameFromUser(user: any): string {
   );
 }
 
+/**
+ * Supabase OAuth の典型的な失敗（PKCE/コード交換系）をざっくり判定
+ * - 400 invalid request
+ * - code_verifier_missing
+ * - invalid_grant
+ */
+function isRecoverableOAuthErrorMessage(msg: string): boolean {
+  const s = (msg || "").toLowerCase();
+  return (
+    s.includes("code verifier") ||
+    s.includes("code_verifier") ||
+    s.includes("invalid request") ||
+    s.includes("invalid_grant") ||
+    s.includes("400")
+  );
+}
+
 export default function CallbackClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   const [step, setStep] = useState<Step>("processing");
   const [message, setMessage] = useState("ログイン処理中です…");
+  const [canRecover, setCanRecover] = useState(false);
+  const [recovering, setRecovering] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,71 +53,100 @@ export default function CallbackClient() {
       if (cancelled) return;
       setStep("error");
       setMessage(msg);
+      setCanRecover(isRecoverableOAuthErrorMessage(msg));
+    };
+
+    const succeedAndGo = (uid: string) => {
+      persistCurrentUserId(uid);
+      if (cancelled) return;
+      setStep("success");
+      setMessage("ログインしました。移動します…");
+      router.replace(`/mypage/${uid}`);
     };
 
     const run = async () => {
       try {
+        // Google など OAuth から戻ると query で code / error が来る
         const code = searchParams.get("code");
-        const errorDesc = searchParams.get("error_description");
         const error = searchParams.get("error");
+        const errorDesc = searchParams.get("error_description");
 
         if (error || errorDesc) {
           fail(`認証に失敗しました：${errorDesc ?? error ?? "unknown error"}`);
           return;
         }
 
-        // code が無い場合でも session が残っているケースがあるので保険
+        /**
+         * 1) code が無い場合
+         * - すでに session が残っている（成功済み）可能性があるので getSession を確認
+         */
         if (!code) {
-          const { data: sessionData } = await supabase.auth.getSession();
-          const uid = sessionData.session?.user?.id ?? null;
-          if (!uid) {
-            fail("認証コードが見つかりませんでした。もう一度 Google でログインしてください。");
+          const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+          if (sessionErr) {
+            fail(`セッション確認に失敗しました：${sessionErr.message}`);
             return;
           }
-          persistCurrentUserId(uid);
-          if (cancelled) return;
-          setStep("success");
-          setMessage("ログインしました。移動します…");
-          router.replace(`/mypage/${uid}`);
+
+          const uid = sessionData?.session?.user?.id ?? null;
+          if (!uid) {
+            fail(
+              "認証コードが見つかりませんでした。\n一度ログイン状態をリセットしてから、もう一度 Google でログインしてください。"
+            );
+            return;
+          }
+
+          succeedAndGo(uid);
           return;
         }
 
-        // ★ここが本丸：code → session 交換
+        /**
+         * 2) code → session 交換（本丸）
+         */
         const { data, error: exErr } = await supabase.auth.exchangeCodeForSession(code);
         if (exErr) {
           fail(`セッション確立に失敗しました：${exErr.message}`);
           return;
         }
 
-        const user = data.user ?? data.session?.user ?? null;
+        const user = (data as any)?.user ?? (data as any)?.session?.user ?? null;
         const uid = user?.id ?? null;
         if (!uid) {
           fail("ユーザー情報を取得できませんでした。");
           return;
         }
 
-        // 互換運用：localStorage に uuid 保存
+        // localStorage 同期
         persistCurrentUserId(uid);
 
-        // usersテーブル upsert（RLSで失敗してもログイン自体は続行）
+        /**
+         * 3) users テーブル upsert（失敗してもログイン自体は継続）
+         * - ここは RLS やタイミングで落ちやすいので、例外は握りつぶす
+         */
         try {
           const name = pickNameFromUser(user);
 
-          const { data: existing } = await supabase
+          const { data: existing, error: ex1 } = await supabase
             .from("users")
             .select("id, role, name")
             .eq("id", uid)
             .maybeSingle();
 
-          const roleToSave = existing?.role ?? "user";
-          const nameToSave = (existing?.name ?? name).trim() || "LRoom";
+          if (ex1) throw ex1;
 
-          if (existing?.id) {
-            await supabase.from("users").update({ name: nameToSave }).eq("id", uid);
+          const roleToSave = (existing as any)?.role ?? "user";
+          const nameToSave = String((existing as any)?.name ?? name).trim() || "LRoom";
+
+          if ((existing as any)?.id) {
+            const { error: upErr } = await supabase
+              .from("users")
+              .update({ name: nameToSave })
+              .eq("id", uid);
+            if (upErr) throw upErr;
           } else {
-            await supabase
+            const { error: inErr } = await supabase
               .from("users")
               .insert([{ id: uid, name: nameToSave, role: roleToSave }]);
+            if (inErr) throw inErr;
           }
         } catch (e) {
           console.warn("[auth/callback] users upsert skipped:", e);
@@ -121,9 +169,21 @@ export default function CallbackClient() {
     };
   }, [router, searchParams]);
 
+  const handleRecover = async () => {
+    try {
+      setRecovering(true);
+      // ここが重要：壊れたPKCE/セッションを掃除して再試行できる状態に戻す
+      await resetAuthFlow();
+      router.replace("/login");
+    } finally {
+      setRecovering(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <AppHeader title="ログイン" subtitle="LRoom" showBack={false} />
+
       <main className="app-main" style={{ padding: 16 }}>
         <div style={{ maxWidth: 520, margin: "0 auto" }}>
           <div
@@ -138,28 +198,69 @@ export default function CallbackClient() {
             <h1 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 700 }}>
               {step === "processing" ? "処理中" : step === "success" ? "完了" : "失敗"}
             </h1>
-            <p style={{ margin: 0, fontSize: 13, opacity: 0.8, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+
+            <p
+              style={{
+                margin: 0,
+                fontSize: 13,
+                opacity: 0.8,
+                lineHeight: 1.7,
+                whiteSpace: "pre-wrap",
+              }}
+            >
               {message}
             </p>
 
             {step === "error" && (
-              <button
-                style={{
-                  marginTop: 12,
-                  width: "100%",
-                  borderRadius: 999,
-                  border: "none",
-                  padding: "10px 12px",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  background: "linear-gradient(135deg, #f3c98b, #e8b362)",
-                  color: "#4a2b05",
-                  cursor: "pointer",
-                }}
-                onClick={() => router.replace("/login")}
-              >
-                ログイン画面へ戻る
-              </button>
+              <>
+                {/* 通常の戻る */}
+                <button
+                  style={{
+                    marginTop: 12,
+                    width: "100%",
+                    borderRadius: 999,
+                    border: "none",
+                    padding: "10px 12px",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    background: "linear-gradient(135deg, #f3c98b, #e8b362)",
+                    color: "#4a2b05",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => router.replace("/login")}
+                  disabled={recovering}
+                >
+                  ログイン画面へ戻る
+                </button>
+
+                {/* ★ 追加：復旧（PKCE/セッション掃除） */}
+                {canRecover && (
+                  <button
+                    style={{
+                      marginTop: 10,
+                      width: "100%",
+                      borderRadius: 999,
+                      border: "1px solid rgba(0,0,0,0.12)",
+                      padding: "10px 12px",
+                      fontSize: 14,
+                      fontWeight: 700,
+                      background: "rgba(255,255,255,0.9)",
+                      color: "rgba(0,0,0,0.72)",
+                      cursor: "pointer",
+                    }}
+                    onClick={handleRecover}
+                    disabled={recovering}
+                  >
+                    {recovering ? "リセット中…" : "ログイン状態をリセットしてやり直す"}
+                  </button>
+                )}
+
+                <p style={{ marginTop: 10, fontSize: 11, opacity: 0.7, lineHeight: 1.6 }}>
+                  何度も失敗する場合は、同じ端末・同じブラウザで開き直してください。
+                  <br />
+                  それでも直らない場合は、いったんブラウザのCookie/サイトデータを削除してください。
+                </p>
+              </>
             )}
           </div>
         </div>

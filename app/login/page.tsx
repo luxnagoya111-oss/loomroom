@@ -1,27 +1,26 @@
 // app/login/page.tsx
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { supabase } from "@/lib/supabaseClient";
-import { persistCurrentUserId } from "@/lib/auth";
+import { persistCurrentUserId, resetAuthFlow } from "@/lib/auth";
 import { getAuthRedirectTo } from "@/lib/authRedirect";
 
 // 既存：確認メール再送
-import {
-  resendSignupConfirmation,
-  isEmailNotConfirmedError,
-} from "@/lib/auth";
+import { resendSignupConfirmation, isEmailNotConfirmedError } from "@/lib/auth";
 
 type Mode = "login" | "signup";
 
 export default function LoginPage() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>("login");
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
@@ -35,23 +34,62 @@ export default function LoginPage() {
     setShowResend(false);
   };
 
+  /**
+   * 画面を開いた時点でセッションがあるなら、そのまま /mypage へ
+   * （「ログイン画面にいるのに実はログイン済み」を吸収）
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (cancelled) return;
+        if (error) return;
+
+        const uid = data.session?.user?.id ?? null;
+        if (uid) {
+          persistCurrentUserId(uid);
+          router.replace(`/mypage/${uid}`);
+        }
+      } catch {
+        // ここは無視でOK
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  /**
+   * Google（OAuth）
+   * - “新規登録”/“ログイン”の区別はない（初回なら自動でUserが作られる）
+   * - 壊れた状態を引きずるので、開始前に必ず resetAuthFlow() を呼ぶ
+   */
   const handleGoogle = async () => {
     resetMessages();
+
     try {
       setLoading(true);
+
+      // ★超重要：壊れたOAuth/PKCE状態を掃除してから開始
+      await resetAuthFlow();
 
       const redirectTo = getAuthRedirectTo("/auth/callback");
 
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo },
+        options: {
+          redirectTo,
+        },
       });
 
       if (error) {
         console.error("[login.google] error:", error);
         setErrorMsg(error.message || "Googleログインを開始できませんでした。");
       }
-      // 成功時は Google 画面へ遷移するのでここでは何もしない
+      // 成功時はGoogle画面へ遷移するのでここでは何もしない
     } catch (e: any) {
       console.error("[login.google] unexpected:", e);
       setErrorMsg(
@@ -63,6 +101,9 @@ export default function LoginPage() {
     }
   };
 
+  /**
+   * メールログイン/新規登録
+   */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     resetMessages();
@@ -99,11 +140,11 @@ export default function LoginPage() {
         }
 
         persistCurrentUserId(user.id);
-        router.push(`/mypage/${user.id}`);
+        router.replace(`/mypage/${user.id}`);
         return;
       }
 
-      // 新規登録（メール確認あり想定）
+      // 新規登録（メール確認あり）
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -119,16 +160,18 @@ export default function LoginPage() {
         return;
       }
 
-      const user = data.user;
-      if (!user) {
-        setInfoMsg(
-          "仮登録が完了しました。確認メールを送信しました。メール内のリンクを開いて登録を完了してください。"
-        );
-        return;
-      }
+      /**
+       * Supabase の設定次第で
+       * - user は返るが session が無い（確認前）
+       * - user すら null の場合
+       * があるので、ここでは “確認メールを見てね” を基本にする
+       */
+      setInfoMsg(
+        "仮登録が完了しました。確認メールを送信しました。メール内のリンクを開いて登録を完了してください。"
+      );
 
-      persistCurrentUserId(user.id);
-      router.push(`/mypage/${user.id}`);
+      // 確認前に /mypage へは飛ばさない（混乱と不整合を避ける）
+      return;
     } catch (e: any) {
       console.error("login/signup unexpected error:", e);
       setErrorMsg(
@@ -172,15 +215,11 @@ export default function LoginPage() {
 
   return (
     <>
-      <AppHeader
-        title="ログイン / 新規登録"
-        subtitle="LRoom アカウントへ"
-        showBack={true}
-      />
+      <AppHeader title="ログイン / 新規登録" subtitle="LRoom アカウントへ" showBack={true} />
 
       <main className="login-main">
         <div className="login-container">
-          {/* Googleのみ */}
+          {/* Google（新規/ログイン共通） */}
           <section className="oauth-card">
             <button
               type="button"
@@ -188,14 +227,14 @@ export default function LoginPage() {
               onClick={handleGoogle}
               disabled={loading || resending}
             >
-              {loading ? "Googleを起動中…" : "Googleで続行"}
+              {loading ? "Googleを起動中…" : "Googleで続行（新規/ログイン共通）"}
             </button>
             <p className="oauth-note">
-              うまくいかない場合は、下のメールログインも利用できます。
+              Googleは初回ログイン時に自動でアカウントが作成されます。うまくいかない場合は下のメールログインも利用できます。
             </p>
           </section>
 
-          {/* モード切り替え */}
+          {/* モード切り替え（メール用） */}
           <div className="login-tabs" role="tablist" aria-label="ログインモード">
             <button
               type="button"
@@ -207,7 +246,7 @@ export default function LoginPage() {
                 resetMessages();
               }}
             >
-              ログイン
+              ログイン（メール）
             </button>
             <button
               type="button"
@@ -219,20 +258,18 @@ export default function LoginPage() {
                 resetMessages();
               }}
             >
-              新規登録
+              新規登録（メール）
             </button>
           </div>
 
-          {/* フォーム */}
+          {/* メールフォーム */}
           <section className="login-card">
             <form onSubmit={handleSubmit} className="login-form">
               {!isLogin && (
                 <div className="form-row">
                   <label className="form-label">
                     表示名
-                    <span className="form-label-sub">
-                      LRoom 内で表示される名前です。
-                    </span>
+                    <span className="form-label-sub">LRoom 内で表示される名前です。</span>
                   </label>
                   <input
                     type="text"
@@ -271,9 +308,7 @@ export default function LoginPage() {
                 />
               </div>
 
-              {errorMsg && (
-                <div className="login-message login-message--error">{errorMsg}</div>
-              )}
+              {errorMsg && <div className="login-message login-message--error">{errorMsg}</div>}
               {infoMsg && !errorMsg && (
                 <div className="login-message login-message--info">{infoMsg}</div>
               )}
@@ -289,11 +324,7 @@ export default function LoginPage() {
                 </button>
               )}
 
-              <button
-                type="submit"
-                className="login-submit-btn"
-                disabled={loading || resending}
-              >
+              <button type="submit" className="login-submit-btn" disabled={loading || resending}>
                 {loading
                   ? isLogin
                     ? "ログイン中..."
@@ -305,8 +336,8 @@ export default function LoginPage() {
 
               <p className="login-note">
                 {isLogin
-                  ? "まだアカウントをお持ちでない場合は「新規登録」タブから作成できます。"
-                  : "すでにアカウントをお持ちの場合は「ログイン」タブからお進みください。"}
+                  ? "メールで新規登録する場合は「新規登録（メール）」タブへ。Googleで続行する場合は上のボタンから進めます。"
+                  : "すでにアカウントをお持ちの場合は「ログイン（メール）」タブへ。Googleで続行する場合は上のボタンから進めます。"}
               </p>
             </form>
           </section>
@@ -370,7 +401,7 @@ export default function LoginPage() {
         }
         .login-tab {
           flex: 1;
-          min-width: 120px;
+          min-width: 140px;
           border: none;
           background: transparent;
           border-radius: 999px;
@@ -478,6 +509,7 @@ export default function LoginPage() {
           margin-top: 6px;
           font-size: 11px;
           color: var(--text-sub);
+          line-height: 1.6;
         }
 
         .login-subsection {

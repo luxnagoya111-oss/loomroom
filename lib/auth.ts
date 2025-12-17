@@ -169,3 +169,56 @@ export async function logout(): Promise<void> {
     clearStoredUserId();
   }
 }
+
+/**
+ * ===== OAuth/PKCE 事故復旧用（今回追加） =====
+ * Google OAuth が途中で壊れると、ブラウザに PKCE / auth 状態が残って
+ * /auth/callback で 400（code_verifier_missing など）を誘発し続ける。
+ * その復旧のため「Supabase側のauthストレージ」を掃除できるようにする。
+ */
+
+/**
+ * Supabase がブラウザに残す auth/PKCE 関連キーを掃除
+ * - project ref が不明でも sb- で始まるキーを広く消す
+ */
+export function clearSupabaseAuthStorage(): void {
+  if (!isBrowser()) return;
+
+  try {
+    const keys = Object.keys(window.localStorage);
+    keys.forEach((k) => {
+      // Supabase v2: "sb-<project-ref>-auth-token" など
+      if (k.startsWith("sb-") && k.includes("auth")) {
+        window.localStorage.removeItem(k);
+      }
+    });
+
+    const sKeys = Object.keys(window.sessionStorage);
+    sKeys.forEach((k) => {
+      if (k.startsWith("sb-") && k.includes("auth")) {
+        window.sessionStorage.removeItem(k);
+      }
+    });
+  } catch {
+    // noop
+  }
+}
+
+/**
+ * OAuth/ログインフローが壊れた時の復旧用（ブラウザ限定）
+ * - supabase.auth.signOut()
+ * - loomroom_current_user クリア
+ * - supabase auth storage / PKCE verifier を掃除
+ */
+export async function resetAuthFlow(): Promise<void> {
+  if (!isBrowser()) return;
+
+  try {
+    await supabase.auth.signOut();
+  } catch {
+    // noop
+  } finally {
+    clearStoredUserId();
+    clearSupabaseAuthStorage();
+  }
+}
