@@ -11,7 +11,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { getRelationsForUser } from "@/lib/repositories/relationRepository";
 import type { UserId } from "@/types/user";
 import type { DbRelationRow } from "@/types/db";
-import { ensureViewerId } from "@/lib/auth";
+import { getCurrentUserId, ensureViewerId } from "@/lib/auth";
 
 type Area =
   | "北海道"
@@ -30,8 +30,8 @@ type Post = {
   id: string;
 
   /**
-   * ★重要：ここは「relations（mute/block）」に合わせて users.id（uuid）を入れる
-   * therapist/store の posts.author_id が roleテーブルid の場合でも、ここは users.id に正規化する
+   * relations（mute/block）に合わせて users.id（uuid）へ正規化したID
+   * therapist/store 投稿でも canonical user id を入れる
    */
   authorId: string;
 
@@ -181,7 +181,12 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 export default function LoomRoomHome() {
   const router = useRouter();
 
+  /**
+   * currentUserId = 画面識別用（guest-xxxx or uuid）
+   * viewerUuid    = DB操作用（uuidのみ / 未ログインは null）
+   */
   const [currentUserId, setCurrentUserId] = useState<UserId>("");
+  const [viewerUuid, setViewerUuid] = useState<UserId | null>(null);
 
   const [relations, setRelations] = useState<DbRelationRow[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -192,20 +197,25 @@ export default function LoomRoomHome() {
   const [kindFilter, setKindFilter] = useState<AuthorKind | "all">("all");
   const [openPostMenuId, setOpenPostMenuId] = useState<string | null>(null);
 
-  // 1) viewerId を必ず uuid で確定（匿名含む）
+  // 1) 画面IDは常に（ゲストでも）確定
+  useEffect(() => {
+    setCurrentUserId(getCurrentUserId());
+  }, []);
+
+  // 2) DB操作用 uuid を確定（未ログインなら null）
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const id = await ensureViewerId(); // ★必ず uuid を返す
+        const uid = await ensureViewerId(); // uuid or null（Anonymous撤去版）
         if (cancelled) return;
-        setCurrentUserId(id as UserId);
+        setViewerUuid(uid);
       } catch (e: any) {
         console.error("[home.ensureViewerId] error:", e);
         if (cancelled) return;
-        setError(e?.message ?? "ログイン状態の初期化に失敗しました");
-        setLoading(false);
+        // DB操作の初期化失敗は致命ではないので、TLは動かす
+        setViewerUuid(null);
       }
     })();
 
@@ -214,9 +224,9 @@ export default function LoomRoomHome() {
     };
   }, []);
 
-  // 2) relations は uuid のときだけ取得
+  // 3) relations は uuid のときだけ取得
   useEffect(() => {
-    if (!isUuid(currentUserId)) {
+    if (!viewerUuid || !isUuid(viewerUuid)) {
       setRelations([]);
       return;
     }
@@ -225,7 +235,7 @@ export default function LoomRoomHome() {
 
     (async () => {
       try {
-        const rows = await getRelationsForUser(currentUserId as UserId);
+        const rows = await getRelationsForUser(viewerUuid as UserId);
         if (cancelled) return;
         setRelations(rows ?? []);
       } catch (e: any) {
@@ -238,19 +248,17 @@ export default function LoomRoomHome() {
     return () => {
       cancelled = true;
     };
-  }, [currentUserId]);
+  }, [viewerUuid]);
 
-  // 3) タイムライン取得も uuid 確定後にだけ走らせる（重要）
+  // 4) タイムラインは「誰でも」取得（viewerUuid は likes 取得にだけ使う）
   useEffect(() => {
-    if (!isUuid(currentUserId)) return;
-
     let cancelled = false;
 
     const fetchTimelineFromSupabase = async () => {
-      try {
-        setLoading(true);
-        setError(null);
+      setLoading(true);
+      setError(null);
 
+      try {
         const { data: postData, error: postError } = await supabase
           .from("posts")
           .select(
@@ -264,23 +272,20 @@ export default function LoomRoomHome() {
         if (postError) {
           console.error("Supabase TL error:", postError);
           setError(postError.message ?? "タイムラインの取得に失敗しました");
-          setLoading(false);
+          setPosts([]);
           return;
         }
 
         const rows = (postData ?? []) as DbPostRow[];
-
         if (!rows.length) {
           setPosts([]);
-          setLoading(false);
           return;
         }
 
-        const rowsWithAuthor = rows.filter((r) => !!r.author_id && isUuid(r.author_id));
-
+        // ★ author_id は uuid とは限らない（therapists/stores id の場合あり）
+        const rowsWithAuthor = rows.filter((r) => !!r.author_id);
         if (!rowsWithAuthor.length) {
           setPosts([]);
-          setLoading(false);
           return;
         }
 
@@ -297,6 +302,7 @@ export default function LoomRoomHome() {
         const storeByOwnerId = new Map<string, DbStoreLite>();
         const storeById = new Map<string, DbStoreLite>();
 
+        // therapists / stores を「user_id / owner_user_id と id」両方で引けるようにする
         if (authorIds.length) {
           const { data: therByUserData, error: therByUserError } = await supabase
             .from("therapists")
@@ -359,16 +365,21 @@ export default function LoomRoomHome() {
           }
         }
 
-        const resolvedUserIds = new Set<string>(authorIds);
+        // users は uuid だけ fetch
+        const resolvedUserIds = new Set<string>();
+        authorIds.forEach((id) => {
+          if (isUuid(id)) resolvedUserIds.add(id);
+        });
         therapistById.forEach((t) => {
-          if (t.user_id) resolvedUserIds.add(t.user_id);
+          if (t.user_id && isUuid(t.user_id)) resolvedUserIds.add(t.user_id);
         });
         storeById.forEach((s) => {
-          if (s.owner_user_id) resolvedUserIds.add(s.owner_user_id);
+          if (s.owner_user_id && isUuid(s.owner_user_id))
+            resolvedUserIds.add(s.owner_user_id);
         });
 
         const userMap = new Map<string, DbUserRow>();
-        const userIdsToFetch = Array.from(resolvedUserIds).filter((id) => isUuid(id));
+        const userIdsToFetch = Array.from(resolvedUserIds);
         if (userIdsToFetch.length) {
           const { data: userData, error: userError } = await supabase
             .from("users")
@@ -382,20 +393,20 @@ export default function LoomRoomHome() {
           }
         }
 
-        // likes（viewer uuid 前提）
-        const effectiveUserIdForDb = currentUserId;
-
+        // likes は viewerUuid があるときだけ取得（未ログインは全部 false）
         let likedIdSet = new Set<string>();
-        const { data: likeData, error: likeError } = await supabase
-          .from("post_likes")
-          .select("post_id")
-          .eq("user_id", effectiveUserIdForDb);
+        if (viewerUuid && isUuid(viewerUuid)) {
+          const { data: likeData, error: likeError } = await supabase
+            .from("post_likes")
+            .select("post_id")
+            .eq("user_id", viewerUuid);
 
-        if (likeError) {
-          console.error("Supabase likes fetch error:", likeError);
-        } else {
-          const likeRows = (likeData ?? []) as DbPostLikeRow[];
-          likedIdSet = new Set(likeRows.map((r) => r.post_id));
+          if (likeError) {
+            console.error("Supabase likes fetch error:", likeError);
+          } else {
+            const likeRows = (likeData ?? []) as DbPostLikeRow[];
+            likedIdSet = new Set(likeRows.map((r) => r.post_id));
+          }
         }
 
         const mapped: Post[] = rowsWithAuthor.map((row) => {
@@ -424,6 +435,7 @@ export default function LoomRoomHome() {
               ? storeById.get(rawAuthorId) ?? storeByOwnerId.get(rawAuthorId) ?? null
               : null;
 
+          // canonical user id（mute/block判定に使う）
           let canonicalUserId = rawAuthorId;
           if (inferredKind === "therapist") {
             if (therapist?.user_id) canonicalUserId = therapist.user_id;
@@ -431,7 +443,7 @@ export default function LoomRoomHome() {
             if (store?.owner_user_id) canonicalUserId = store.owner_user_id;
           }
 
-          const user = userMap.get(canonicalUserId) ?? null;
+          const user = isUuid(canonicalUserId) ? userMap.get(canonicalUserId) ?? null : null;
 
           const area: Area = knownAreas.includes((row.area ?? "") as Area)
             ? ((row.area as Area) ?? "中部")
@@ -461,12 +473,18 @@ export default function LoomRoomHome() {
             const therapistId = therapist?.id ?? null;
             profilePath = therapistId
               ? `/therapist/${therapistId}`
-              : `/mypage/${canonicalUserId}`;
+              : isUuid(canonicalUserId)
+              ? `/mypage/${canonicalUserId}`
+              : null;
           } else if (inferredKind === "store") {
             const storeId = store?.id ?? null;
-            profilePath = storeId ? `/store/${storeId}` : `/mypage/${canonicalUserId}`;
+            profilePath = storeId
+              ? `/store/${storeId}`
+              : isUuid(canonicalUserId)
+              ? `/mypage/${canonicalUserId}`
+              : null;
           } else {
-            profilePath = `/mypage/${canonicalUserId}`;
+            profilePath = isUuid(canonicalUserId) ? `/mypage/${canonicalUserId}` : null;
           }
 
           const roleRaw =
@@ -499,12 +517,13 @@ export default function LoomRoomHome() {
 
         if (cancelled) return;
         setPosts(mapped);
-        setLoading(false);
       } catch (e: any) {
         if (cancelled) return;
         console.error("Supabase TL unexpected error:", e);
         setError(e?.message ?? "不明なエラーが発生しました");
-        setLoading(false);
+        setPosts([]);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -513,14 +532,13 @@ export default function LoomRoomHome() {
     return () => {
       cancelled = true;
     };
-  }, [currentUserId]);
+  }, [viewerUuid]); // viewerUuid が入ったら liked を反映し直すため再取得
 
   const handleToggleLike = async (post: Post) => {
-    if (!isUuid(currentUserId)) return;
+    if (!viewerUuid || !isUuid(viewerUuid)) return;
 
     const previousLiked = post.liked;
     const previousCount = post.likeCount;
-    const effectiveUserIdForDb = currentUserId;
 
     setPosts((prev) =>
       prev.map((p) =>
@@ -536,9 +554,9 @@ export default function LoomRoomHome() {
 
     try {
       if (!previousLiked) {
-        const { error: likeError } = await supabase.from("post_likes").insert([
-          { post_id: post.id, user_id: effectiveUserIdForDb },
-        ]);
+        const { error: likeError } = await supabase
+          .from("post_likes")
+          .insert([{ post_id: post.id, user_id: viewerUuid }]);
         if (likeError) throw likeError;
 
         const { error: updateError } = await supabase
@@ -551,7 +569,7 @@ export default function LoomRoomHome() {
           .from("post_likes")
           .delete()
           .eq("post_id", post.id)
-          .eq("user_id", effectiveUserIdForDb);
+          .eq("user_id", viewerUuid);
         if (deleteError) throw deleteError;
 
         const { error: updateError } = await supabase
@@ -577,16 +595,14 @@ export default function LoomRoomHome() {
   };
 
   const handleReportPost = async (postId: string) => {
-    if (!isUuid(currentUserId)) return;
-
-    const effectiveUserIdForDb = currentUserId;
+    if (!viewerUuid || !isUuid(viewerUuid)) return;
 
     try {
       const { error } = await supabase.from("reports").insert([
         {
           target_type: "post",
           target_id: postId,
-          reporter_id: effectiveUserIdForDb,
+          reporter_id: viewerUuid,
           reason: null,
         },
       ]);
@@ -630,7 +646,7 @@ export default function LoomRoomHome() {
     });
   }, [posts, areaFilter, kindFilter, relations]);
 
-  const viewerReady = isUuid(currentUserId);
+  const viewerReady = !!viewerUuid && isUuid(viewerUuid);
 
   return (
     <div className="page-root">
@@ -687,6 +703,7 @@ export default function LoomRoomHome() {
               タイムラインの読み込みに失敗しました：{error}
             </div>
           )}
+
           {loading && !error && (
             <div className="feed-message feed-loading">
               タイムラインを読み込んでいます…
@@ -818,6 +835,12 @@ export default function LoomRoomHome() {
                         )}
                       </div>
                     </div>
+
+                    {!viewerReady && (
+                      <div className="feed-message" style={{ padding: "6px 0 0", fontSize: 11 }}>
+                        いいね・通報はログイン後に利用できます。
+                      </div>
+                    )}
                   </div>
                 </div>
               </article>
