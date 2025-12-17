@@ -520,7 +520,7 @@ useEffect(() => {
                     {profile.handle}
                     {threadId && (
                       <Link
-                        href={`/messages/${threadId}`}
+                        href={`/messages/new?to=${userId}`} // targetUserId = 相手の users.id(uuid)
                         className="dm-inline-btn no-link-style"
                       >
                         ✉

@@ -54,12 +54,13 @@ const MyPageConsole: React.FC = () => {
   const [notifyDm, setNotifyDm] = useState<boolean>(true);
   const [notifyNews, setNotifyNews] = useState<boolean>(false);
 
+  // ★ 会員: URL / ゲスト: base64 のどちらも入る（ただし localStorage ルールはあなたの運用に合わせる）
   const [avatarDataUrl, setAvatarDataUrl] = useState<string | undefined>();
   const [loaded, setLoaded] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // 初回読み込み：localStorage から復元（accountType は ID から自動なので読み込まない）
+  // 初回読み込み：localStorage から復元
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -92,8 +93,10 @@ const MyPageConsole: React.FC = () => {
         setNotifyFavPosts(data.notifyFavPosts);
       if (typeof data.notifyDm === "boolean") setNotifyDm(data.notifyDm);
       if (typeof data.notifyNews === "boolean") setNotifyNews(data.notifyNews);
-      if (typeof data.avatarDataUrl === "string")
+
+      if (typeof data.avatarDataUrl === "string") {
         setAvatarDataUrl(data.avatarDataUrl);
+      }
 
       if (typeof data.messagePolicy === "string") {
         setMessagePolicy(data.messagePolicy);
@@ -131,16 +134,10 @@ const MyPageConsole: React.FC = () => {
         }
         if (!data) return;
 
-        if (data.name) {
-          setNickname(data.name);
-        }
-        if (data.avatar_url) {
-          setAvatarDataUrl(data.avatar_url);
-        }
+        if (data.name) setNickname(data.name);
+        if (data.avatar_url) setAvatarDataUrl(data.avatar_url);
       } catch (e) {
-        if (!cancelled) {
-          console.error("[MyPageConsole] loadUser exception:", e);
-        }
+        if (!cancelled) console.error("[MyPageConsole] loadUser exception:", e);
       }
     };
 
@@ -150,26 +147,45 @@ const MyPageConsole: React.FC = () => {
     };
   }, [userId, accountType]);
 
-  // Avatar 選択時の処理
-  const handleAvatarFileSelect = async (file: File) => {
+  // ===== Avatar 選択時の処理（ここを修正）=====
+  // AvatarUploader が Promise<string> を期待する前提で「URL（またはdataURL）を返す」
+  const handleAvatarFileSelect = async (file: File): Promise<string> => {
+    if (!file) return "";
+
     // ゲスト：Supabase に書き込めないのでローカルプレビューだけ
     if (accountType === "ゲスト") {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          setAvatarDataUrl(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-      return;
+      return await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result;
+          if (typeof result === "string") {
+            setAvatarDataUrl(result);
+            resolve(result);
+          } else {
+            resolve("");
+          }
+        };
+        reader.onerror = () => resolve("");
+        reader.readAsDataURL(file);
+      });
     }
 
     // 会員：Storage にアップロード → users.avatar_url 更新
     try {
       setAvatarUploading(true);
-      const publicUrl = await uploadAvatar(file, userId);
 
-      // DB に保存
+      // ★ セッション必須。auth.uid() を保存パスに使う
+      const { data: userRes, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+
+      const uid = userRes.user?.id;
+      if (!uid) {
+        throw new Error("ログイン状態が切れています。ログインし直してください。");
+      }
+
+      const publicUrl = await uploadAvatar(file, uid);
+
+      // DB に保存（このページの userId の行を更新）
       const { error } = await supabase
         .from("users")
         .update({ avatar_url: publicUrl })
@@ -177,16 +193,17 @@ const MyPageConsole: React.FC = () => {
 
       if (error) {
         console.error("[MyPageConsole] failed to update avatar_url:", error);
-        alert(
+        throw new Error(
           "アイコン画像の保存に失敗しました。時間をおいて再度お試しください。"
         );
-        return;
       }
 
       setAvatarDataUrl(publicUrl);
+      return publicUrl;
     } catch (e) {
       console.error("[MyPageConsole] handleAvatarFileSelect error:", e);
       alert("画像のアップロードに失敗しました。通信環境をご確認ください。");
+      return "";
     } finally {
       setAvatarUploading(false);
     }
@@ -277,23 +294,24 @@ const MyPageConsole: React.FC = () => {
   return (
     <>
       <div className="app-shell">
-        {/* ヘッダー（ベースそのまま） */}
         <AppHeader title="マイページ設定" subtitle={`ID: ${userId}`} />
 
         <main className="app-main mypage-main">
-          {/* プロフィールカード（ベース崩さず） */}
           <section className="surface-card mypage-card profile-card">
             <div className="profile-top-row">
               <AvatarUploader
-                avatarDataUrl={avatarDataUrl}
+                avatarUrl={avatarDataUrl}
                 displayName={nickname || "U"}
-                // ゲスト：従来通り Base64 を localStorage 用に使う
-                onChange={
+                 onPreview={
                   accountType === "ゲスト"
                     ? (dataUrl: string) => setAvatarDataUrl(dataUrl)
                     : undefined
                 }
-                // 会員/ゲスト 両方で File を受け取る（ゲストはローカルプレビューのみ）
+                onUploaded={
+                  accountType === "会員"
+                    ? (url: string) => setAvatarDataUrl(url)
+                    : undefined
+                }
                 onFileSelect={handleAvatarFileSelect}
               />
 
@@ -306,13 +324,9 @@ const MyPageConsole: React.FC = () => {
                   }
                   placeholder="ニックネームを入力"
                 />
-                <div className="profile-id-hint">
-                  LoomRoomの中で表示される名前です
-                </div>
+                <div className="profile-id-hint">LoomRoomの中で表示される名前です</div>
                 {avatarUploading && (
-                  <div className="profile-id-hint">
-                    アイコン画像を保存しています…
-                  </div>
+                  <div className="profile-id-hint">アイコン画像を保存しています…</div>
                 )}
               </div>
             </div>
@@ -327,7 +341,9 @@ const MyPageConsole: React.FC = () => {
             </div>
           </section>
 
-          {/* 基本情報 */}
+          {/* 以降のUIはあなたの元コードのまま */}
+          {/* ...（ここから下は一切変更なしでOK）... */}
+
           <section className="surface-card mypage-card">
             <h2 className="mypage-section-title">基本情報</h2>
 
@@ -378,7 +394,6 @@ const MyPageConsole: React.FC = () => {
             </div>
           </section>
 
-          {/* メッセージについて */}
           <section className="surface-card mypage-card">
             <h2 className="mypage-section-title">メッセージについて</h2>
             <div className="field">
@@ -391,7 +406,6 @@ const MyPageConsole: React.FC = () => {
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
                   setMessagePolicy(e.target.value)
                 }
-                placeholder="例）通知にすぐ気づけないこともあるので、ゆっくりペースでやりとりできたら嬉しいです。"
               />
               <div className="field-note">
                 公開マイページの「メッセージについて」にそのまま表示されます。
@@ -399,7 +413,6 @@ const MyPageConsole: React.FC = () => {
             </div>
           </section>
 
-          {/* SNSリンク */}
           <section className="surface-card mypage-card">
             <h2 className="mypage-section-title">SNSリンク</h2>
             <div className="field">
@@ -437,7 +450,6 @@ const MyPageConsole: React.FC = () => {
             </div>
           </section>
 
-          {/* 通知設定 */}
           <section className="surface-card mypage-card">
             <h2 className="mypage-section-title">通知設定</h2>
 
@@ -490,7 +502,6 @@ const MyPageConsole: React.FC = () => {
             </button>
           </section>
 
-          {/* 保存ボタン */}
           <section className="mypage-save-section">
             <button
               type="button"
@@ -506,6 +517,7 @@ const MyPageConsole: React.FC = () => {
         <BottomNav active="mypage" hasUnread={hasUnread} />
       </div>
 
+      {/* styles は元のまま */}
       <style jsx>{`
         .app-shell {
           min-height: 100vh;
@@ -516,16 +528,13 @@ const MyPageConsole: React.FC = () => {
           display: flex;
           flex-direction: column;
         }
-
         .app-main {
           flex: 1;
           padding-bottom: 80px;
         }
-
         .mypage-main {
           padding: 12px 16px 140px;
         }
-
         .mypage-card {
           border-radius: 16px;
           border: 1px solid var(--border);
@@ -534,21 +543,17 @@ const MyPageConsole: React.FC = () => {
           box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
           margin-top: 12px;
         }
-
         .profile-card {
           padding-top: 16px;
         }
-
         .profile-top-row {
           display: flex;
           gap: 12px;
           align-items: center;
         }
-
         .profile-main-text {
           flex: 1;
         }
-
         .profile-nickname-input {
           width: 100%;
           border: none;
@@ -558,64 +563,53 @@ const MyPageConsole: React.FC = () => {
           font-weight: 600;
           background: transparent;
         }
-
         .profile-nickname-input::placeholder {
           color: var(--text-sub);
         }
-
         .profile-id-hint {
           font-size: 11px;
           color: var(--text-sub);
           margin-top: 4px;
         }
-
         .profile-sub-row {
           display: flex;
           flex-wrap: wrap;
           gap: 6px;
           margin-top: 10px;
         }
-
         .profile-sub-pill {
           font-size: 11px;
         }
-
         .profile-sub-pill--soft {
           background: var(--surface-soft);
           color: var(--text-sub);
         }
-
         .pill {
           border-radius: 999px;
           padding: 4px 10px;
           background: var(--surface-soft);
           font-size: 11px;
         }
-
         .pill--accent {
           background: var(--accent-soft);
           color: var(--accent);
         }
-
         .mypage-section-title {
           font-size: 13px;
           font-weight: 600;
           margin-bottom: 8px;
           color: var(--text-sub);
         }
-
         .field {
           display: flex;
           flex-direction: column;
           gap: 4px;
           margin-top: 8px;
         }
-
         .field-label {
           font-size: 11px;
           color: var(--text-sub);
         }
-
         .field-input {
           width: 100%;
           border-radius: 12px;
@@ -624,18 +618,15 @@ const MyPageConsole: React.FC = () => {
           font-size: 13px;
           background: #fff;
         }
-
         textarea.field-input {
           min-height: 70px;
           resize: vertical;
         }
-
         .field-note {
           font-size: 11px;
           color: var(--text-sub);
           margin-top: 4px;
         }
-
         .toggle-row {
           margin-top: 8px;
           border-radius: 12px;
@@ -646,28 +637,23 @@ const MyPageConsole: React.FC = () => {
           justify-content: space-between;
           background: #fff;
         }
-
         .toggle-row--on {
           border-color: var(--accent);
           background: var(--accent-soft);
         }
-
         .toggle-main {
           flex: 1;
           padding-right: 8px;
         }
-
         .toggle-title {
           font-size: 13px;
           font-weight: 500;
           margin-bottom: 2px;
         }
-
         .toggle-caption {
           font-size: 11px;
           color: var(--text-sub);
         }
-
         .toggle-switch {
           width: 38px;
           height: 22px;
@@ -677,11 +663,9 @@ const MyPageConsole: React.FC = () => {
           align-items: center;
           padding: 2px;
         }
-
         .toggle-row--on .toggle-switch {
           background: var(--accent);
         }
-
         .toggle-knob {
           width: 18px;
           height: 18px;
@@ -690,15 +674,12 @@ const MyPageConsole: React.FC = () => {
           margin-left: 0;
           transition: margin 0.15s ease;
         }
-
         .toggle-row--on .toggle-knob {
           margin-left: 16px;
         }
-
         .mypage-save-section {
           margin: 18px 0 80px;
         }
-
         .primary-button {
           display: inline-flex;
           align-items: center;
@@ -713,11 +694,9 @@ const MyPageConsole: React.FC = () => {
           color: #fff;
           box-shadow: 0 6px 16px rgba(180, 137, 90, 0.35);
         }
-
         .primary-button--full {
           width: 100%;
         }
-
         .loading-text {
           padding: 24px 16px;
           font-size: 13px;

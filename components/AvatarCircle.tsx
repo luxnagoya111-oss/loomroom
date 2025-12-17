@@ -1,7 +1,7 @@
 // components/AvatarCircle.tsx
 "use client";
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 export type AvatarCircleProps = {
   /** ★ 推奨：DBと一致する正式名 */
@@ -14,10 +14,25 @@ export type AvatarCircleProps = {
   size?: number;
 
   /** 表示名（1文字目を fallback に使用） */
-  displayName?: string;
+  displayName?: string | null;
 
   /** 明示 fallback（displayName より優先） */
-  fallbackText?: string;
+  fallbackText?: string | null;
+
+  /**
+   * 何も無い時の最終fallback
+   * - 未指定なら「空」にする（真っ白丸）
+   * - どうしても出したい場合だけ "U" などを渡す
+   */
+  defaultFallback?: string;
+
+  /** 代替テキスト（未指定なら装飾扱い） */
+  alt?: string;
+
+  /** 画像ロードの優先度（デフォルト: eager） */
+  loading?: "eager" | "lazy";
+
+  className?: string;
 };
 
 const AvatarCircle: React.FC<AvatarCircleProps> = ({
@@ -26,26 +41,55 @@ const AvatarCircle: React.FC<AvatarCircleProps> = ({
   size = 48,
   displayName,
   fallbackText,
+  defaultFallback = "",
+  alt = "",
+  loading = "eager",
+  className = "",
 }) => {
-  // avatarUrl を優先、なければ src
-  const resolvedSrc = avatarUrl ?? src ?? null;
+  const resolvedSrc = useMemo(() => {
+    const v = (avatarUrl ?? src ?? "").trim();
+    return v.length ? v : null;
+  }, [avatarUrl, src]);
 
-  const resolvedFallback =
-    fallbackText ??
-    (displayName ? displayName.trim().charAt(0).toUpperCase() : undefined);
+  // 画像が壊れていたらfallbackへ落とす
+  const [imgOk, setImgOk] = useState(true);
+  useEffect(() => {
+    setImgOk(true);
+  }, [resolvedSrc]);
+
+  const fallback = useMemo(() => {
+    const ft = (fallbackText ?? "").trim();
+    if (ft) return ft;
+
+    const dn = (displayName ?? "").trim();
+    if (dn) return dn.charAt(0).toUpperCase();
+
+    return (defaultFallback ?? "").trim();
+  }, [fallbackText, displayName, defaultFallback]);
+
+  const isDecorative = !alt; // alt未指定なら装飾画像扱い
 
   return (
     <div
-      className="avatar-circle"
-      style={{
-        width: size,
-        height: size,
-      }}
+      className={`avatar-circle ${className}`}
+      style={{ width: size, height: size }}
+      aria-hidden={isDecorative ? true : undefined}
     >
-      {resolvedSrc ? (
-        <img src={resolvedSrc} alt="" className="avatar-circle-img" />
-      ) : resolvedFallback ? (
-        <span className="avatar-circle-text">{resolvedFallback}</span>
+      {resolvedSrc && imgOk ? (
+        <img
+          src={resolvedSrc}
+          alt={isDecorative ? "" : alt}
+          className="avatar-circle-img"
+          loading={loading}
+          onError={() => setImgOk(false)}
+        />
+      ) : fallback ? (
+        <span
+          className="avatar-circle-text"
+          aria-hidden={isDecorative ? true : undefined}
+        >
+          {fallback}
+        </span>
       ) : null}
 
       <style jsx>{`
@@ -64,6 +108,7 @@ const AvatarCircle: React.FC<AvatarCircleProps> = ({
           width: 100%;
           height: 100%;
           object-fit: cover;
+          display: block;
         }
 
         .avatar-circle-text {

@@ -1,7 +1,7 @@
 // app/store/[id]/console/page.tsx
 "use client";
 
-import React, { useState, useEffect, ChangeEvent } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
@@ -15,7 +15,6 @@ import { listTherapistsForStore } from "@/lib/repositories/therapistRepository";
 async function safeReadJson(res: Response) {
   const text = await res.text();
   if (!text) return null;
-
   try {
     return JSON.parse(text);
   } catch {
@@ -34,22 +33,28 @@ function toPlainError(error: any) {
   };
 }
 
+/**
+ * localStorage に保存する “軽い” 状態だけ保持する
+ * - avatar は URL だけ保存（Base64プレビューは絶対に保存しない）
+ */
 const STORAGE_KEY_PREFIX = "loomroom_store_console_";
 
 type FormState = {
   storeName: string;
-  avatarDataUrl?: string;
 
   area: string;
   websiteUrl: string;
   lineUrl: string;
 
   xUrl: string;
-  twicas_url: string;
+  twicasUrl: string;
 
   description: string;
 
   dmNotice: boolean;
+
+  /** ★ 保存用（public URL） */
+  avatarUrl?: string;
 };
 
 /**
@@ -69,62 +74,90 @@ type DbTherapistStoreRequestRow = {
   } | null;
 };
 
-const StoreConsolePage: React.FC = () => {
-  const params = useParams();
-  const storeId = params?.id as string | undefined;
+function normalizeUrl(v: string): string {
+  const s = (v ?? "").trim();
+  if (!s) return "";
+  if (!/^https?:\/\//i.test(s)) return `https://${s}`;
+  return s;
+}
 
-  const storageKey =
-    typeof storeId === "string"
-      ? `${STORAGE_KEY_PREFIX}${storeId}`
-      : `${STORAGE_KEY_PREFIX}default`;
+const StoreConsolePage: React.FC = () => {
+  const params = useParams<{ id: string }>();
+  const storeId = params?.id || "";
+
+  const storageKey = useMemo(
+    () => `${STORAGE_KEY_PREFIX}${storeId || "default"}`,
+    [storeId]
+  );
 
   const [state, setState] = useState<FormState>({
     storeName: "",
-    avatarDataUrl: undefined,
-
     area: "",
     websiteUrl: "",
     lineUrl: "",
-
     xUrl: "",
-    twicas_url: "",
-
+    twicasUrl: "",
     description: "",
-
     dmNotice: true,
+    avatarUrl: "",
   });
+
+  /** ★ UIプレビュー専用（localStorageに保存しない） */
+  const [avatarPreview, setAvatarPreview] = useState<string>("");
 
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
-  // ★ stores.owner_user_id を保持（users.name 同期用）
+  /** ★ stores.owner_user_id を保持（users.name 同期用） */
   const [ownerUserId, setOwnerUserId] = useState<string | null>(null);
 
-  // セラピスト管理用
+  /** セラピスト管理用 */
   const [therapists, setTherapists] = useState<DbTherapistRow[]>([]);
   const [loadingTherapists, setLoadingTherapists] = useState(false);
 
-  // ★ 申請一覧（pending）
+  /** ★ 申請一覧（pending） */
   const [requests, setRequests] = useState<DbTherapistStoreRequestRow[]>([]);
   const [loadingRequests, setLoadingRequests] = useState(false);
   const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(
     null
   );
 
-  // ★ 在籍解除（モーダル + パスワード再入力）
+  /** ★ 在籍解除（モーダル + パスワード再入力） */
   const [detachOpen, setDetachOpen] = useState(false);
   const [detachTarget, setDetachTarget] = useState<{
     therapistId: string;
-    displayName: string;
+   displayName: string;
   } | null>(null);
   const [detachPassword, setDetachPassword] = useState("");
   const [detaching, setDetaching] = useState(false);
   const [detachError, setDetachError] = useState<string | null>(null);
 
-  // ① localStorage から復元（壊れてたら自動リセット）
+  // ★ closeDetachModal を useCallback で先に定義（Hookより前に関数参照が必要なため）
+  const closeDetachModal = useCallback(() => {
+    setDetachOpen(false);
+    setDetachTarget(null);
+    setDetachPassword("");
+    setDetachError(null);
+    setDetaching(false);
+  }, []);
+
+// ★ Escで閉じる（必ず loaded return より前）
+useEffect(() => {
+  if (!detachOpen) return;
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") closeDetachModal();
+  };
+
+  window.addEventListener("keydown", onKeyDown);
+  return () => window.removeEventListener("keydown", onKeyDown);
+}, [detachOpen, closeDetachModal]);
+
+  // ========= ① localStorage から復元（軽量ステートだけ） =========
   useEffect(() => {
     if (typeof window === "undefined") return;
+
     try {
       const raw = window.localStorage.getItem(storageKey);
       if (!raw) {
@@ -137,16 +170,21 @@ const StoreConsolePage: React.FC = () => {
         setState((prev) => ({
           ...prev,
           ...data,
+          dmNotice:
+            typeof (data as any)?.dmNotice === "boolean"
+              ? (data as any).dmNotice
+              : prev.dmNotice,
           description:
             typeof (data as any)?.description === "string"
               ? (data as any).description
               : prev.description,
+          avatarUrl:
+            typeof (data as any)?.avatarUrl === "string"
+              ? (data as any).avatarUrl
+              : prev.avatarUrl,
         }));
       } catch (parseErr) {
-        console.warn(
-          "[StoreConsole] localStorage parse failed. reset:",
-          parseErr
-        );
+        console.warn("[StoreConsole] localStorage parse failed. reset:", parseErr);
         window.localStorage.removeItem(storageKey);
       } finally {
         setLoaded(true);
@@ -157,7 +195,7 @@ const StoreConsolePage: React.FC = () => {
     }
   }, [storageKey]);
 
-  // ② Supabase の stores から店舗情報を取得（owner_user_id も取る）
+  // ========= ② Supabase の stores から店舗情報を取得 =========
   useEffect(() => {
     if (!storeId) return;
 
@@ -176,40 +214,31 @@ const StoreConsolePage: React.FC = () => {
         if (cancelled) return;
 
         if (error) {
-          console.error(
-            "[StoreConsole] loadStore error:",
-            toPlainError(error)
-          );
+          console.error("[StoreConsole] loadStore error:", toPlainError(error));
           console.error("[StoreConsole] loadStore error(raw):", error);
           return;
         }
         if (!data) return;
 
-        // ★ owner_user_id 保存（users.name 同期用）
         setOwnerUserId(((data as any).owner_user_id as string) ?? null);
 
         setState((prev) => ({
           ...prev,
-          storeName: data.name ?? prev.storeName,
+          storeName: (data as any).name ?? prev.storeName,
           area: (data as any).area ?? prev.area,
           websiteUrl: (data as any).website_url ?? prev.websiteUrl,
           lineUrl: (data as any).line_url ?? prev.lineUrl,
-          avatarDataUrl: (data as any).avatar_url ?? prev.avatarDataUrl,
-
+          avatarUrl: (data as any).avatar_url ?? prev.avatarUrl,
           xUrl: (data as any).x_url ?? prev.xUrl,
-          twicas_url: (data as any).twicas_url ?? prev.twicas_url,
-
+          twicasUrl: (data as any).twicas_url ?? prev.twicasUrl,
           description: (data as any).description ?? prev.description,
-
           dmNotice:
             typeof (data as any).dm_notice === "boolean"
               ? (data as any).dm_notice
               : prev.dmNotice,
         }));
       } catch (e) {
-        if (!cancelled) {
-          console.error("[StoreConsole] loadStore exception:", e);
-        }
+        if (!cancelled) console.error("[StoreConsole] loadStore exception:", e);
       }
     };
 
@@ -219,28 +248,31 @@ const StoreConsolePage: React.FC = () => {
     };
   }, [storeId]);
 
-  // ③ localStorage への自動保存
+  // ========= ③ localStorage への自動保存（loaded後のみ） =========
   useEffect(() => {
     if (!loaded) return;
     if (typeof window === "undefined") return;
+
+    // Base64プレビューは絶対に保存しない
+    const payload: FormState = {
+      ...state,
+      avatarUrl: state.avatarUrl || "",
+    };
+
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify(state));
+      window.localStorage.setItem(storageKey, JSON.stringify(payload));
     } catch (e) {
       console.error("[StoreConsole] failed to save to localStorage:", e);
     }
   }, [loaded, state, storageKey]);
 
-  // ★ pending 申請取得
+  // ========= ★ pending 申請取得 =========
   const loadPendingRequests = async (sid: string) => {
     setLoadingRequests(true);
-
     try {
       const res = await fetch(
         `/api/therapist-store-requests?storeId=${encodeURIComponent(sid)}`,
-        {
-          method: "GET",
-          cache: "no-store",
-        }
+        { method: "GET", cache: "no-store" }
       );
 
       const json = await safeReadJson(res);
@@ -269,7 +301,7 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  // ④ セラピスト一覧 / 申請一覧の読み込み
+  // ========= ④ セラピスト一覧 / 申請一覧の読み込み =========
   useEffect(() => {
     if (!storeId) return;
 
@@ -282,12 +314,9 @@ const StoreConsolePage: React.FC = () => {
         if (cancelled) return;
         setTherapists(joined);
 
-        // pending申請
         await loadPendingRequests(storeId);
       } catch (e) {
-        if (!cancelled) {
-          console.error("[StoreConsole] load error:", e);
-        }
+        if (!cancelled) console.error("[StoreConsole] load error:", e);
       } finally {
         if (!cancelled) setLoadingTherapists(false);
       }
@@ -299,6 +328,7 @@ const StoreConsolePage: React.FC = () => {
     };
   }, [storeId]);
 
+  // ========= UI前提 =========
   if (!loaded) {
     return (
       <div className="app-root">
@@ -311,102 +341,65 @@ const StoreConsolePage: React.FC = () => {
     );
   }
 
-  const handleChange =
-    (key: keyof FormState) =>
-    (
-      e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-    ) => {
-      const value = e.target.value;
-      setState((prev) => ({
-        ...prev,
-        [key]: value as any,
-      }));
-    };
+  const canSave = state.storeName.trim().length > 0;
 
-  const handleToggle = (key: keyof FormState) => () => {
-    setState((prev) => ({
-      ...prev,
-      [key]: !prev[key] as any,
-    }));
+  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setState((prev) => ({ ...prev, [key]: value }));
+
+  const handleToggleDmNotice = () => {
+    setState((prev) => ({ ...prev, dmNotice: !prev.dmNotice }));
   };
 
-  // Avatar 選択：プレビュー → Storage → stores.avatar_url 更新
-  const handleAvatarFileSelect = async (file: File) => {
-    // 即時プレビュー
-    try {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result;
-        if (typeof result === "string") {
-          setState((prev) => ({
-            ...prev,
-            avatarDataUrl: result,
-          }));
-        }
-      };
-      reader.readAsDataURL(file);
-    } catch (e) {
-      console.warn("[StoreConsole] avatar preview error:", e);
+  // ========= Avatar：Storage upload → stores.avatar_url 更新 → public URL を返す =========
+  const uploadAndUpdateAvatar = async (file: File): Promise<string> => {
+    if (!storeId) throw new Error("店舗IDが取得できませんでした。");
+
+    // 5MB 制限（任意）
+    if (file.size > 5 * 1024 * 1024) {
+      throw new Error("画像サイズが大きすぎます（5MB以下推奨）");
     }
 
-    if (!storeId) return;
-
+    setAvatarUploading(true);
     try {
-      setAvatarUploading(true);
-
+      // Storageへアップロード（publicUrl返る）
       const publicUrl = await uploadAvatar(file, storeId);
 
+      // stores.avatar_url 更新
       const { error } = await supabase
         .from("stores")
         .update({ avatar_url: publicUrl } as any)
         .eq("id", storeId);
 
       if (error) {
-        console.error(
-          "[StoreConsole] failed to update stores.avatar_url:",
-          error
-        );
-        alert(
-          "アイコン画像の保存に失敗しました。時間をおいて再度お試しください。"
-        );
-        return;
+        console.error("[StoreConsole] failed to update stores.avatar_url:", error);
+        throw new Error("アイコン画像をサーバーに保存できませんでした。");
       }
 
-      setState((prev) => ({
-        ...prev,
-        avatarDataUrl: publicUrl,
-      }));
-    } catch (e) {
-      console.error("[StoreConsole] handleAvatarFileSelect error:", e);
-      alert("画像のアップロードに失敗しました。通信環境をご確認ください。");
+      // UI state をURL正に更新（Base64は保持しない）
+      setState((prev) => ({ ...prev, avatarUrl: publicUrl }));
+      setAvatarPreview("");
+
+      return publicUrl;
     } finally {
       setAvatarUploading(false);
     }
   };
 
-  const canSave = state.storeName.trim().length > 0;
-
-  // ★ stores.name → users.name 同期（店舗コンソール版）
+  // ========= ★ stores.name → users.name 同期 =========
   const syncOwnerUserNameIfPossible = async (newName: string) => {
     const name = (newName ?? "").trim();
     if (!name) return;
     if (!ownerUserId) return;
 
     try {
-      const { error } = await supabase
-        .from("users")
-        .update({ name })
-        .eq("id", ownerUserId);
-
-      if (error) {
-        console.error("[StoreConsole] users.name sync failed:", error);
-      }
+      const { error } = await supabase.from("users").update({ name }).eq("id", ownerUserId);
+      if (error) console.error("[StoreConsole] users.name sync failed:", error);
     } catch (e) {
       console.error("[StoreConsole] users.name sync exception:", e);
     }
   };
 
-  // 保存：stores テーブル更新 → 成功後に users.name も同期
+  // ========= 保存：stores テーブル更新 → 成功後に users.name も同期 =========
   const handleSave = async () => {
     if (!storeId) {
       alert("店舗IDが取得できませんでした。URLをご確認ください。");
@@ -418,34 +411,25 @@ const StoreConsolePage: React.FC = () => {
       setSaving(true);
 
       const payload: Partial<DbStoreRow> = {
-        name: state.storeName || null,
-        area: state.area || null,
-        website_url: state.websiteUrl || null,
-        line_url: state.lineUrl || null,
-        avatar_url: state.avatarDataUrl || null,
-
-        x_url: state.xUrl || null,
-        twicas_url: state.twicas_url || null,
-
-        description: state.description || null,
-
-        dm_notice: state.dmNotice,
+        name: state.storeName.trim() || null,
+        area: state.area.trim() || null,
+        website_url: state.websiteUrl.trim() ? normalizeUrl(state.websiteUrl) : null,
+        line_url: state.lineUrl.trim() ? normalizeUrl(state.lineUrl) : null,
+        avatar_url: state.avatarUrl?.trim() ? state.avatarUrl.trim() : null,
+        x_url: state.xUrl.trim() ? normalizeUrl(state.xUrl) : null,
+        twicas_url: state.twicasUrl.trim() ? normalizeUrl(state.twicasUrl) : null,
+        description: state.description.trim() || null,
+        dm_notice: !!state.dmNotice,
       } as any;
 
-      const { error } = await supabase
-        .from("stores")
-        .update(payload as any)
-        .eq("id", storeId);
+      const { error } = await supabase.from("stores").update(payload as any).eq("id", storeId);
 
       if (error) {
         console.error("[StoreConsole] failed to update stores:", error);
-        alert(
-          "店舗情報の保存に失敗しました。時間をおいて再度お試しください。"
-        );
+        alert("店舗情報の保存に失敗しました。時間をおいて再度お試しください。");
         return;
       }
 
-      // ★ 追加：users.name 同期（失敗しても stores 保存は成功扱い）
       await syncOwnerUserNameIfPossible(state.storeName);
 
       alert("店舗情報を保存しました。");
@@ -457,7 +441,7 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  // ★ 在籍解除：モーダル制御
+  // ========= ★ 在籍解除：モーダル制御 =========
   const openDetachModal = (t: DbTherapistRow) => {
     setDetachError(null);
     setDetachPassword("");
@@ -468,15 +452,7 @@ const StoreConsolePage: React.FC = () => {
     setDetachOpen(true);
   };
 
-  const closeDetachModal = () => {
-    setDetachOpen(false);
-    setDetachTarget(null);
-    setDetachPassword("");
-    setDetachError(null);
-    setDetaching(false);
-  };
-
-  // ★ 在籍解除：パスワード再入力 → RPC で therapists.store_id = null
+  // ========= ★ 在籍解除：パスワード再入力 → RPC =========
   const confirmDetach = async () => {
     if (!storeId) return;
     if (!detachTarget) return;
@@ -490,35 +466,25 @@ const StoreConsolePage: React.FC = () => {
     setDetachError(null);
 
     try {
-      // 1) email 取得
       const { data: userRes, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
 
       const email = userRes.user?.email;
       if (!email) {
-        throw new Error(
-          "メール情報が取得できませんでした。再ログインしてからお試しください。"
-        );
+        throw new Error("メール情報が取得できませんでした。再ログインしてからお試しください。");
       }
 
-      // 2) パスワード再入力で再認証（誤操作防止）
       const { error: signInErr } = await supabase.auth.signInWithPassword({
         email,
         password: detachPassword,
       });
-      if (signInErr) {
-        throw new Error("パスワードが正しくありません。");
-      }
+      if (signInErr) throw new Error("パスワードが正しくありません。");
 
-      // 3) RPCで解除
-      // ※ Supabase 側で「自店舗の在籍セラピストだけ解除できる」制約を必ず入れてください
-      const { error: rpcErr } = await supabase.rpc(
-        "rpc_detach_therapist_from_store",
-        { p_therapist_id: detachTarget.therapistId }
-      );
+      const { error: rpcErr } = await supabase.rpc("rpc_detach_therapist_from_store", {
+        p_therapist_id: detachTarget.therapistId,
+      });
       if (rpcErr) throw rpcErr;
 
-      // 4) 再読込
       const joined = await listTherapistsForStore(storeId);
       setTherapists(joined);
 
@@ -530,11 +496,13 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  // ★ 申請の承認/却下
+  // ========= ★ 申請の承認/却下 =========
   const handleReviewRequest = async (
     requestId: string,
     decision: "approved" | "rejected"
   ) => {
+    if (!storeId) return;
+
     try {
       setReviewingRequestId(requestId);
 
@@ -547,7 +515,6 @@ const StoreConsolePage: React.FC = () => {
         }),
       });
 
-      // ★ ここがポイント：先に text() で受けて、JSON化できる時だけ parse
       const text = await res.text();
       const json = text
         ? (() => {
@@ -560,18 +527,15 @@ const StoreConsolePage: React.FC = () => {
         : null;
 
       if (!res.ok) {
-        // 何が返ってきてるか見えるようにする（空 / HTML / JSON）
         console.error("[review] status:", res.status, "body:", text);
         throw new Error(
-          (json as any)?.error ||
-            `failed to review request (status ${res.status})`
+          (json as any)?.error || `failed to review request (status ${res.status})`
         );
       }
 
-      // 再読込
-      const joined = await listTherapistsForStore(storeId!);
+      const joined = await listTherapistsForStore(storeId);
       setTherapists(joined);
-      await loadPendingRequests(storeId!);
+      await loadPendingRequests(storeId);
     } catch (e) {
       console.error(e);
       alert("申請の処理に失敗しました");
@@ -579,6 +543,9 @@ const StoreConsolePage: React.FC = () => {
       setReviewingRequestId(null);
     }
   };
+
+  // 表示は preview優先 → 保存URL
+  const avatarDisplay = avatarPreview || state.avatarUrl || "";
 
   return (
     <div className="app-root">
@@ -594,9 +561,19 @@ const StoreConsolePage: React.FC = () => {
         <section className="store-card">
           <div className="store-profile-row">
             <AvatarUploader
-              avatarDataUrl={state.avatarDataUrl}
+              avatarUrl={avatarDisplay}
               displayName={state.storeName || "S"}
-              onFileSelect={handleAvatarFileSelect}
+              onPreview={(dataUrl) => setAvatarPreview(dataUrl)} // UIだけ
+              onFileSelect={async (file) => {
+                // Storage upload + stores update をここで実施してURL返す
+                const url = await uploadAndUpdateAvatar(file);
+                return url;
+              }}
+              onUploaded={(url) => {
+                // 確定URLに置き換え（プレビュー解除）
+                setAvatarPreview("");
+                setState((prev) => ({ ...prev, avatarUrl: url }));
+              }}
             />
             <div className="store-profile-main">
               <label className="field-label">店舗名</label>
@@ -604,7 +581,7 @@ const StoreConsolePage: React.FC = () => {
                 type="text"
                 className="field-input"
                 value={state.storeName}
-                onChange={handleChange("storeName")}
+                onChange={(e) => updateField("storeName", e.target.value)}
                 placeholder="例）LuX nagoya"
               />
 
@@ -633,7 +610,7 @@ const StoreConsolePage: React.FC = () => {
               type="text"
               className="field-input"
               value={state.area}
-              onChange={handleChange("area")}
+              onChange={(e) => updateField("area", e.target.value)}
               placeholder="例）名古屋 / 関西 / オンラインメイン など"
             />
           </div>
@@ -644,7 +621,7 @@ const StoreConsolePage: React.FC = () => {
               type="url"
               className="field-input"
               value={state.websiteUrl}
-              onChange={handleChange("websiteUrl")}
+              onChange={(e) => updateField("websiteUrl", e.target.value)}
               placeholder="https://example.com"
             />
           </div>
@@ -655,7 +632,7 @@ const StoreConsolePage: React.FC = () => {
               type="url"
               className="field-input"
               value={state.lineUrl}
-              onChange={handleChange("lineUrl")}
+              onChange={(e) => updateField("lineUrl", e.target.value)}
               placeholder="https://lin.ee/..."
             />
           </div>
@@ -666,7 +643,7 @@ const StoreConsolePage: React.FC = () => {
               type="url"
               className="field-input"
               value={state.xUrl}
-              onChange={handleChange("xUrl")}
+              onChange={(e) => updateField("xUrl", e.target.value)}
               placeholder="https://x.com/..."
             />
           </div>
@@ -676,8 +653,8 @@ const StoreConsolePage: React.FC = () => {
             <input
               type="url"
               className="field-input"
-              value={state.twicas_url}
-              onChange={handleChange("twicas_url")}
+              value={state.twicasUrl}
+              onChange={(e) => updateField("twicasUrl", e.target.value)}
               placeholder="https://twitcasting.tv/..."
             />
           </div>
@@ -687,7 +664,7 @@ const StoreConsolePage: React.FC = () => {
             <textarea
               className="field-textarea"
               value={state.description}
-              onChange={handleChange("description")}
+              onChange={(e) => updateField("description", e.target.value)}
               placeholder="お店の雰囲気や大切にしていることなど"
             />
           </div>
@@ -697,7 +674,7 @@ const StoreConsolePage: React.FC = () => {
         <section className="store-card">
           <div className="store-section-title">通知設定</div>
 
-          <div className="toggle-row" onClick={handleToggle("dmNotice")}>
+          <div className="toggle-row" onClick={handleToggleDmNotice}>
             <div className="toggle-main">
               <div className="toggle-title">DMの通知</div>
               <div className="toggle-caption">
@@ -738,9 +715,7 @@ const StoreConsolePage: React.FC = () => {
                       <span className="therapist-name">
                         {t.display_name || "名前未設定"}
                       </span>
-                      <span className="therapist-meta">
-                        {t.area || "エリア未設定"}
-                      </span>
+                      <span className="therapist-meta">{t.area || "エリア未設定"}</span>
                     </div>
 
                     <div className="therapist-actions">
@@ -760,7 +735,7 @@ const StoreConsolePage: React.FC = () => {
             )}
           </div>
 
-          {/* 2) ★在籍申請（pending） */}
+          {/* 2) 在籍申請（pending） */}
           <div className="therapist-block">
             <h3 className="therapist-block-title">在籍申請（承認待ち）</h3>
             <p className="therapist-helper">
@@ -770,9 +745,7 @@ const StoreConsolePage: React.FC = () => {
             {loadingRequests && requests.length === 0 ? (
               <p className="therapist-helper">読み込み中です…</p>
             ) : requests.length === 0 ? (
-              <p className="therapist-helper">
-                現在、承認待ちの申請はありません。
-              </p>
+              <p className="therapist-helper">現在、承認待ちの申請はありません。</p>
             ) : (
               <ul className="therapist-list">
                 {requests.map((r) => {
@@ -827,9 +800,16 @@ const StoreConsolePage: React.FC = () => {
         </div>
       </main>
 
-      {/* ★ 在籍解除モーダル */}
+      {/* 在籍解除モーダル */}
       {detachOpen && detachTarget && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeDetachModal();
+          }}
+        >
           <div className="modal-card">
             <div className="modal-title">在籍解除の確認</div>
             <p className="modal-text">

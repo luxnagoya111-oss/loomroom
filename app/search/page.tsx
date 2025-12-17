@@ -15,7 +15,7 @@ type StoreHit = {
   id: string;
   name: string;
   area: string | null;
-  avatar_url: string | null;
+  avatar_url: string | null; // raw (http or storage path)
 };
 
 type TherapistHit = {
@@ -23,7 +23,7 @@ type TherapistHit = {
   id: string;
   display_name: string;
   area: string | null;
-  avatar_url: string | null;
+  avatar_url: string | null; // raw (http or storage path)
 };
 
 type Hit = StoreHit | TherapistHit;
@@ -36,6 +36,39 @@ function normalizeKeyword(s: string) {
 function toILikePattern(keyword: string) {
   const escaped = keyword.replace(/[%_]/g, "\\$&");
   return `%${escaped}%`;
+}
+
+function normalizeAvatarUrl(v: any): string | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s ? s : null;
+}
+
+function isProbablyHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * ★ avatars bucket
+ */
+const AVATAR_BUCKET = "avatars";
+
+/**
+ * avatar_url が
+ * - https://... ならそのまま
+ * - それ以外（storage path）なら public URL に変換
+ */
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  const v = normalizeAvatarUrl(raw);
+  if (!v) return null;
+  if (isProbablyHttpUrl(v)) return v;
+
+  // "avatars/xxx.png" のような場合にも対応（先頭の "avatars/" を外す）
+  const path = v.startsWith(`${AVATAR_BUCKET}/`)
+    ? v.slice(AVATAR_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return data?.publicUrl ?? null;
 }
 
 export default function SearchPage() {
@@ -66,7 +99,7 @@ export default function SearchPage() {
     try {
       const pattern = toILikePattern(k);
 
-      // tasks の型を Promise<Hit[]> に固定（PromiseLike 推論崩れ防止）
+      // tasks の型を Promise<Hit[]> に固定（推論崩れ防止）
       const tasks: Array<Promise<Hit[]>> = [];
 
       if (filter === "all" || filter === "store") {
@@ -75,7 +108,8 @@ export default function SearchPage() {
             .from("stores")
             .select("id, name, area, avatar_url")
             .ilike("name", pattern)
-            .order("created_at", { ascending: false })
+            // created_at が無い環境でも落ちないように、安定列で並べる
+            .order("name", { ascending: true })
             .limit(30);
 
           if (error) throw error;
@@ -103,7 +137,7 @@ export default function SearchPage() {
             .from("therapists")
             .select("id, display_name, area, avatar_url")
             .ilike("display_name", pattern)
-            .order("created_at", { ascending: false })
+            .order("display_name", { ascending: true })
             .limit(30);
 
           if (error) throw error;
@@ -136,8 +170,8 @@ export default function SearchPage() {
       // includeArea=true の場合は「area があるものを少し上」
       const list = Array.from(uniqMap.values()).sort((a, b) => {
         if (!includeArea) return 0;
-        const aHas = (a.kind === "store" ? a.area : a.area) ? 1 : 0;
-        const bHas = (b.kind === "store" ? b.area : b.area) ? 1 : 0;
+        const aHas = (a.area ?? "").trim().length ? 1 : 0;
+        const bHas = (b.area ?? "").trim().length ? 1 : 0;
         return bHas - aHas;
       });
 
@@ -217,12 +251,16 @@ export default function SearchPage() {
         {error && <p className="err">{error}</p>}
 
         <section className="search-section">
-          <h2 className="search-section-title">{hits.length > 0 ? `候補（${hits.length}）` : "候補"}</h2>
+          <h2 className="search-section-title">
+            {hits.length > 0 ? `候補（${hits.length}）` : "候補"}
+          </h2>
 
           {loading && hits.length === 0 ? (
             <p className="help">検索中です…</p>
           ) : hits.length === 0 ? (
-            <p className="help">{canSearch ? "一致する候補がありません。" : "キーワードを入力して検索してください。"}</p>
+            <p className="help">
+              {canSearch ? "一致する候補がありません。" : "キーワードを入力して検索してください。"}
+            </p>
           ) : (
             <ul className="search-list">
               {hits.map((h) => {
@@ -233,11 +271,18 @@ export default function SearchPage() {
                     ? `${h.area ?? "エリア未設定"} / お店`
                     : `${h.area ?? "エリア未設定"} / セラピスト`;
 
+                const avatarUrl = resolveAvatarUrl(h.avatar_url);
+
                 return (
                   <li key={`${h.kind}:${h.id}`} className="search-item">
                     <Link href={href} className="row-link">
-                      {/* ★ AvatarCircle は src が正しい */}
-                      <AvatarCircle displayName={name} src={h.avatar_url} />
+                      {/* ★ AvatarCircle は avatarUrl を渡す（Home/Store/Therapistと統一） */}
+                      <AvatarCircle
+                        size={40}
+                        avatarUrl={avatarUrl}
+                        displayName={name}
+                        alt={name}
+                      />
                       <div className="search-item-main">
                         <div className="search-item-name">{name}</div>
                         <div className="search-item-caption">{caption}</div>
@@ -252,7 +297,7 @@ export default function SearchPage() {
         </section>
       </main>
 
-      <BottomNav />
+      <BottomNav active="search" hasUnread={false} />
 
       <style jsx>{`
         .search-main {

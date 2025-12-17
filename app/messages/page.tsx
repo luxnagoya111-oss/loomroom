@@ -1,29 +1,60 @@
 // app/messages/page.tsx
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
+import AvatarCircle from "@/components/AvatarCircle";
+
 import { getCurrentUserId } from "@/lib/auth";
+import { supabase } from "@/lib/supabaseClient";
 import { getRelationsForUser } from "@/lib/repositories/relationRepository";
 import { getThreadsForUser } from "@/lib/repositories/dmRepository";
-import { supabase } from "@/lib/supabaseClient";
+
 import type { UserId } from "@/types/user";
 import type { DbRelationRow, DbDmThreadRow } from "@/types/db";
 
-// 一覧用の表示モデル
+// ==============================
+// Types
+// ==============================
 type ThreadListItem = {
   threadId: string;
   partnerId: string;
-  partnerName: string; // いまは partnerId をそのまま表示
+
+  partnerName: string;
+  partnerHandle: string;
+  partnerRole: "user" | "therapist" | "store" | "unknown";
+  avatarUrl: string | null;
+
   lastMessage: string;
   lastMessageTime: string;
-  lastMessageAt: string; // ソート用 ISO
+  lastMessageAt: string; // ISO (sort key)
   unreadCount: number;
 };
 
-// uuid 判定用
+// users（解決に使う最小）
+type DbUserMini = {
+  id: string;
+  name: string | null;
+  role: string | null;
+  avatar_url: string | null;
+};
+
+// therapists（display_name上書き用）
+type DbTherapistMini = {
+  user_id: string;
+  display_name: string | null;
+};
+
+// stores（name上書き用：owner_user_idで紐づく）
+type DbStoreMini = {
+  owner_user_id: string | null;
+  name: string | null;
+  avatar_url: string | null;
+};
+
+// uuid 判定
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -31,52 +62,63 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
-// シンプルなアバター（頭文字だけ表示）
-function ThreadAvatar({ name }: { name: string }) {
-  const initial =
-    name && name.trim().length > 0
-      ? name.trim().charAt(0).toUpperCase()
-      : "?";
-  return (
-    <div className="avatar-circle thread-avatar">
-      <span className="avatar-circle-text">{initial}</span>
-      <style jsx>{`
-        .thread-avatar {
-          width: 40px;
-          height: 40px;
-          border-radius: 999px;
-          background: var(--surface);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 16px;
-          font-weight: 600;
-        }
-      `}</style>
-    </div>
-  );
+function formatHHMM(iso: string): string {
+  if (!iso) return "";
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return "";
+  const hh = dt.getHours().toString().padStart(2, "0");
+  const mm = dt.getMinutes().toString().padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
+// ==============================
+// Page
+// ==============================
 export default function MessagesPage() {
   const [threads, setThreads] = useState<ThreadListItem[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // SSRズレ防止：viewerId は state で決定（Auth uuid 優先）
+  const [viewerId, setViewerId] = useState<UserId>("" as UserId);
+
+  // 自分→相手 relations（uuid会員のみ）
+  const [relations, setRelations] = useState<DbRelationRow[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
 
-  // SSRズレ防止：currentUserId は state + useEffect で決定
-  const [currentUserId, setCurrentUserId] = useState<UserId>("" as UserId);
-
-  // relations（自分 → 相手）一覧
-  const [relations, setRelations] = useState<DbRelationRow[]>([]);
-
-  // currentUserId を確定
+  // viewerId 確定（Auth uuid を優先）
   useEffect(() => {
-    const id = getCurrentUserId();
-    setCurrentUserId(id as UserId);
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const authId = data.user?.id ?? null;
+
+        if (cancelled) return;
+
+        // Auth uuid が取れたらそれを正にする
+        if (isUuid(authId)) {
+          setViewerId(authId as UserId);
+          return;
+        }
+
+        // fallback（guest-xxxx 等）
+        const fallback = getCurrentUserId();
+        setViewerId((fallback ?? "") as UserId);
+      } catch {
+        const fallback = getCurrentUserId();
+        setViewerId((fallback ?? "") as UserId);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // relations を Supabase から取得（uuid 会員のみ）
   useEffect(() => {
-    if (!isUuid(currentUserId)) {
+    if (!isUuid(viewerId)) {
       setRelations([]);
       return;
     }
@@ -85,7 +127,7 @@ export default function MessagesPage() {
 
     (async () => {
       try {
-        const rows = await getRelationsForUser(currentUserId as UserId);
+        const rows = await getRelationsForUser(viewerId as UserId);
         if (cancelled) return;
         setRelations(rows ?? []);
       } catch (e: any) {
@@ -105,15 +147,14 @@ export default function MessagesPage() {
     return () => {
       cancelled = true;
     };
-  }, [currentUserId]);
+  }, [viewerId]);
 
-  // DMスレッド一覧（Supabase）を取得して、block済みを除外して ThreadListItem に整形
+  // スレッド一覧を取得 → 相手プロフィール解決 → ブロック除外 → 整形
   useEffect(() => {
-    // userId まだ不明なら何もしない
-    if (!currentUserId) return;
+    if (!viewerId) return;
 
-    // ゲスト（非UUID）はサーバーDMなし
-    if (!isUuid(currentUserId)) {
+    // ゲストはサーバーDMなし
+    if (!isUuid(viewerId)) {
       setThreads([]);
       setLoading(false);
       return;
@@ -121,85 +162,167 @@ export default function MessagesPage() {
 
     let cancelled = false;
 
-    async function load() {
+    (async () => {
       setLoading(true);
       try {
-        // block されている相手一覧をセット化
-        const blockedTargets = new Set<string>();
+        // block 相手一覧
+        const blocked = new Set<string>();
         relations.forEach((r) => {
-          if (r.type === "block") blockedTargets.add(r.target_id);
+          if (r.type === "block") blocked.add(r.target_id);
         });
 
-        // Supabase から自分のDMスレッド一覧を取得
-        const baseThreads: DbDmThreadRow[] =
-          (await getThreadsForUser(currentUserId)) ?? [];
+        // 自分のスレッド一覧
+        const base: DbDmThreadRow[] = (await getThreadsForUser(viewerId)) ?? [];
 
-        const items: ThreadListItem[] = baseThreads
+        // partnerId 抽出（last_message_at が無いスレは現状非表示）
+        const normalized = base
           .map((row) => {
             const partnerId =
-              row.user_a_id === currentUserId
-                ? row.user_b_id
-                : row.user_a_id;
+              row.user_a_id === viewerId ? row.user_b_id : row.user_a_id;
 
-            // relations テーブルで block されている相手なら一覧に出さない
-            if (partnerId && blockedTargets.has(partnerId)) return null;
-
-            // last_message_at がないスレッドは、一覧から除外（今は非表示）
+            if (!partnerId) return null;
+            if (blocked.has(partnerId)) return null;
             if (!row.last_message_at) return null;
 
-            const lastMessage = row.last_message ?? "";
-            const lastMessageAt = row.last_message_at;
+            return { row, partnerId };
+          })
+          .filter(
+            (x): x is { row: DbDmThreadRow; partnerId: string } => x !== null
+          );
 
-            const dt = new Date(lastMessageAt);
-            const hh = dt.getHours().toString().padStart(2, "0");
-            const mm = dt.getMinutes().toString().padStart(2, "0");
-            const lastMessageTime = `${hh}:${mm}`;
+        const partnerIds = Array.from(
+          new Set(normalized.map((x) => x.partnerId))
+        );
+
+        // 相手 users 一括取得
+        const usersMap = new Map<string, DbUserMini>();
+        if (partnerIds.length > 0) {
+          const { data: usersRows, error } = await supabase
+            .from("users")
+            .select("id, name, role, avatar_url")
+            .in("id", partnerIds);
+
+          if (error) {
+            console.warn("[MessagesPage] users batch fetch error:", error);
+          } else {
+            (usersRows ?? []).forEach((u: any) => {
+              const ru = u as DbUserMini;
+              if (ru?.id) usersMap.set(ru.id, ru);
+            });
+          }
+        }
+
+        // 相手が therapist の場合 display_name を優先したい
+        const therapistMap = new Map<string, string>();
+        if (partnerIds.length > 0) {
+          const { data: thRows, error } = await supabase
+            .from("therapists")
+            .select("user_id, display_name")
+            .in("user_id", partnerIds);
+
+          if (error) {
+            console.warn("[MessagesPage] therapists batch fetch error:", error);
+          } else {
+            (thRows ?? []).forEach((t: any) => {
+              const rt = t as DbTherapistMini;
+              const uid = rt.user_id;
+              const dn = rt.display_name?.trim() ?? "";
+              if (uid && dn) therapistMap.set(uid, dn);
+            });
+          }
+        }
+
+        // 相手が store の場合 stores.name / stores.avatar_url を優先（owner_user_id で引く）
+        const storeMap = new Map<string, { name: string; avatarUrl: string | null }>();
+        if (partnerIds.length > 0) {
+          const { data: stRows, error } = await supabase
+            .from("stores")
+            .select("owner_user_id, name, avatar_url")
+            .in("owner_user_id", partnerIds);
+
+          if (error) {
+            console.warn("[MessagesPage] stores batch fetch error:", error);
+          } else {
+            (stRows ?? []).forEach((s: any) => {
+              const rs = s as DbStoreMini;
+              const owner = rs.owner_user_id ?? "";
+              const nm = rs.name?.trim() ?? "";
+              if (!owner) return;
+              storeMap.set(owner, { name: nm || "店舗", avatarUrl: rs.avatar_url ?? null });
+            });
+          }
+        }
+
+        const items: ThreadListItem[] = normalized
+          .map(({ row, partnerId }) => {
+            const u = usersMap.get(partnerId) ?? null;
+
+            // role 解決（users.role を正）
+            const roleRaw = (u?.role ?? "").toString();
+            const partnerRole: ThreadListItem["partnerRole"] =
+              roleRaw === "store" || roleRaw === "therapist" || roleRaw === "user"
+                ? (roleRaw as any)
+                : "unknown";
+
+            // 表示名：store > therapist > users.name > fallback
+            const storeOverride = storeMap.get(partnerId) ?? null;
+            const therapistOverride = therapistMap.get(partnerId) ?? null;
+
+            const partnerName =
+              storeOverride?.name?.trim()
+                ? storeOverride.name.trim()
+                : therapistOverride?.trim()
+                ? therapistOverride.trim()
+                : u?.name?.trim()
+                ? u.name.trim()
+                : "相手";
+
+            const partnerHandle =
+              u?.name && u.name.trim().length > 0 ? `@${u.name.trim()}` : `@${partnerId}`;
+
+            // avatar：store(stores.avatar_url) > users.avatar_url
+            const avatarUrl =
+              storeOverride?.avatarUrl?.trim?.() ? storeOverride.avatarUrl : u?.avatar_url ?? null;
+
+            const lastMessageAt = row.last_message_at as string;
+            const lastMessageTime = formatHHMM(lastMessageAt);
 
             const unreadCount =
-              row.user_a_id === currentUserId
-                ? row.unread_for_a ?? 0
-                : row.unread_for_b ?? 0;
-
-            const partnerName = partnerId ?? "相手";
+              row.user_a_id === viewerId ? row.unread_for_a ?? 0 : row.unread_for_b ?? 0;
 
             return {
               threadId: row.thread_id,
-              partnerId: partnerId ?? "",
+              partnerId,
               partnerName,
-              lastMessage,
+              partnerHandle,
+              partnerRole,
+              avatarUrl,
+              lastMessage: row.last_message ?? "",
               lastMessageTime,
               lastMessageAt,
               unreadCount,
-            } as ThreadListItem;
+            };
           })
-          .filter((x): x is ThreadListItem => x !== null)
-          // lastMessageAt 降順でソート
-          .sort((a, b) => {
-            return (
-              new Date(b.lastMessageAt).getTime() -
-              new Date(a.lastMessageAt).getTime()
-            );
-          });
+          .sort(
+            (a, b) =>
+              new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+          );
 
         if (cancelled) return;
         setThreads(items);
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }
-
-    load();
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [currentUserId, relations, reloadKey]);
+  }, [viewerId, relations, reloadKey]);
 
-  // ==============================
-  // Realtime: dm_threads の INSERT / UPDATE を購読して一覧を再読み込み
-  // ==============================
+  // Realtime：dm_threads の INSERT / UPDATE を購読して再読込
   useEffect(() => {
-    if (!currentUserId || !isUuid(currentUserId)) return;
+    if (!viewerId || !isUuid(viewerId)) return;
 
     const handleChange = (payload: any) => {
       const newRow = (payload.new ?? null) as DbDmThreadRow | null;
@@ -207,36 +330,24 @@ export default function MessagesPage() {
 
       const isMine =
         (newRow &&
-          (newRow.user_a_id === currentUserId ||
-            newRow.user_b_id === currentUserId)) ||
+          (newRow.user_a_id === viewerId || newRow.user_b_id === viewerId)) ||
         (oldRow &&
-          (oldRow.user_a_id === currentUserId ||
-            oldRow.user_b_id === currentUserId));
+          (oldRow.user_a_id === viewerId || oldRow.user_b_id === viewerId));
 
       if (!isMine) return;
-
-      // 自分が関係するスレッドに変化があった場合のみ再取得トリガー
       setReloadKey((k) => k + 1);
     };
 
     const channel = supabase
-      .channel(`dm_threads_user_${currentUserId}`)
+      .channel(`dm_threads_user_${viewerId}`)
       .on(
         "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "dm_threads",
-        },
+        { event: "INSERT", schema: "public", table: "dm_threads" },
         handleChange
       )
       .on(
         "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "dm_threads",
-        },
+        { event: "UPDATE", schema: "public", table: "dm_threads" },
         handleChange
       )
       .subscribe();
@@ -244,17 +355,17 @@ export default function MessagesPage() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [currentUserId]);
+  }, [viewerId]);
 
-  const hasUnread = threads.some((t) => t.unreadCount > 0);
+  const hasUnread = useMemo(() => threads.some((t) => t.unreadCount > 0), [threads]);
 
-  // ゲストの場合の表示（任意）
-  if (!isUuid(currentUserId)) {
+  // ゲスト表示
+  if (!isUuid(viewerId)) {
     return (
       <div className="app-shell">
         <AppHeader title="メッセージ" />
         <main className="app-main">
-          <p className="text-sm text-gray-500">
+          <p className="messages-empty-sub">
             ログインすると、DM（メッセージ）が使えるようになります。
           </p>
         </main>
@@ -288,21 +399,40 @@ export default function MessagesPage() {
                   className="thread-link"
                 >
                   <div className="thread-avatar-wrap">
-                    <ThreadAvatar name={t.partnerName || t.partnerId} />
+                    <AvatarCircle
+                      size={40}
+                      avatarUrl={t.avatarUrl}
+                      displayName={t.partnerName || "?"}
+                    />
                   </div>
+
                   <div className="thread-main">
                     <div className="thread-header-row">
                       <div className="thread-name">
-                        {t.partnerName || t.partnerId}
+                        {t.partnerName}
+                        <span className="thread-handle">{t.partnerHandle}</span>
+                        {t.partnerRole !== "unknown" && (
+                          <span className="thread-role">
+                            {t.partnerRole === "store"
+                              ? "店舗"
+                              : t.partnerRole === "therapist"
+                              ? "セラピスト"
+                              : "ユーザー"}
+                          </span>
+                        )}
                       </div>
                       <div className="thread-time">{t.lastMessageTime}</div>
                     </div>
+
                     <div className="thread-body-row">
                       <div className="thread-last-message">
                         {t.lastMessage || "（メッセージなし）"}
                       </div>
+
                       {t.unreadCount > 0 && (
-                        <span className="thread-unread-dot" />
+                        <span className="thread-unread-badge">
+                          {t.unreadCount > 99 ? "99+" : t.unreadCount}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -343,6 +473,7 @@ export default function MessagesPage() {
           margin-top: 8px;
           font-size: 12px;
           color: var(--muted-foreground);
+          line-height: 1.6;
         }
 
         .thread-list {
@@ -378,7 +509,7 @@ export default function MessagesPage() {
           min-width: 0;
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 6px;
         }
 
         .thread-header-row {
@@ -389,11 +520,36 @@ export default function MessagesPage() {
         }
 
         .thread-name {
+          display: flex;
+          align-items: baseline;
+          gap: 8px;
           font-size: 14px;
           font-weight: 600;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
+          min-width: 0;
+        }
+
+        .thread-handle {
+          font-size: 11px;
+          color: var(--muted-foreground);
+          font-weight: 500;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          min-width: 0;
+        }
+
+        .thread-role {
+          font-size: 10px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          background: var(--surface-soft);
+          color: var(--text-sub);
+          font-weight: 600;
+          flex-shrink: 0;
         }
 
         .thread-time {
@@ -417,11 +573,18 @@ export default function MessagesPage() {
           white-space: nowrap;
         }
 
-        .thread-unread-dot {
-          width: 8px;
-          height: 8px;
+        .thread-unread-badge {
+          min-width: 18px;
+          height: 18px;
           border-radius: 999px;
           background: var(--accent);
+          color: #fff;
+          font-size: 11px;
+          font-weight: 700;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0 6px;
           flex-shrink: 0;
         }
       `}</style>

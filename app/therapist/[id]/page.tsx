@@ -2,10 +2,10 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import type { CSSProperties } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 
+import AvatarCircle from "@/components/AvatarCircle";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 
@@ -22,7 +22,6 @@ import {
 import type { UserId } from "@/types/user";
 import { RelationActions } from "@/components/RelationActions";
 
-// 共通DB型
 import type { DbTherapistRow, DbUserRow, DbPostRow, DbStoreRow } from "@/types/db";
 
 type Area =
@@ -62,6 +61,55 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
+// ===== Avatar URL 正規化（Home と同一思想で統一）=====
+const AVATAR_BUCKET = "avatars";
+
+function normalizeAvatarUrl(v: any): string | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s ? s : null;
+}
+
+function isProbablyHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * URLとして使う前に「それっぽいゴミ」を弾く
+ * - 空
+ * - ".../public/avatars" で終わってる（ファイル名なし）等
+ */
+function looksValidAvatarUrl(v: string | null | undefined): boolean {
+  const s = (v ?? "").trim();
+  if (!s) return false;
+
+  // 例: https://xxxx.supabase.co/storage/v1/object/public/avatars
+  // これだと画像ではないので弾く
+  if (s.includes("/storage/v1/object/public/avatars")) {
+    if (/\/public\/avatars\/?$/i.test(s)) return false;
+  }
+
+  return true;
+}
+
+/**
+ * avatar_url が
+ * - https://... ならそのまま
+ * - それ以外（storage path）なら public URL に変換
+ */
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  const v = normalizeAvatarUrl(raw);
+  if (!v) return null;
+  if (isProbablyHttpUrl(v)) return v;
+
+  // "avatars/xxx.png" のような場合にも対応（先頭の "avatars/" を外す）
+  const path = v.startsWith(`${AVATAR_BUCKET}/`)
+    ? v.slice(AVATAR_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return data?.publicUrl ?? null;
+}
+
 type TherapistProfile = {
   displayName: string;
   handle: string;
@@ -69,7 +117,6 @@ type TherapistProfile = {
   intro: string;
   avatarUrl?: string | null;
 
-  // SNSはDBに無い/未使用なら空でOK
   snsX?: string;
   snsLine?: string;
   snsOther?: string;
@@ -95,12 +142,10 @@ const TherapistProfilePage: React.FC = () => {
   const params = useParams<{ id: string }>();
   const therapistId = (params?.id as string) || ""; // therapists.id
 
-  // ★ viewer（閲覧者）: local概念（guest含む）
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  // ★ viewer（閲覧者）: Supabase Auth uuid（本人判定/権限判定の正）
   const [authUserId, setAuthUserId] = useState<string | null>(null);
 
-  // therapists.user_id（= users.id / uuid）を relations / owner 判定に利用
+  // therapists.user_id（= users.id / uuid）
   const [therapistUserId, setTherapistUserId] = useState<string | null>(null);
 
   // 所属店舗ID（store_id）
@@ -330,8 +375,12 @@ const TherapistProfilePage: React.FC = () => {
             : "";
 
         // avatar: users.avatar_url 優先 → therapists.avatar_url
-        const avatarUrl =
+        const rawAvatar =
           (user as any)?.avatar_url ?? (therapist as any)?.avatar_url ?? null;
+
+        const avatarUrl = looksValidAvatarUrl(rawAvatar)
+          ? resolveAvatarUrl(rawAvatar)
+          : null;
 
         setProfile((prev) => ({
           ...prev,
@@ -396,7 +445,7 @@ const TherapistProfilePage: React.FC = () => {
       }
     };
 
-    fetchProfileAndPosts();
+    void fetchProfileAndPosts();
 
     return () => {
       cancelled = true;
@@ -432,11 +481,15 @@ const TherapistProfilePage: React.FC = () => {
           return;
         }
 
+        const rawStoreAvatar = (data as any).avatar_url ?? null;
+
         setLinkedStore({
           id: data.id,
           name: (data as any).name ?? "店舗",
           area: (data as any).area ?? null,
-          avatarUrl: (data as any).avatar_url ?? null,
+          avatarUrl: looksValidAvatarUrl(rawStoreAvatar)
+            ? resolveAvatarUrl(rawStoreAvatar)
+            : null,
           websiteUrl: (data as any).website_url ?? null,
           lineUrl: (data as any).line_url ?? null,
         });
@@ -451,7 +504,7 @@ const TherapistProfilePage: React.FC = () => {
     };
 
     if (linkedStoreId) {
-      loadStore(linkedStoreId);
+      void loadStore(linkedStoreId);
     } else {
       setLinkedStore(null);
       setStoreError(null);
@@ -463,18 +516,6 @@ const TherapistProfilePage: React.FC = () => {
     };
   }, [linkedStoreId]);
 
-  const avatarInitial =
-    profile.displayName?.trim()?.charAt(0)?.toUpperCase() ||
-    (profile.handle?.trim()?.charAt(1)?.toUpperCase() ?? "T");
-
-  const avatarStyle: CSSProperties = profile.avatarUrl
-    ? {
-        backgroundImage: `url(${profile.avatarUrl})`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }
-    : {};
-
   // ★自分のページなら relation UI は出さない
   const canShowRelationUi = !isOwner;
 
@@ -484,18 +525,6 @@ const TherapistProfilePage: React.FC = () => {
 
   // 関連リンク（SNS）が空ならブロック自体を出さない
   const showSnsBlock = !!(profile.snsX || profile.snsLine || profile.snsOther);
-
-  const storeAvatarStyle: CSSProperties =
-    linkedStore?.avatarUrl
-      ? {
-          backgroundImage: `url(${linkedStore.avatarUrl})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-        }
-      : {};
-
-  const storeInitial =
-    linkedStore?.name?.trim()?.charAt(0)?.toUpperCase() ?? "S";
 
   return (
     <>
@@ -509,11 +538,11 @@ const TherapistProfilePage: React.FC = () => {
         <main className="app-main">
           <section className="profile-hero">
             <div className="profile-hero-row">
-              <div className="avatar-circle" style={avatarStyle}>
-                {!profile.avatarUrl && (
-                  <span className="avatar-circle-text">{avatarInitial}</span>
-                )}
-              </div>
+              <AvatarCircle
+                avatarUrl={profile.avatarUrl}
+                size={60}
+                displayName={profile.displayName || profile.handle || "T"}
+              />
 
               <div className="profile-hero-main">
                 <div className="profile-name-row">
@@ -526,7 +555,7 @@ const TherapistProfilePage: React.FC = () => {
 
                     {canShowDmButton && (
                       <Link
-                        href={`/messages/${threadId}`}
+                        href={`/messages/new?to=${therapistUserId}`} // targetUserId = 相手の users.id(uuid)
                         className="dm-inline-btn no-link-style"
                       >
                         ✉
@@ -601,7 +630,7 @@ const TherapistProfilePage: React.FC = () => {
               <p className="profile-intro">{profile.intro}</p>
             )}
 
-            {/* 関連リンク（必要ならDB連携に後で置き換え） */}
+            {/* 関連リンク */}
             {showSnsBlock && (
               <div className="profile-sns-block">
                 <div className="profile-sns-title">関連リンク</div>
@@ -640,7 +669,7 @@ const TherapistProfilePage: React.FC = () => {
               </div>
             )}
 
-            {/* ★ 在籍店舗：関連リンクの下に表示（カードタップで店舗プロフィールへ） */}
+            {/* ★ 在籍店舗 */}
             {isStoreLinked && (
               <div className="linked-store-block">
                 <div className="linked-store-title">在籍店舗</div>
@@ -648,9 +677,11 @@ const TherapistProfilePage: React.FC = () => {
                 {loadingStore && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <div className="avatar-circle store-avatar">
-                        <span className="avatar-circle-text">…</span>
-                      </div>
+                      <AvatarCircle
+                        size={46}
+                        fallbackText="…"
+                        className="store-avatar"
+                      />
                       <div className="linked-store-main">
                         <div className="linked-store-name">読み込み中…</div>
                         <div className="linked-store-meta">
@@ -664,9 +695,11 @@ const TherapistProfilePage: React.FC = () => {
                 {!loadingStore && storeError && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <div className="avatar-circle store-avatar">
-                        <span className="avatar-circle-text">!</span>
-                      </div>
+                      <AvatarCircle
+                        size={46}
+                        fallbackText="!"
+                        className="store-avatar"
+                      />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
                         <div
@@ -686,17 +719,12 @@ const TherapistProfilePage: React.FC = () => {
                     className="linked-store-card linked-store-link-wrapper"
                   >
                     <div className="linked-store-row">
-                      <div
-                        className="avatar-circle store-avatar"
-                        style={storeAvatarStyle}
-                      >
-                        {!linkedStore.avatarUrl && (
-                          <span className="avatar-circle-text">
-                            {storeInitial}
-                          </span>
-                        )}
-                      </div>
-
+                      <AvatarCircle
+                        avatarUrl={linkedStore.avatarUrl}
+                        size={46}
+                        displayName={linkedStore.name || "S"}
+                        className="store-avatar"
+                      />
                       <div className="linked-store-main">
                         <div className="linked-store-name">{linkedStore.name}</div>
                         <div className="linked-store-meta">
@@ -710,9 +738,11 @@ const TherapistProfilePage: React.FC = () => {
                 {!loadingStore && !storeError && !linkedStore && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <div className="avatar-circle store-avatar">
-                        <span className="avatar-circle-text">S</span>
-                      </div>
+                      <AvatarCircle
+                        size={46}
+                        fallbackText="S"
+                        className="store-avatar"
+                      />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
                         <div className="linked-store-meta">
@@ -746,11 +776,11 @@ const TherapistProfilePage: React.FC = () => {
                 {posts.map((p) => (
                   <article key={p.id} className="feed-item">
                     <div className="feed-item-inner">
-                      <div className="avatar" style={avatarStyle} aria-hidden="true">
-                        {!profile.avatarUrl && (
-                          <span className="avatar-fallback">{avatarInitial}</span>
-                        )}
-                      </div>
+                      <AvatarCircle
+                        avatarUrl={profile.avatarUrl}
+                        size={38}
+                        displayName={profile.displayName || profile.handle || "T"}
+                      />
 
                       <div className="feed-main">
                         <div className="feed-header">
@@ -915,9 +945,6 @@ const TherapistProfilePage: React.FC = () => {
         }
 
         .store-avatar {
-          width: 46px;
-          height: 46px;
-          flex: 0 0 46px;
           border: 1px solid rgba(0, 0, 0, 0.08);
         }
 
@@ -982,24 +1009,10 @@ const TherapistProfilePage: React.FC = () => {
           opacity: 1;
         }
 
-      .avatar {
-        width: 38px;
-        height: 38px;
-        border-radius: 999px;
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        background: #fff;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex: 0 0 38px;
-        overflow: hidden;
-      }
-
-      .avatar-fallback {
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--text-sub);
-      }
+        :global(.no-link-style) {
+          color: inherit;
+          text-decoration: none;
+        }
       `}</style>
     </>
   );

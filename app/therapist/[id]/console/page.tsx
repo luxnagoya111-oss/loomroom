@@ -29,7 +29,13 @@ type TherapistProfile = {
   snsX?: string;
   snsLine?: string;
   snsOther?: string;
-  avatarDataUrl?: string;
+
+  /**
+   * ★ 最終的にDBへ保存するのは “短いURL or パス” のみ
+   * - dataURL はここに入れない（入ってきても保存前に弾く）
+   */
+  avatarUrl?: string | null;
+
   dmNotice: boolean;
 };
 
@@ -72,10 +78,16 @@ const DEFAULT_PROFILE: TherapistProfile = {
   snsX: "",
   snsLine: "",
   snsOther: "",
+  avatarUrl: null,
   dmNotice: true,
 };
 
 type ModalMode = "cancel_request" | "detach" | null;
+
+function isDataUrl(v: string | null | undefined) {
+  if (!v) return false;
+  return v.startsWith("data:image/");
+}
 
 const TherapistConsolePage: React.FC = () => {
   const params = useParams<{ id: string }>();
@@ -86,6 +98,13 @@ const TherapistConsolePage: React.FC = () => {
 
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  /**
+   * AvatarUploader 用の “表示だけ” state
+   * - 即時プレビュー(dataURL)をここに入れて見た目を更新
+   * - DBに保存するのは data.avatarUrl（確定URL）だけ
+   */
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
   // ★追加：therapists.user_id を保持（保存時に users.name 更新に使う）
@@ -123,9 +142,17 @@ const TherapistConsolePage: React.FC = () => {
       const raw = window.localStorage.getItem(storageKey);
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<TherapistProfile>;
+
+        // ★ dataURL が混入していたら捨てる（DBに保存させない）
+        const safeAvatar =
+          parsed.avatarUrl && !isDataUrl(parsed.avatarUrl)
+            ? parsed.avatarUrl
+            : null;
+
         setData((prev) => ({
           ...prev,
           ...parsed,
+          avatarUrl: safeAvatar ?? prev.avatarUrl ?? null,
           dmNotice:
             typeof parsed.dmNotice === "boolean" ? parsed.dmNotice : prev.dmNotice,
         }));
@@ -169,6 +196,10 @@ const TherapistConsolePage: React.FC = () => {
         // ★ user_id を保持
         setTherapistUserId(dbRow.user_id ?? null);
 
+        // ★ avatar_url が dataURL の場合は “異常値” なので UI/保存対象から除外
+        const safeAvatarUrl =
+          dbRow.avatar_url && !isDataUrl(dbRow.avatar_url) ? dbRow.avatar_url : null;
+
         setData((prev) => ({
           ...prev,
           displayName: dbRow.display_name ?? prev.displayName,
@@ -177,7 +208,7 @@ const TherapistConsolePage: React.FC = () => {
           snsX: dbRow.sns_x ?? prev.snsX,
           snsLine: dbRow.sns_line ?? prev.snsLine,
           snsOther: dbRow.sns_other ?? prev.snsOther,
-          avatarDataUrl: dbRow.avatar_url ?? prev.avatarDataUrl,
+          avatarUrl: safeAvatarUrl ?? prev.avatarUrl ?? null,
           dmNotice:
             typeof dbRow.dm_notice === "boolean" ? dbRow.dm_notice : prev.dmNotice,
         }));
@@ -265,20 +296,18 @@ const TherapistConsolePage: React.FC = () => {
     };
   }, [therapistId]);
 
-  // ④ Avatar：Storage → therapists.avatar_url 更新
-  const handleAvatarFileSelect = async (file: File) => {
-    try {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") updateField("avatarDataUrl", reader.result);
-      };
-      reader.readAsDataURL(file);
-    } catch {}
+  // ④ Avatar：Storage → therapists.avatar_url 更新（dataURLは保存しない）
+  const handleAvatarFileSelect = async (file: File): Promise<string> => {
+    if (!therapistId) throw new Error("therapistId が不正です。");
 
+    setAvatarUploading(true);
     try {
-      setAvatarUploading(true);
-
+      // uploadAvatar は「Storageへアップ → public URL（短いURL）を返す」想定
       const publicUrl = await uploadAvatar(file, therapistId);
+
+      if (!publicUrl || isDataUrl(publicUrl)) {
+        throw new Error("画像URLの生成に失敗しました。");
+      }
 
       const { error } = await supabase
         .from("therapists")
@@ -286,15 +315,19 @@ const TherapistConsolePage: React.FC = () => {
         .eq("id", therapistId);
 
       if (error) {
-        console.error("[TherapistConsole] failed to update therapists.avatar_url:", error);
-        alert("アイコン画像をサーバーに保存できませんでした。");
-        return;
+        console.error(
+          "[TherapistConsole] failed to update therapists.avatar_url:",
+          error
+        );
+        throw new Error("アイコン画像をサーバーに保存できませんでした。");
       }
 
-      updateField("avatarDataUrl", publicUrl);
-    } catch (e) {
-      console.error("[TherapistConsole] handleAvatarFileSelect error:", e);
-      alert("画像のアップロードに失敗しました。");
+      // ★ 確定URLを “保存データ” に反映
+      updateField("avatarUrl", publicUrl);
+      // ★ プレビューを確定URLに寄せる
+      setAvatarPreview(publicUrl);
+
+      return publicUrl;
     } finally {
       setAvatarUploading(false);
     }
@@ -306,15 +339,13 @@ const TherapistConsolePage: React.FC = () => {
     if (!name) return;
 
     if (!therapistUserId) {
-      // user_id がまだ取れてない場合は何もしない（保存自体は続行）
-      console.warn("[TherapistConsole] therapistUserId is missing; skip users.name sync");
+      console.warn(
+        "[TherapistConsole] therapistUserId is missing; skip users.name sync"
+      );
       return;
     }
 
-    const { error } = await supabase
-      .from("users")
-      .update({ name })
-      .eq("id", therapistUserId);
+    const { error } = await supabase.from("users").update({ name }).eq("id", therapistUserId);
 
     if (error) {
       console.error("[TherapistConsole] failed to update users.name:", {
@@ -332,7 +363,12 @@ const TherapistConsolePage: React.FC = () => {
 
     // 1) localStorage 保存（互換）
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify(data));
+      const payloadForLocal: TherapistProfile = {
+        ...data,
+        // ★ dataURL が入っていたら消す（念のため）
+        avatarUrl: data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null,
+      };
+      window.localStorage.setItem(storageKey, JSON.stringify(payloadForLocal));
     } catch (e) {
       console.warn("Failed to save therapist profile (localStorage)", e);
       alert("ローカル保存に失敗しました。");
@@ -345,7 +381,10 @@ const TherapistConsolePage: React.FC = () => {
       // 2-A) users.name 同期（失敗したら保存全体を止める方針）
       await syncUserNameIfPossible(data.displayName);
 
-      // 2-B) therapists 更新（display_name も互換として同期）
+      // 2-B) therapists 更新
+      const safeAvatar =
+        data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null;
+
       const updatePayload: Partial<DbTherapistRow> = {
         display_name: (data.displayName || "").trim() || null,
         area: data.area || null,
@@ -353,7 +392,7 @@ const TherapistConsolePage: React.FC = () => {
         sns_x: data.snsX || null,
         sns_line: data.snsLine || null,
         sns_other: data.snsOther || null,
-        avatar_url: data.avatarDataUrl || null,
+        avatar_url: safeAvatar,
         dm_notice: !!data.dmNotice,
       };
 
@@ -491,11 +530,18 @@ const TherapistConsolePage: React.FC = () => {
 
   const pendingStore = pendingRequest?.store ?? null;
 
+  // AvatarUploader に渡す表示URL（プレビュー優先 → 確定URL）
+  const avatarUrlForUi = avatarPreview ?? data.avatarUrl ?? null;
+
   return (
     <>
       <div className="app-shell">
         <header className="app-header">
-          <button type="button" className="header-icon-btn" onClick={() => history.back()}>
+          <button
+            type="button"
+            className="header-icon-btn"
+            onClick={() => window.history.back()}
+          >
             ←
           </button>
           <div className="app-header-center">
@@ -620,9 +666,17 @@ const TherapistConsolePage: React.FC = () => {
 
             <div className="tc-profile-row">
               <AvatarUploader
-                avatarDataUrl={data.avatarDataUrl}
-                displayName={data.displayName || "T"}
+                avatarUrl={avatarUrlForUi}
+                displayName={data.displayName || ""}
+                onPreview={(dataUrl) => {
+                  // ★ プレビューだけ（DBには保存しない）
+                  setAvatarPreview(dataUrl);
+                }}
                 onFileSelect={handleAvatarFileSelect}
+                onUploaded={(url) => {
+                  // ★ 確定URLへ
+                  setAvatarPreview(url);
+                }}
               />
 
               <div className="tc-profile-main">
