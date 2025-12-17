@@ -4,18 +4,28 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+
 import BottomNav from "@/components/BottomNav";
 import AppHeader from "@/components/AppHeader";
+import AvatarCircle from "@/components/AvatarCircle";
+
 import { makeThreadId } from "@/lib/dmThread";
 import { getCurrentUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
+
 import {
   getRelation,
   setRelation as setRelationOnServer,
   toRelationFlags,
   type RelationFlags,
 } from "@/lib/repositories/relationRepository";
+
+import {
+  getRelationFlags as getLocalRelationFlags,
+  setRelation as setLocalRelation,
+} from "@/lib/relationStorage";
+
 import type { UserId } from "@/types/user";
 import { RelationActions } from "@/components/RelationActions";
 
@@ -48,7 +58,7 @@ type UserProfile = {
   snsX?: string;
   snsLine?: string;
   snsOther?: string;
-  avatarDataUrl?: string;
+  avatarUrl?: string | null; // ★表示用（http or public URL）
   role?: "user" | "therapist" | "store";
 };
 
@@ -64,6 +74,8 @@ const DEFAULT_PROFILE: UserProfile = {
   snsX: "",
   snsLine: "",
   snsOther: "",
+  avatarUrl: null,
+  role: "user",
 };
 
 // Supabase users
@@ -76,6 +88,7 @@ type DbUserRow = {
 
 // therapists
 type DbTherapistRow = {
+  id: string;
   display_name: string | null;
   area: string | null;
   profile: string | null;
@@ -83,6 +96,7 @@ type DbTherapistRow = {
 
 // stores
 type DbStoreRow = {
+  id: string;
   name: string | null;
   area: string | null;
   description: string | null;
@@ -125,16 +139,52 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
+// ===== Avatar URL 正規化（他ページと同一思想）=====
+const AVATAR_BUCKET = "avatars";
+
+function normalizeAvatarUrl(v: any): string | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s ? s : null;
+}
+
+function isProbablyHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+function looksValidAvatarUrl(v: string | null | undefined): boolean {
+  const s = (v ?? "").trim();
+  if (!s) return false;
+
+  if (s.includes("/storage/v1/object/public/avatars")) {
+    if (/\/public\/avatars\/?$/i.test(s)) return false;
+  }
+  return true;
+}
+
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  const v = normalizeAvatarUrl(raw);
+  if (!v) return null;
+  if (isProbablyHttpUrl(v)) return v;
+
+  const path = v.startsWith(`${AVATAR_BUCKET}/`)
+    ? v.slice(AVATAR_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return data?.publicUrl ?? null;
+}
+
 const PublicMyPage: React.FC = () => {
+  const router = useRouter();
+
   const params = useParams<{ id: string }>();
   const userId = (params?.id as string) || "user";
 
+  // viewer（ゲスト含む）
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
-  const threadId =
-    currentUserId && currentUserId !== userId
-      ? makeThreadId(currentUserId, userId)
-      : null;
+  // Supabase Auth（uuid会員）
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
 
   const storageKey = `${STORAGE_PREFIX}${userId}`;
 
@@ -143,7 +193,8 @@ const PublicMyPage: React.FC = () => {
     handle: `@${userId}`,
   }));
   const [loading, setLoading] = useState<boolean>(true);
-  // ★追加：role別の実体ID（stores.id / therapists.id）を保持
+
+  // ★ role別の実体ID（stores.id / therapists.id）を保持
   const [storeId, setStoreId] = useState<string | null>(null);
   const [therapistId, setTherapistId] = useState<string | null>(null);
 
@@ -158,195 +209,240 @@ const PublicMyPage: React.FC = () => {
     blocked: false,
   });
 
-  // currentUserId 初期化
+  // viewer id 初期化（guest + auth）
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const id = getCurrentUserId();
-    setCurrentUserId(id);
+
+    setCurrentUserId(getCurrentUserId());
+
+    supabase.auth
+      .getUser()
+      .then(({ data }) => setAuthUserId(data.user?.id ?? null))
+      .catch(() => setAuthUserId(null));
   }, []);
 
-  // ▼ Supabase からプロフィール取得
-useEffect(() => {
-  let cancelled = false;
+  // Owner 判定（公開ページの対象が users.id(uuid) の場合）
+  const isOwner = !!authUserId && isUuid(userId) && authUserId === userId;
 
-  const fetchProfile = async () => {
-    try {
-      setLoading(true);
+  // DMスレッドは「viewer(会員uuid優先) × target(uuid)」
+  const viewerIdForThread = authUserId ?? currentUserId;
+  const threadId =
+    viewerIdForThread && userId && !isOwner
+      ? makeThreadId(viewerIdForThread, userId)
+      : null;
 
-      // ★ role 切替時に古いIDが残らないようリセット
-      setTherapistId(null);
-      setStoreId(null);
-
-      // 1) users を取得
-      const { data: user, error: userError } = await supabase
-        .from("users")
-        .select("id, name, role, avatar_url")
-        .eq("id", userId)
-        .maybeSingle();
-
-      if (cancelled) return;
-
-      if (userError) {
-        console.error("Supabase users fetch error:", userError);
-        return;
-      }
-
-      const u = user as DbUserRow | null;
-      if (!u) return;
-
-      let baseProfile: UserProfile = {
-        ...DEFAULT_PROFILE,
-        handle: `@${userId}`,
-        displayName:
-          u.name ??
-          (u.role === "store"
-            ? "店舗アカウント"
-            : u.role === "therapist"
-            ? "セラピスト"
-            : "ユーザー"),
-        accountType: "会員",
-        role: (u.role as UserProfile["role"]) ?? "user",
-        avatarDataUrl: u.avatar_url ?? undefined,
-        area: "",
-      };
-
-      // 2) role に応じて therapists / stores も見る
-      if (u.role === "therapist") {
-        const { data: t, error: tError } = await supabase
-          .from("therapists")
-          .select("id, display_name, area, profile")
-          .eq("user_id", userId)
-          .maybeSingle();
-
-        if (!cancelled && !tError && t) {
-          const th = t as (DbTherapistRow & { id: string });
-
-          // ★ therapistId を保持（console遷移などに使える）
-          setTherapistId(th.id);
-
-          const areaValue: Area = knownAreas.includes((th.area ?? "") as Area)
-            ? ((th.area as Area) ?? "")
-            : "";
-
-          baseProfile = {
-            ...baseProfile,
-            displayName: th.display_name ?? baseProfile.displayName,
-            area: areaValue,
-            intro:
-              th.profile && th.profile.trim().length > 0
-                ? th.profile
-                : baseProfile.intro,
-          };
-        }
-      } else if (u.role === "store") {
-        const { data: s, error: sError } = await supabase
-          .from("stores")
-          .select("id, name, area, description")
-          .eq("owner_user_id", userId)
-          .maybeSingle();
-
-        if (!cancelled && !sError && s) {
-          const st = s as (DbStoreRow & { id: string });
-
-          // ★ storeId を保持（console遷移などに使える）
-          setStoreId(st.id);
-
-          const areaValue: Area = knownAreas.includes((st.area ?? "") as Area)
-            ? ((st.area as Area) ?? "")
-            : "";
-
-          baseProfile = {
-            ...baseProfile,
-            displayName: st.name ?? baseProfile.displayName,
-            area: areaValue,
-            intro:
-              st.description && st.description.trim().length > 0
-                ? st.description
-                : baseProfile.intro,
-          };
-        }
-      }
-
-      if (cancelled) return;
-
-      setProfile((prev) => ({
-        ...prev,
-        ...baseProfile,
-      }));
-    } catch (e) {
-      console.error("Supabase profile unexpected error:", e);
-    } finally {
-      if (!cancelled) setLoading(false);
-    }
-  };
-
-  fetchProfile();
-
-  return () => {
-    cancelled = true;
-  };
-}, [userId]);
-
-  // ▼ 自分と userId の relations を復元（uuid 同士かつ別人のときだけ）
+  // ▼ Supabase からプロフィール取得（users.role を正）
   useEffect(() => {
-    if (!isUuid(currentUserId) || !isUuid(userId)) return;
-    if (currentUserId === userId) return;
-
     let cancelled = false;
 
-    (async () => {
-      const row = await getRelation(currentUserId as UserId, userId as UserId);
-      if (cancelled) return;
-      setRelations(toRelationFlags(row));
-    })();
+    const fetchProfile = async () => {
+      try {
+        setLoading(true);
 
+        // ★ role 切替時に古いIDが残らないようリセット
+        setTherapistId(null);
+        setStoreId(null);
+
+        // 1) users を取得
+        const { data: user, error: userError } = await supabase
+          .from("users")
+          .select("id, name, role, avatar_url")
+          .eq("id", userId)
+          .maybeSingle<DbUserRow>();
+
+        if (cancelled) return;
+
+        if (userError) {
+          console.error("[PublicMyPage] users fetch error:", userError);
+          return;
+        }
+
+        const u = user as DbUserRow | null;
+        if (!u) return;
+
+        const userAvatarResolved = looksValidAvatarUrl(u.avatar_url)
+          ? resolveAvatarUrl(u.avatar_url)
+          : null;
+
+        let baseProfile: UserProfile = {
+          ...DEFAULT_PROFILE,
+          handle: `@${userId}`,
+          displayName:
+            u.name ??
+            (u.role === "store"
+              ? "店舗アカウント"
+              : u.role === "therapist"
+              ? "セラピスト"
+              : "ユーザー"),
+          accountType: "会員",
+          role: (u.role as UserProfile["role"]) ?? "user",
+          avatarUrl: userAvatarResolved,
+          area: "",
+        };
+
+        // 2) role に応じて therapists / stores も見る（表示名/エリア/紹介文を上書き）
+        if (u.role === "therapist") {
+          const { data: t, error: tError } = await supabase
+            .from("therapists")
+            .select("id, display_name, area, profile")
+            .eq("user_id", userId)
+            .maybeSingle<DbTherapistRow>();
+
+          if (!cancelled && !tError && t) {
+            const areaValue: Area = knownAreas.includes((t.area ?? "") as Area)
+              ? ((t.area as Area) ?? "")
+              : "";
+
+            setTherapistId(t.id);
+
+            baseProfile = {
+              ...baseProfile,
+              displayName: t.display_name ?? baseProfile.displayName,
+              area: areaValue,
+              intro:
+                t.profile && t.profile.trim().length > 0
+                  ? t.profile
+                  : baseProfile.intro,
+            };
+          }
+        } else if (u.role === "store") {
+          const { data: s, error: sError } = await supabase
+            .from("stores")
+            .select("id, name, area, description")
+            .eq("owner_user_id", userId)
+            .maybeSingle<DbStoreRow>();
+
+          if (!cancelled && !sError && s) {
+            const areaValue: Area = knownAreas.includes((s.area ?? "") as Area)
+              ? ((s.area as Area) ?? "")
+              : "";
+
+            setStoreId(s.id);
+
+            baseProfile = {
+              ...baseProfile,
+              displayName: s.name ?? baseProfile.displayName,
+              area: areaValue,
+              intro:
+                s.description && s.description.trim().length > 0
+                  ? s.description
+                  : baseProfile.intro,
+            };
+          }
+        }
+
+        if (cancelled) return;
+
+        setProfile((prev) => ({
+          ...prev,
+          ...baseProfile,
+        }));
+      } catch (e) {
+        console.error("[PublicMyPage] unexpected error:", e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void fetchProfile();
     return () => {
       cancelled = true;
     };
-  }, [currentUserId, userId]);
+  }, [userId]);
 
-  // ▼ relations 操作用ハンドラ
+  // ▼ relations 復元（uuid同士はサーバー / それ以外はlocalStorage）
+  useEffect(() => {
+    const viewerId = authUserId ?? currentUserId;
+    if (!viewerId) return;
+
+    // 自分ページは relation 無効
+    if (isOwner || viewerId === userId) {
+      setRelations({ following: false, muted: false, blocked: false });
+      return;
+    }
+
+    // Supabase relations（uuid同士）
+    if (isUuid(authUserId) && isUuid(userId)) {
+      let cancelled = false;
+
+      (async () => {
+        const row = await getRelation(authUserId as UserId, userId as UserId);
+        if (cancelled) return;
+        setRelations(toRelationFlags(row));
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // guest 等：localStorage 版
+    const localTargetId = userId as UserId;
+    const flags = getLocalRelationFlags(viewerId as UserId, localTargetId);
+    setRelations(flags);
+  }, [currentUserId, authUserId, userId, isOwner]);
+
+  // ▼ relations 操作用ハンドラ（uuid同士はサーバー / それ以外はlocalStorage）
   const handleToggleFollow = async () => {
-    if (!isUuid(currentUserId) || !isUuid(userId)) return;
-    if (currentUserId === userId) return;
+    const viewerId = authUserId ?? currentUserId;
+    if (!viewerId) return;
+    if (isOwner || viewerId === userId) return;
 
     const nextEnabled = !relations.following;
-    const ok = await setRelationOnServer({
-      userId: currentUserId as UserId,
-      targetId: userId as UserId,
-      type: nextEnabled ? "follow" : null,
-    });
-    if (!ok) return;
 
-    setRelations({
-      following: nextEnabled,
-      muted: false,
-      blocked: false,
-    });
+    if (isUuid(authUserId) && isUuid(userId)) {
+      const ok = await setRelationOnServer({
+        userId: authUserId as UserId,
+        targetId: userId as UserId,
+        type: nextEnabled ? "follow" : null,
+      });
+      if (!ok) return;
+
+      setRelations({ following: nextEnabled, muted: false, blocked: false });
+      return;
+    }
+
+    const updated = setLocalRelation(
+      viewerId as UserId,
+      userId as UserId,
+      "follow",
+      nextEnabled
+    );
+    setRelations(updated);
   };
 
   const handleToggleMute = async () => {
-    if (!isUuid(currentUserId) || !isUuid(userId)) return;
-    if (currentUserId === userId) return;
+    const viewerId = authUserId ?? currentUserId;
+    if (!viewerId) return;
+    if (isOwner || viewerId === userId) return;
 
     const nextEnabled = !relations.muted;
-    const ok = await setRelationOnServer({
-      userId: currentUserId as UserId,
-      targetId: userId as UserId,
-      type: nextEnabled ? "mute" : null,
-    });
-    if (!ok) return;
 
-    setRelations({
-      following: false,
-      muted: nextEnabled,
-      blocked: false,
-    });
+    if (isUuid(authUserId) && isUuid(userId)) {
+      const ok = await setRelationOnServer({
+        userId: authUserId as UserId,
+        targetId: userId as UserId,
+        type: nextEnabled ? "mute" : null,
+      });
+      if (!ok) return;
+
+      setRelations({ following: false, muted: nextEnabled, blocked: false });
+      return;
+    }
+
+    const updated = setLocalRelation(
+      viewerId as UserId,
+      userId as UserId,
+      "mute",
+      nextEnabled
+    );
+    setRelations(updated);
   };
 
   const handleToggleBlock = async () => {
-    if (!isUuid(currentUserId) || !isUuid(userId)) return;
-    if (currentUserId === userId) return;
+    const viewerId = authUserId ?? currentUserId;
+    if (!viewerId) return;
+    if (isOwner || viewerId === userId) return;
 
     const nextEnabled = !relations.blocked;
 
@@ -357,23 +453,31 @@ useEffect(() => {
       if (!ok) return;
     }
 
-    const ok = await setRelationOnServer({
-      userId: currentUserId as UserId,
-      targetId: userId as UserId,
-      type: nextEnabled ? "block" : null,
-    });
-    if (!ok) return;
+    if (isUuid(authUserId) && isUuid(userId)) {
+      const ok = await setRelationOnServer({
+        userId: authUserId as UserId,
+        targetId: userId as UserId,
+        type: nextEnabled ? "block" : null,
+      });
+      if (!ok) return;
 
-    setRelations({
-      following: false,
-      muted: false,
-      blocked: nextEnabled,
-    });
+      setRelations({ following: false, muted: false, blocked: nextEnabled });
+      return;
+    }
+
+    const updated = setLocalRelation(
+      viewerId as UserId,
+      userId as UserId,
+      "block",
+      nextEnabled
+    );
+    setRelations(updated);
   };
 
   // ▼ 旧 localStorage プロフィールで “上書き” する（過渡期の互換用）
   useEffect(() => {
     if (typeof window === "undefined") return;
+
     try {
       const raw = window.localStorage.getItem(storageKey);
       if (!raw) return;
@@ -396,8 +500,8 @@ useEffect(() => {
         snsX: data.snsX ?? prev.snsX,
         snsLine: data.snsLine ?? prev.snsLine,
         snsOther: data.snsOther ?? prev.snsOther,
-        avatarDataUrl:
-          prev.avatarDataUrl || data.avatarDataUrl || data.avatarUrl,
+        // 旧データの avatarDataUrl / avatarUrl は「http想定」。壊れにくいようそのまま採用。
+        avatarUrl: prev.avatarUrl || data.avatarDataUrl || data.avatarUrl || null,
         accountType: data.accountType
           ? data.accountType
           : typeof data.isMember === "boolean"
@@ -407,11 +511,11 @@ useEffect(() => {
           : prev.accountType,
       }));
     } catch (e) {
-      console.warn("Failed to load loomroom profile from localStorage", e);
+      console.warn("[PublicMyPage] localStorage profile load failed:", e);
     }
   }, [userId, storageKey]);
 
-  // ▼ 自分の投稿一覧を Supabase から取得
+  // ▼ 投稿一覧を Supabase から取得
   useEffect(() => {
     let cancelled = false;
 
@@ -430,7 +534,7 @@ useEffect(() => {
         if (cancelled) return;
 
         if (error) {
-          console.error("Supabase posts(fetch by author) error:", error);
+          console.error("[PublicMyPage] posts fetch error:", error);
           setPostError(
             (error as any)?.message ??
               "投稿の取得に失敗しました。時間をおいて再度お試しください。"
@@ -441,9 +545,7 @@ useEffect(() => {
 
         const rows = (data ?? []) as DbPostRow[];
         const mapped: UserPost[] = rows.map((row) => {
-          const areaVal: Area | "" = knownAreas.includes(
-            (row.area ?? "") as Area
-          )
+          const areaVal: Area | "" = knownAreas.includes((row.area ?? "") as Area)
             ? ((row.area as Area) ?? "")
             : "";
 
@@ -458,22 +560,18 @@ useEffect(() => {
         setPosts(mapped);
       } catch (e: any) {
         if (cancelled) return;
-        console.error("Supabase posts(unexpected) error:", e);
+        console.error("[PublicMyPage] posts unexpected error:", e);
         setPostError(
           e?.message ??
             "投稿の取得中に不明なエラーが発生しました。時間をおいて再度お試しください。"
         );
         setPosts([]);
       } finally {
-        if (!cancelled) {
-          setLoadingPosts(false);
-        }
+        if (!cancelled) setLoadingPosts(false);
       }
     };
 
-    if (userId) {
-      fetchPosts();
-    }
+    if (userId) void fetchPosts();
 
     return () => {
       cancelled = true;
@@ -481,15 +579,16 @@ useEffect(() => {
   }, [userId]);
 
   const avatarInitial =
-    profile.displayName?.trim()?.charAt(0)?.toUpperCase() ?? "";
+    profile.displayName?.trim()?.charAt(0)?.toUpperCase() || "U";
 
-  const avatarStyle: React.CSSProperties = profile.avatarDataUrl
-    ? {
-        backgroundImage: `url(${profile.avatarDataUrl})`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }
-    : {};
+  // DMリンクは「相手がuuid」かつ「自分がAuth uuid」かつ「非ブロック」のときだけ出す（/messages/new がuuid前提のため）
+  const canShowDm =
+    !isOwner && !relations.blocked && isUuid(authUserId) && isUuid(userId);
+
+  const canShowRelationUi = !!(authUserId ?? currentUserId) && !isOwner;
+
+  const isMeByGuest = !!currentUserId && currentUserId === userId;
+  const canEdit = isOwner || isMeByGuest;
 
   return (
     <>
@@ -503,22 +602,23 @@ useEffect(() => {
         <main className="app-main">
           <section className="therapist-hero">
             <div className="therapist-hero-row">
-              <div className="avatar-circle" style={avatarStyle}>
-                {!profile.avatarDataUrl && (
-                  <span className="avatar-circle-text">
-                    {avatarInitial || "U"}
-                  </span>
-                )}
-              </div>
+              <AvatarCircle
+                className="avatar-circle"
+                size={48}
+                avatarUrl={profile.avatarUrl ?? null}
+                displayName={profile.displayName}
+                fallbackText={avatarInitial}
+                alt=""
+              />
 
               <div className="therapist-hero-main">
                 <div className="therapist-name-row">
-                  <span className="therapist-name">
-                    {profile.displayName}
-                  </span>
+                  <span className="therapist-name">{profile.displayName}</span>
+
                   <span className="therapist-handle">
                     {profile.handle}
-                    {threadId && (
+
+                    {canShowDm && threadId && (
                       <Link
                         href={`/messages/new?to=${userId}`} // targetUserId = 相手の users.id(uuid)
                         className="dm-inline-btn no-link-style"
@@ -527,7 +627,7 @@ useEffect(() => {
                       </Link>
                     )}
 
-                    {currentUserId === userId && (
+                    {canEdit && (
                       <>
                         {profile.role === "store" && storeId ? (
                           <Link
@@ -573,26 +673,29 @@ useEffect(() => {
                   </span>
                 </div>
 
-                {/* ▼ relations 操作（共通コンポーネント） */}
-                {isUuid(currentUserId) &&
-                  isUuid(userId) &&
-                  currentUserId !== userId && (
-                    <RelationActions
-                      currentUserId={currentUserId}
-                      targetId={userId}
-                      onToggleMute={handleToggleMute}
-                      onToggleBlock={handleToggleBlock}
-                      onReport={() => {
-                        alert(
-                          "このアカウントの通報を受け付けました（現在はテスト用です）。"
-                        );
-                      }}
-                    />
-                  )}
+                {canShowRelationUi && !canEdit && (
+                  <RelationActions
+                    flags={relations}
+                    onToggleFollow={handleToggleFollow}
+                    onToggleMute={handleToggleMute}
+                    onToggleBlock={handleToggleBlock}
+                    onReport={() => {
+                      alert(
+                        "このアカウントの通報を受け付けました（現在はテスト用です）。"
+                      );
+                    }}
+                  />
+                )}
               </div>
             </div>
 
-            {profile.intro && (
+            {loading && (
+              <p className="therapist-intro" style={{ opacity: 0.7 }}>
+                プロフィールを読み込んでいます…
+              </p>
+            )}
+
+            {!loading && profile.intro && (
               <p className="therapist-intro">{profile.intro}</p>
             )}
 
@@ -643,61 +746,68 @@ useEffect(() => {
             </div>
           </section>
 
-          {/* ▼ 自分の投稿一覧 */}
+          {/* ▼ 投稿一覧（カードクリックで /posts/[id] に遷移） */}
           <section className="therapist-posts-section">
             <h2 className="therapist-section-title">投稿</h2>
-            {loadingPosts && (
-              <div className="empty-hint">投稿を読み込んでいます…</div>
-            )}
+
+            {loadingPosts && <div className="empty-hint">投稿を読み込んでいます…</div>}
+
             {postError && !loadingPosts && (
               <div className="empty-hint" style={{ color: "#b00020" }}>
                 {postError}
               </div>
             )}
+
             {!loadingPosts && !postError && posts.length === 0 && (
               <div className="empty-hint">
                 まだ投稿はありません。気が向いたタイミングで、短いことばから残してみてください。
               </div>
             )}
+
             {!loadingPosts && !postError && posts.length > 0 && (
               <div className="feed-list">
                 {posts.map((p) => (
-                  <article key={p.id} className="feed-item">
+                  <article
+                    key={p.id}
+                    className="feed-item"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="投稿の詳細を見る"
+                    onClick={() => router.push(`/posts/${p.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        router.push(`/posts/${p.id}`);
+                      }
+                    }}
+                  >
                     <div className="feed-item-inner">
-                      <div
-                        className="avatar-circle avatar-small"
-                        style={avatarStyle}
-                      >
-                        {!profile.avatarDataUrl && (
-                          <span className="avatar-circle-text">
-                            {avatarInitial || "U"}
-                          </span>
-                        )}
-                      </div>
+                      <AvatarCircle
+                        className="avatar-small"
+                        size={32}
+                        avatarUrl={profile.avatarUrl ?? null}
+                        displayName={profile.displayName}
+                        fallbackText={avatarInitial}
+                        alt=""
+                      />
+
                       <div className="feed-main">
                         <div className="feed-header">
                           <div className="feed-name-row">
-                            <span className="post-name">
-                              {profile.displayName}
-                            </span>
-                            <span className="post-username">
-                              {profile.handle}
-                            </span>
+                            <span className="post-name">{profile.displayName}</span>
+                            <span className="post-username">{profile.handle}</span>
                           </div>
                           <div className="post-meta">
-                            {p.area && (
-                              <span className="post-area">{p.area}</span>
-                            )}
+                            {p.area && <span className="post-area">{p.area}</span>}
                             <span className="post-dot">・</span>
                             <span className="post-time">{p.timeAgo}</span>
                           </div>
                         </div>
+
                         <div className="post-body">
                           {p.body.split("\n").map((line, idx) => (
                             <p key={idx}>
-                              {line || (
-                                <span style={{ opacity: 0.3 }}>　</span>
-                              )}
+                              {line || <span style={{ opacity: 0.3 }}>　</span>}
                             </p>
                           ))}
                         </div>
@@ -830,6 +940,23 @@ useEffect(() => {
         }
         .edit-inline-btn:hover {
           opacity: 1;
+        }
+
+        .feed-item {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+          padding: 10px 16px;
+          cursor: pointer;
+        }
+
+        .feed-item:focus {
+          outline: 2px solid rgba(0, 0, 0, 0.18);
+          outline-offset: 2px;
+          border-radius: 8px;
+        }
+
+        :global(.no-link-style) {
+          color: inherit;
+          text-decoration: none;
         }
       `}</style>
     </>

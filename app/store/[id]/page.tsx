@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import AppHeader from "@/components/AppHeader";
@@ -136,6 +136,8 @@ const AREA_LABEL_MAP: Record<string, string> = {
 };
 
 const StoreProfilePage: React.FC = () => {
+  const router = useRouter();
+
   const params = useParams<{ id: string }>();
   const storeId = (params?.id as string) || "store";
 
@@ -865,7 +867,20 @@ const StoreProfilePage: React.FC = () => {
                 const likeCount = liked ? 1 : 0;
 
                 return (
-                  <div key={p.id} className="feed-item">
+                  <article
+                    key={p.id}
+                    className="feed-item"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="投稿の詳細を見る"
+                    onClick={() => router.push(`/posts/${p.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        router.push(`/posts/${p.id}`);
+                      }
+                    }}
+                  >
                     <div className="feed-item-inner">
                       <AvatarCircle
                         size={38}
@@ -914,7 +929,7 @@ const StoreProfilePage: React.FC = () => {
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </article>
                 );
               })}
             </div>
@@ -1094,6 +1109,18 @@ const StoreProfilePage: React.FC = () => {
 
         .feed-avatar {
           border: 1px solid rgba(0, 0, 0, 0.08);
+        }
+
+        .feed-item {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+          padding: 10px 16px;
+          cursor: pointer;
+        }
+
+        .feed-item:focus {
+          outline: 2px solid rgba(0, 0, 0, 0.18);
+          outline-offset: 2px;
+          border-radius: 8px;
         }
 
         :global(.no-link-style) {

@@ -39,11 +39,6 @@ const MyPageConsole: React.FC = () => {
   const [area, setArea] = useState<Area>("");
   const [intro, setIntro] = useState<string>("");
 
-  // 「メッセージについて」
-  const [messagePolicy, setMessagePolicy] = useState<string>(
-    "通知にすぐ気づけないこともあるので、ゆっくりペースでやりとりできたら嬉しいです。"
-  );
-
   // SNS系リンク
   const [snsX, setSnsX] = useState<string>("");
   const [snsLine, setSnsLine] = useState<string>("");
@@ -98,9 +93,6 @@ const MyPageConsole: React.FC = () => {
         setAvatarDataUrl(data.avatarDataUrl);
       }
 
-      if (typeof data.messagePolicy === "string") {
-        setMessagePolicy(data.messagePolicy);
-      }
       if (typeof data.snsX === "string") setSnsX(data.snsX);
       if (typeof data.snsLine === "string") setSnsLine(data.snsLine);
       if (typeof data.snsOther === "string") setSnsOther(data.snsOther);
@@ -223,7 +215,6 @@ const MyPageConsole: React.FC = () => {
       notifyDm,
       notifyNews,
       avatarDataUrl,
-      messagePolicy,
       snsX,
       snsLine,
       snsOther,
@@ -274,7 +265,7 @@ const MyPageConsole: React.FC = () => {
         `ニックネーム：${nickname || "未設定"}`,
         `アカウント種別：${accountType}`,
         `エリア：${area || "未設定"}`,
-        `ひとこと：${intro || "（なし）"}`,
+        `プロフィール：${intro || "（なし）"}`,
       ].join("\n")
     );
   };
@@ -382,7 +373,7 @@ const MyPageConsole: React.FC = () => {
             </div>
 
             <div className="field">
-              <label className="field-label">ひとこと</label>
+              <label className="field-label">プロフィール</label>
               <textarea
                 className="field-input"
                 value={intro}
@@ -391,25 +382,6 @@ const MyPageConsole: React.FC = () => {
                 }
                 placeholder="例）人見知りですが、ゆっくり会話できる時間が好きです。"
               />
-            </div>
-          </section>
-
-          <section className="surface-card mypage-card">
-            <h2 className="mypage-section-title">メッセージについて</h2>
-            <div className="field">
-              <label className="field-label">
-                やりとりのペースや、おねがいごと
-              </label>
-              <textarea
-                className="field-input"
-                value={messagePolicy}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                  setMessagePolicy(e.target.value)
-                }
-              />
-              <div className="field-note">
-                公開マイページの「メッセージについて」にそのまま表示されます。
-              </div>
             </div>
           </section>
 

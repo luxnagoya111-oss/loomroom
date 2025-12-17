@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import AvatarCircle from "@/components/AvatarCircle";
@@ -139,6 +139,8 @@ type LinkedStoreInfo = {
 };
 
 const TherapistProfilePage: React.FC = () => {
+  const router = useRouter();
+
   const params = useParams<{ id: string }>();
   const therapistId = (params?.id as string) || ""; // therapists.id
 
@@ -393,7 +395,7 @@ const TherapistProfilePage: React.FC = () => {
 
         setLoadingProfile(false);
 
-        // 3) posts
+        // 3) posts（このページの投稿は「users.id（uuid）」で author_id を持つ前提）
         if (therapist.user_id) {
           const { data: postRows, error: pError } = await supabase
             .from("posts")
@@ -677,11 +679,7 @@ const TherapistProfilePage: React.FC = () => {
                 {loadingStore && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle
-                        size={46}
-                        fallbackText="…"
-                        className="store-avatar"
-                      />
+                      <AvatarCircle size={46} fallbackText="…" className="store-avatar" />
                       <div className="linked-store-main">
                         <div className="linked-store-name">読み込み中…</div>
                         <div className="linked-store-meta">
@@ -695,17 +693,10 @@ const TherapistProfilePage: React.FC = () => {
                 {!loadingStore && storeError && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle
-                        size={46}
-                        fallbackText="!"
-                        className="store-avatar"
-                      />
+                      <AvatarCircle size={46} fallbackText="!" className="store-avatar" />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
-                        <div
-                          className="linked-store-meta"
-                          style={{ color: "#b00020" }}
-                        >
+                        <div className="linked-store-meta" style={{ color: "#b00020" }}>
                           {storeError}
                         </div>
                       </div>
@@ -738,11 +729,7 @@ const TherapistProfilePage: React.FC = () => {
                 {!loadingStore && !storeError && !linkedStore && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle
-                        size={46}
-                        fallbackText="S"
-                        className="store-avatar"
-                      />
+                      <AvatarCircle size={46} fallbackText="S" className="store-avatar" />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
                         <div className="linked-store-meta">
@@ -760,9 +747,7 @@ const TherapistProfilePage: React.FC = () => {
           <section className="therapist-posts-section">
             <h2 className="profile-section-title">投稿</h2>
 
-            {loadingPosts && (
-              <div className="empty-hint">投稿を読み込んでいます…</div>
-            )}
+            {loadingPosts && <div className="empty-hint">投稿を読み込んでいます…</div>}
             {postsError && !loadingPosts && (
               <div className="empty-hint" style={{ color: "#b00020" }}>
                 {postsError}
@@ -771,10 +756,24 @@ const TherapistProfilePage: React.FC = () => {
             {!loadingPosts && !postsError && posts.length === 0 && (
               <div className="empty-hint">まだ投稿はありません。</div>
             )}
+
             {!loadingPosts && !postsError && posts.length > 0 && (
               <div className="feed-list">
                 {posts.map((p) => (
-                  <article key={p.id} className="feed-item">
+                  <article
+                    key={p.id}
+                    className="feed-item"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="投稿の詳細を見る"
+                    onClick={() => router.push(`/posts/${p.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        router.push(`/posts/${p.id}`);
+                      }
+                    }}
+                  >
                     <div className="feed-item-inner">
                       <AvatarCircle
                         avatarUrl={profile.avatarUrl}
@@ -788,9 +787,7 @@ const TherapistProfilePage: React.FC = () => {
                             <span className="post-name">
                               {profile.displayName || "名前未設定"}
                             </span>
-                            <span className="post-username">
-                              {profile.handle || ""}
-                            </span>
+                            <span className="post-username">{profile.handle || ""}</span>
                           </div>
                           <div className="post-meta">
                             {p.area && <span>{p.area}</span>}
@@ -798,6 +795,7 @@ const TherapistProfilePage: React.FC = () => {
                             <span>{p.timeAgo}</span>
                           </div>
                         </div>
+
                         <div className="post-body">
                           {p.body.split("\n").map((line, idx) => (
                             <p key={idx}>
@@ -997,6 +995,65 @@ const TherapistProfilePage: React.FC = () => {
           font-size: 12px;
           color: var(--text-sub);
           line-height: 1.6;
+        }
+
+        .feed-item {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+          padding: 10px 16px;
+          cursor: pointer;
+        }
+
+        .feed-item:focus {
+          outline: 2px solid rgba(0, 0, 0, 0.18);
+          outline-offset: 2px;
+          border-radius: 8px;
+        }
+
+        .feed-item-inner {
+          display: flex;
+          gap: 10px;
+        }
+
+        .feed-main {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .feed-header {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 2px;
+        }
+
+        .feed-name-row {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+
+        .post-name {
+          font-weight: 600;
+          font-size: 13px;
+        }
+
+        .post-username {
+          font-size: 11px;
+          color: var(--text-sub, #777777);
+        }
+
+        .post-meta {
+          font-size: 11px;
+          color: var(--text-sub, #777777);
+          margin-top: 2px;
+        }
+
+        .post-body {
+          font-size: 13px;
+          line-height: 1.7;
+          margin-top: 4px;
+          margin-bottom: 4px;
         }
 
         .edit-inline-btn {

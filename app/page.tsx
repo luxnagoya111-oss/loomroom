@@ -2,15 +2,16 @@
 "use client";
 
 import React, { useState, useMemo, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import BottomNav from "@/components/BottomNav";
 import AppHeader from "@/components/AppHeader";
 import AvatarCircle from "@/components/AvatarCircle";
-import { getCurrentUserId } from "@/lib/auth";
 import { timeAgo } from "@/lib/timeAgo";
 import { supabase } from "@/lib/supabaseClient";
 import { getRelationsForUser } from "@/lib/repositories/relationRepository";
 import type { UserId } from "@/types/user";
 import type { DbRelationRow } from "@/types/db";
+import { ensureViewerId } from "@/lib/auth";
 
 type Area =
   | "北海道"
@@ -96,9 +97,6 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
-// ゲストの「DB上のダミーID」（likes/reports 用）
-const GUEST_DB_USER_ID = "00000000-0000-0000-0000-000000000000";
-
 const hasUnread = false;
 
 const knownAreas: Area[] = [
@@ -150,15 +148,11 @@ const AVATAR_BUCKET = "avatars";
 
 /**
  * URLとして使う前に「それっぽいゴミ」を弾く
- * - 空
- * - ".../public/avatars" で終わってる（ファイル名なし）等
  */
 function looksValidAvatarUrl(v: string | null | undefined): boolean {
   const s = (v ?? "").trim();
   if (!s) return false;
 
-  // 例: https://xxxx.supabase.co/storage/v1/object/public/avatars
-  // これだと画像ではないので弾く
   if (s.includes("/storage/v1/object/public/avatars")) {
     if (/\/public\/avatars\/?$/i.test(s)) return false;
   }
@@ -176,7 +170,6 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   if (!v) return null;
   if (isProbablyHttpUrl(v)) return v;
 
-  // "avatars/xxx.png" のような場合にも対応（先頭の "avatars/" を外す）
   const path = v.startsWith(`${AVATAR_BUCKET}/`)
     ? v.slice(AVATAR_BUCKET.length + 1)
     : v;
@@ -186,6 +179,8 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 }
 
 export default function LoomRoomHome() {
+  const router = useRouter();
+
   const [currentUserId, setCurrentUserId] = useState<UserId>("");
 
   const [relations, setRelations] = useState<DbRelationRow[]>([]);
@@ -197,11 +192,29 @@ export default function LoomRoomHome() {
   const [kindFilter, setKindFilter] = useState<AuthorKind | "all">("all");
   const [openPostMenuId, setOpenPostMenuId] = useState<string | null>(null);
 
+  // 1) viewerId を必ず uuid で確定（匿名含む）
   useEffect(() => {
-    const id = getCurrentUserId();
-    setCurrentUserId(id as UserId);
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const id = await ensureViewerId(); // ★必ず uuid を返す
+        if (cancelled) return;
+        setCurrentUserId(id as UserId);
+      } catch (e: any) {
+        console.error("[home.ensureViewerId] error:", e);
+        if (cancelled) return;
+        setError(e?.message ?? "ログイン状態の初期化に失敗しました");
+        setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
+  // 2) relations は uuid のときだけ取得
   useEffect(() => {
     if (!isUuid(currentUserId)) {
       setRelations([]);
@@ -227,7 +240,10 @@ export default function LoomRoomHome() {
     };
   }, [currentUserId]);
 
+  // 3) タイムライン取得も uuid 確定後にだけ走らせる（重要）
   useEffect(() => {
+    if (!isUuid(currentUserId)) return;
+
     let cancelled = false;
 
     const fetchTimelineFromSupabase = async () => {
@@ -268,7 +284,6 @@ export default function LoomRoomHome() {
           return;
         }
 
-        // posts.author_id の候補（users.id とは限らない：therapists.id / stores.id の可能性あり）
         const authorIds = Array.from(
           new Set(
             rowsWithAuthor
@@ -277,15 +292,12 @@ export default function LoomRoomHome() {
           )
         );
 
-        // ===== therapist/store を「users.id経由」と「テーブルid経由」の両方で拾う =====
-        const therapistByUserId = new Map<string, DbTherapistLite>(); // key: therapists.user_id (= users.id)
-        const therapistById = new Map<string, DbTherapistLite>(); // key: therapists.id
-
-        const storeByOwnerId = new Map<string, DbStoreLite>(); // key: stores.owner_user_id (= users.id)
-        const storeById = new Map<string, DbStoreLite>(); // key: stores.id
+        const therapistByUserId = new Map<string, DbTherapistLite>();
+        const therapistById = new Map<string, DbTherapistLite>();
+        const storeByOwnerId = new Map<string, DbStoreLite>();
+        const storeById = new Map<string, DbStoreLite>();
 
         if (authorIds.length) {
-          // therapists: user_id で拾う（posts.author_id が users.id の場合）
           const { data: therByUserData, error: therByUserError } = await supabase
             .from("therapists")
             .select("id, user_id, display_name, avatar_url")
@@ -301,7 +313,6 @@ export default function LoomRoomHome() {
             });
           }
 
-          // therapists: id で拾う（posts.author_id が therapists.id の場合）
           const { data: therByIdData, error: therByIdError } = await supabase
             .from("therapists")
             .select("id, user_id, display_name, avatar_url")
@@ -317,7 +328,6 @@ export default function LoomRoomHome() {
             });
           }
 
-          // stores: owner_user_id で拾う（posts.author_id が users.id の場合）
           const { data: storeByOwnerData, error: storeByOwnerError } = await supabase
             .from("stores")
             .select("id, owner_user_id, name, avatar_url")
@@ -333,7 +343,6 @@ export default function LoomRoomHome() {
             });
           }
 
-          // stores: id で拾う（posts.author_id が stores.id の場合）
           const { data: storeByIdData, error: storeByIdError } = await supabase
             .from("stores")
             .select("id, owner_user_id, name, avatar_url")
@@ -350,8 +359,6 @@ export default function LoomRoomHome() {
           }
         }
 
-        // ===== users は「authorIds」だけでは不足する（authorId が roleテーブルid の場合） =====
-        // therapists.user_id / stores.owner_user_id も含めて users を引く
         const resolvedUserIds = new Set<string>(authorIds);
         therapistById.forEach((t) => {
           if (t.user_id) resolvedUserIds.add(t.user_id);
@@ -375,10 +382,8 @@ export default function LoomRoomHome() {
           }
         }
 
-        // likes
-        const effectiveUserIdForDb = isUuid(currentUserId)
-          ? currentUserId
-          : GUEST_DB_USER_ID;
+        // likes（viewer uuid 前提）
+        const effectiveUserIdForDb = currentUserId;
 
         let likedIdSet = new Set<string>();
         const { data: likeData, error: likeError } = await supabase
@@ -396,7 +401,6 @@ export default function LoomRoomHome() {
         const mapped: Post[] = rowsWithAuthor.map((row) => {
           const rawAuthorId = row.author_id!;
 
-          // kind 推定（posts.author_kind が null/不正でも、存在マップで補正）
           const inferredKind: AuthorKind =
             row.author_kind === "therapist" ||
             therapistByUserId.has(rawAuthorId) ||
@@ -408,10 +412,11 @@ export default function LoomRoomHome() {
               ? "store"
               : "user";
 
-          // roleレコード（posts.author_id が users.id か role.id かで分岐）
           const therapist =
             inferredKind === "therapist"
-              ? therapistById.get(rawAuthorId) ?? therapistByUserId.get(rawAuthorId) ?? null
+              ? therapistById.get(rawAuthorId) ??
+                therapistByUserId.get(rawAuthorId) ??
+                null
               : null;
 
           const store =
@@ -419,7 +424,6 @@ export default function LoomRoomHome() {
               ? storeById.get(rawAuthorId) ?? storeByOwnerId.get(rawAuthorId) ?? null
               : null;
 
-          // relations/mute/block 用に users.id（uuid）へ正規化
           let canonicalUserId = rawAuthorId;
           if (inferredKind === "therapist") {
             if (therapist?.user_id) canonicalUserId = therapist.user_id;
@@ -452,11 +456,12 @@ export default function LoomRoomHome() {
               ? "セラピスト"
               : "名無し");
 
-          // profilePath は role id が取れれば roleページへ、無ければ mypage
           let profilePath: string | null = null;
           if (inferredKind === "therapist") {
             const therapistId = therapist?.id ?? null;
-            profilePath = therapistId ? `/therapist/${therapistId}` : `/mypage/${canonicalUserId}`;
+            profilePath = therapistId
+              ? `/therapist/${therapistId}`
+              : `/mypage/${canonicalUserId}`;
           } else if (inferredKind === "store") {
             const storeId = store?.id ?? null;
             profilePath = storeId ? `/store/${storeId}` : `/mypage/${canonicalUserId}`;
@@ -464,16 +469,11 @@ export default function LoomRoomHome() {
             profilePath = `/mypage/${canonicalUserId}`;
           }
 
-          /**
-           * ★ アバター決定（重要）
-           * role側（therapists/stores）を最優先、その次に users.avatar_url
-           * さらに「ゴミURL」は弾く
-           */
           const roleRaw =
             inferredKind === "therapist"
-              ? (therapist?.avatar_url ?? null)
+              ? therapist?.avatar_url ?? null
               : inferredKind === "store"
-              ? (store?.avatar_url ?? null)
+              ? store?.avatar_url ?? null
               : null;
 
           const userRaw = user?.avatar_url ?? null;
@@ -516,12 +516,11 @@ export default function LoomRoomHome() {
   }, [currentUserId]);
 
   const handleToggleLike = async (post: Post) => {
+    if (!isUuid(currentUserId)) return;
+
     const previousLiked = post.liked;
     const previousCount = post.likeCount;
-
-    const effectiveUserIdForDb = isUuid(currentUserId)
-      ? currentUserId
-      : GUEST_DB_USER_ID;
+    const effectiveUserIdForDb = currentUserId;
 
     setPosts((prev) =>
       prev.map((p) =>
@@ -566,9 +565,7 @@ export default function LoomRoomHome() {
 
       setPosts((prev) =>
         prev.map((p) =>
-          p.id === post.id
-            ? { ...p, liked: previousLiked, likeCount: previousCount }
-            : p
+          p.id === post.id ? { ...p, liked: previousLiked, likeCount: previousCount } : p
         )
       );
 
@@ -580,9 +577,9 @@ export default function LoomRoomHome() {
   };
 
   const handleReportPost = async (postId: string) => {
-    const effectiveUserIdForDb = isUuid(currentUserId)
-      ? currentUserId
-      : GUEST_DB_USER_ID;
+    if (!isUuid(currentUserId)) return;
+
+    const effectiveUserIdForDb = currentUserId;
 
     try {
       const { error } = await supabase.from("reports").insert([
@@ -633,6 +630,8 @@ export default function LoomRoomHome() {
     });
   }, [posts, areaFilter, kindFilter, relations]);
 
+  const viewerReady = isUuid(currentUserId);
+
   return (
     <div className="page-root">
       <AppHeader title="LoomRoom" />
@@ -670,9 +669,7 @@ export default function LoomRoomHome() {
               value={kindFilter}
               onChange={(e) =>
                 setKindFilter(
-                  e.target.value === "all"
-                    ? "all"
-                    : (e.target.value as AuthorKind)
+                  e.target.value === "all" ? "all" : (e.target.value as AuthorKind)
                 )
               }
             >
@@ -705,7 +702,20 @@ export default function LoomRoomHome() {
             const profileClickable = !!post.profilePath;
 
             return (
-              <article key={post.id} className="feed-item">
+              <article
+                key={post.id}
+                className="feed-item"
+                role="button"
+                tabIndex={0}
+                aria-label="投稿の詳細を見る"
+                onClick={() => router.push(`/posts/${post.id}`)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    router.push(`/posts/${post.id}`);
+                  }
+                }}
+              >
                 <div className="feed-item-inner">
                   <div
                     className="feed-avatar-wrap"
@@ -749,9 +759,7 @@ export default function LoomRoomHome() {
 
                     <div className="post-body">
                       {post.body.split("\n").map((line, idx) => (
-                        <p key={idx}>
-                          {line || <span style={{ opacity: 0.3 }}>　</span>}
-                        </p>
+                        <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
                       ))}
                     </div>
 
@@ -759,6 +767,7 @@ export default function LoomRoomHome() {
                       <button
                         type="button"
                         className={`post-like-btn ${post.liked ? "liked" : ""}`}
+                        disabled={!viewerReady}
                         onClick={(e) => {
                           e.stopPropagation();
                           void handleToggleLike(post);
@@ -797,6 +806,7 @@ export default function LoomRoomHome() {
                             <button
                               type="button"
                               className="post-report-btn"
+                              disabled={!viewerReady}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 void handleReportPost(post.id);
@@ -862,6 +872,13 @@ export default function LoomRoomHome() {
         .feed-item {
           border-bottom: 1px solid rgba(0, 0, 0, 0.04);
           padding: 10px 16px;
+          cursor: pointer;
+        }
+
+        .feed-item:focus {
+          outline: 2px solid rgba(0, 0, 0, 0.18);
+          outline-offset: 2px;
+          border-radius: 8px;
         }
 
         .feed-item-inner {
@@ -935,6 +952,12 @@ export default function LoomRoomHome() {
           gap: 4px;
           font-size: 12px;
           color: var(--text-sub, #777777);
+        }
+
+        .post-like-btn:disabled,
+        .post-report-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
 
         .post-like-btn.liked .post-like-icon {

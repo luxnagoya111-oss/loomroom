@@ -721,7 +721,7 @@ const TherapistConsolePage: React.FC = () => {
             </div>
 
             <div className="field">
-              <label className="field-label">ひとこと紹介</label>
+              <label className="field-label">プロフィール</label>
               <textarea
                 className="field-input tc-textarea"
                 value={data.intro}

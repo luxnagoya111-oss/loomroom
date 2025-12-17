@@ -28,13 +28,16 @@ type Message = {
   date: string;
 };
 
-type DbTherapistRowForStatus = { id: string; user_id: string; store_id: string | null; };
-type DbUserMini = { id: string; name: string | null; role: string | null; avatar_url: string | null; };
-type DbTherapistMini = { user_id: string; display_name: string | null; avatar_url: string | null; };
-type DbStoreMini = { id: string; owner_user_id: string | null; name: string | null; avatar_url: string | null; };
+type DbTherapistRowForStatus = { id: string; user_id: string; store_id: string | null };
+type DbUserMini = { id: string; name: string | null; role: string | null; avatar_url: string | null };
+type DbTherapistMini = { user_id: string; display_name: string | null; avatar_url: string | null };
+type DbStoreMini = { id: string; owner_user_id: string | null; name: string | null; avatar_url: string | null };
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function isUuid(id: string | null | undefined): id is string { return !!id && UUID_REGEX.test(id); }
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(id: string | null | undefined): id is string {
+  return !!id && UUID_REGEX.test(id);
+}
 
 function formatTime(date: Date): string {
   const h = date.getHours().toString().padStart(2, "0");
@@ -59,7 +62,7 @@ function normalizeRole(raw: string | null | undefined): Role {
 function mapDbToUi(msg: DbDmMessageRow, currentUserId: string): Message {
   const d = new Date(msg.created_at);
   return {
-    id: msg.id, // ★ dm_messages.id 前提（DBで追加）
+    id: msg.id,
     from: msg.from_user_id === currentUserId ? "me" : "partner",
     text: msg.text,
     time: formatTime(d),
@@ -125,7 +128,9 @@ const MessageDetailPage: React.FC = () => {
 
       if (!cancelled) setCurrentRole(getCurrentUserRole());
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // threadId バリデーション
@@ -137,7 +142,7 @@ const MessageDetailPage: React.FC = () => {
     }
   }, [threadId]);
 
-  // 自分の name / avatar
+  // 自分の name / avatar（※今回は表示に使わないが、他用途があれば残してOK）
   useEffect(() => {
     if (!currentUserId || !isUuid(currentUserId)) return;
 
@@ -158,7 +163,9 @@ const MessageDetailPage: React.FC = () => {
       setMyAvatarUrl(safeUrl(data?.avatar_url));
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [currentUserId]);
 
   // 無所属セラピスト判定
@@ -200,7 +207,9 @@ const MessageDetailPage: React.FC = () => {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [currentUserId, currentRole]);
 
   // thread取得 → partnerId
@@ -232,7 +241,9 @@ const MessageDetailPage: React.FC = () => {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [threadId, currentUserId]);
 
   // 相手の表示情報（users.role 正）
@@ -306,13 +317,21 @@ const MessageDetailPage: React.FC = () => {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [partnerId]);
 
   // ブロック判定（uuid同士のみ）
   useEffect(() => {
-    if (!currentUserId || !partnerId) { setIsBlocked(false); return; }
-    if (!isUuid(currentUserId) || !isUuid(partnerId)) { setIsBlocked(false); return; }
+    if (!currentUserId || !partnerId) {
+      setIsBlocked(false);
+      return;
+    }
+    if (!isUuid(currentUserId) || !isUuid(partnerId)) {
+      setIsBlocked(false);
+      return;
+    }
 
     let cancelled = false;
 
@@ -326,14 +345,23 @@ const MessageDetailPage: React.FC = () => {
           .maybeSingle<{ type: string | null }>();
 
         if (cancelled) return;
-        if (error) { console.warn("[Messages] block check error:", error); setIsBlocked(false); return; }
+        if (error) {
+          console.warn("[Messages] block check error:", error);
+          setIsBlocked(false);
+          return;
+        }
         setIsBlocked(data?.type === "block");
       } catch (e) {
-        if (!cancelled) { console.warn("[Messages] block check exception:", e); setIsBlocked(false); }
+        if (!cancelled) {
+          console.warn("[Messages] block check exception:", e);
+          setIsBlocked(false);
+        }
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [currentUserId, partnerId]);
 
   // メッセージ読み込み + 既読化
@@ -369,7 +397,9 @@ const MessageDetailPage: React.FC = () => {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [threadId, currentUserId, isBlocked]);
 
   // Realtime
@@ -491,14 +521,24 @@ const MessageDetailPage: React.FC = () => {
                 <div className="partner-badge-sub">
                   {partnerHandle}
                   {partnerRole !== "guest" && partnerRole !== "user" && (
-                    <span className="partner-badge-pill">{partnerRole === "store" ? "店舗" : "セラピスト"}</span>
+                    <span className="partner-badge-pill">
+                      {partnerRole === "store" ? "店舗" : "セラピスト"}
+                    </span>
                   )}
                 </div>
               </div>
             </div>
 
-            {loading && <p className="text-meta" style={{ padding: "8px 2px" }}>読み込み中…</p>}
-            {error && !loading && <p className="text-meta" style={{ padding: "8px 2px" }}>{error}</p>}
+            {loading && (
+              <p className="text-meta" style={{ padding: "8px 2px" }}>
+                読み込み中…
+              </p>
+            )}
+            {error && !loading && (
+              <p className="text-meta" style={{ padding: "8px 2px" }}>
+                {error}
+              </p>
+            )}
 
             {!loading && !error && isBlocked && (
               <p className="text-meta" style={{ padding: "8px 2px" }}>
@@ -507,15 +547,23 @@ const MessageDetailPage: React.FC = () => {
               </p>
             )}
 
-            {!loading && !error && !isBlocked &&
+            {!loading &&
+              !error &&
+              !isBlocked &&
               messages.map((m, i) => {
                 const prev = messages[i - 1];
                 const showDivider = !prev || prev.date !== m.date;
+
                 return (
                   <React.Fragment key={m.id}>
                     {showDivider && <DateDivider date={m.date} />}
 
-                    <div className={"chat-row " + (m.from === "me" ? "chat-row--me" : "chat-row--partner")}>
+                    <div
+                      className={
+                        "chat-row " +
+                        (m.from === "me" ? "chat-row--me" : "chat-row--partner")
+                      }
+                    >
                       {m.from === "partner" && (
                         <div className="avatar-wrap avatar-wrap--sm">
                           <AvatarCircle displayName={partnerName} src={partnerAvatarUrl} />
@@ -527,16 +575,16 @@ const MessageDetailPage: React.FC = () => {
                         <div className="chat-meta">{m.time}</div>
                       </div>
 
-                      {m.from === "me" && (
+                      {/* ★ 自分アイコンは不要：ここを削除 */}
+                      {/* {m.from === "me" && (
                         <div className="avatar-wrap avatar-wrap--sm">
                           <AvatarCircle displayName={myName} src={myAvatarUrl} />
                         </div>
-                      )}
+                      )} */}
                     </div>
                   </React.Fragment>
                 );
-              })
-            }
+              })}
 
             <div ref={endRef} />
           </div>
@@ -544,7 +592,9 @@ const MessageDetailPage: React.FC = () => {
 
         {currentRole === "therapist" && isUnaffiliatedTherapist ? (
           <div className="chat-status-bar">
-            <p className="chat-status-text">現在、所属店舗が無いため、ご返信ができません。</p>
+            <p className="chat-status-text">
+              現在、所属店舗が無いため、ご返信ができません。
+            </p>
           </div>
         ) : (
           <div className="chat-input-bar">
@@ -580,90 +630,200 @@ const MessageDetailPage: React.FC = () => {
       </div>
 
       <style jsx>{`
-        .chat-main { padding: 12px 12px 120px; }
-        .chat-inner { display:flex; flex-direction:column; gap:10px; }
+        .chat-main {
+          padding: 12px 12px 120px;
+        }
+        .chat-inner {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
 
-        .avatar-wrap { flex-shrink:0; display:flex; align-items:center; justify-content:center; }
-        .avatar-wrap--lg { width:44px; height:44px; }
-        .avatar-wrap--sm { width:32px; height:32px; }
+        .avatar-wrap {
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .avatar-wrap--lg {
+          width: 44px;
+          height: 44px;
+        }
+        .avatar-wrap--sm {
+          width: 32px;
+          height: 32px;
+        }
 
         .partner-badge {
-          display:flex; align-items:center; gap:10px;
-          padding:10px 10px; border-radius:14px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 10px;
+          border-radius: 14px;
           background: var(--surface-soft);
-          border:1px solid var(--border);
-          margin-bottom:6px;
+          border: 1px solid var(--border);
+          margin-bottom: 6px;
         }
-        .partner-badge-main { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
-        .partner-badge-name { font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .partner-badge-main {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          min-width: 0;
+          flex: 1;
+        }
+        .partner-badge-name {
+          font-size: 13px;
+          font-weight: 700;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
         .partner-badge-sub {
-          display:flex; align-items:center; gap:8px;
-          font-size:11px; color:var(--text-sub);
-          white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 11px;
+          color: var(--text-sub);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .partner-badge-pill {
-          font-size:10px; padding:2px 8px; border-radius:999px;
-          border:1px solid var(--border);
+          font-size: 10px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--border);
           background: var(--surface);
           color: var(--text-sub);
-          font-weight:700; flex-shrink:0;
+          font-weight: 700;
+          flex-shrink: 0;
         }
 
-        .date-divider { display:flex; justify-content:center; margin:14px 0; }
+        .date-divider {
+          display: flex;
+          justify-content: center;
+          margin: 14px 0;
+        }
         .date-divider span {
-          padding:4px 10px; border-radius:999px; font-size:11px; line-height:1;
-          background: rgba(0,0,0,0.08); color:var(--text-sub);
+          padding: 4px 10px;
+          border-radius: 999px;
+          font-size: 11px;
+          line-height: 1;
+          background: rgba(0, 0, 0, 0.08);
+          color: var(--text-sub);
         }
 
-        .chat-row { display:flex; align-items:flex-end; gap:8px; }
-        .chat-row--partner { justify-content:flex-start; }
-        .chat-row--me { justify-content:flex-end; }
+        .chat-row {
+          display: flex;
+          align-items: flex-end;
+          gap: 8px;
+        }
+        .chat-row--partner {
+          justify-content: flex-start;
+        }
+        .chat-row--me {
+          justify-content: flex-end;
+        }
 
-        .chat-bubble-wrap { max-width:75%; display:flex; flex-direction:column; gap:2px; }
+        .chat-bubble-wrap {
+          max-width: 75%;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
         .chat-bubble {
-          border-radius:14px; padding:8px 11px;
-          font-size:14px; line-height:1.6; word-break:break-word;
+          border-radius: 14px;
+          padding: 8px 11px;
+          font-size: 14px;
+          line-height: 1.6;
+          word-break: break-word;
         }
         .chat-row--partner .chat-bubble {
           background: var(--surface);
           color: var(--text-main);
           border: 1px solid var(--border);
         }
-        .chat-row--me .chat-bubble { background: var(--accent); color:#fff; }
+        .chat-row--me .chat-bubble {
+          background: var(--accent);
+          color: #fff;
+        }
 
-        .chat-meta { font-size:11px; color:var(--text-sub); margin-top:2px; text-align:right; }
+        .chat-meta {
+          font-size: 11px;
+          color: var(--text-sub);
+          margin-top: 2px;
+          text-align: right;
+        }
 
         .chat-input-bar {
-          position:fixed; left:50%; transform:translateX(-50%);
-          bottom:58px; width:100%; max-width:430px;
-          padding:6px 10px 10px;
-          background: linear-gradient(to top, rgba(253,251,247,0.96), rgba(253,251,247,0.78), transparent);
-          box-sizing:border-box; z-index:40;
+          position: fixed;
+          left: 50%;
+          transform: translateX(-50%);
+          bottom: 58px;
+          width: 100%;
+          max-width: 430px;
+          padding: 6px 10px 10px;
+          background: linear-gradient(
+            to top,
+            rgba(253, 251, 247, 0.96),
+            rgba(253, 251, 247, 0.78),
+            transparent
+          );
+          box-sizing: border-box;
+          z-index: 40;
         }
         .chat-input-inner {
-          display:flex; align-items:flex-end; gap:8px;
-          border-radius:999px; background: var(--surface);
-          border:1px solid var(--border);
-          padding:6px 8px 6px 12px;
-          box-shadow:0 4px 10px rgba(0,0,0,0.03);
+          display: flex;
+          align-items: flex-end;
+          gap: 8px;
+          border-radius: 999px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          padding: 6px 8px 6px 12px;
+          box-shadow: 0 4px 10px rgba(0, 0, 0, 0.03);
         }
         .chat-input {
-          flex:1; border:none; background:transparent; resize:none;
-          font-size:13px; line-height:1.4; max-height:80px; padding:2px 0;
+          flex: 1;
+          border: none;
+          background: transparent;
+          resize: none;
+          font-size: 13px;
+          line-height: 1.4;
+          max-height: 80px;
+          padding: 2px 0;
         }
-        .chat-input:focus { outline:none; }
+        .chat-input:focus {
+          outline: none;
+        }
 
         .chat-send-btn {
-          border:none; border-radius:999px;
-          padding:6px 12px; font-size:13px; font-weight:700;
-          cursor:pointer; background: var(--accent); color:#fff;
-          box-shadow:0 2px 6px rgba(215,185,118,0.45);
-          flex-shrink:0;
+          border: none;
+          border-radius: 999px;
+          padding: 6px 12px;
+          font-size: 13px;
+          font-weight: 700;
+          cursor: pointer;
+          background: var(--accent);
+          color: #fff;
+          box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
+          flex-shrink: 0;
         }
-        .chat-send-btn:disabled { opacity:0.5; cursor:default; box-shadow:none; }
+        .chat-send-btn:disabled {
+          opacity: 0.5;
+          cursor: default;
+          box-shadow: none;
+        }
 
-        .chat-status-bar { border-top:1px solid var(--border); padding:8px 12px; background: var(--surface); }
-        .chat-status-text { font-size:12px; color: var(--muted-foreground); text-align:center; }
+        .chat-status-bar {
+          border-top: 1px solid var(--border);
+          padding: 8px 12px;
+          background: var(--surface);
+        }
+        .chat-status-text {
+          font-size: 12px;
+          color: var(--muted-foreground);
+          text-align: center;
+        }
       `}</style>
     </>
   );

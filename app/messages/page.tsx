@@ -25,7 +25,7 @@ type ThreadListItem = {
   partnerName: string;
   partnerHandle: string;
   partnerRole: "user" | "therapist" | "store" | "unknown";
-  avatarUrl: string | null;
+  avatarUrl: string | null; // resolved (http)
 
   lastMessage: string;
   lastMessageTime: string;
@@ -33,25 +33,23 @@ type ThreadListItem = {
   unreadCount: number;
 };
 
-// users（解決に使う最小）
 type DbUserMini = {
   id: string;
   name: string | null;
   role: string | null;
-  avatar_url: string | null;
+  avatar_url: string | null; // raw (http or storage path)
 };
 
-// therapists（display_name上書き用）
 type DbTherapistMini = {
   user_id: string;
   display_name: string | null;
+  avatar_url: string | null; // ★ 追加：raw
 };
 
-// stores（name上書き用：owner_user_idで紐づく）
 type DbStoreMini = {
   owner_user_id: string | null;
   name: string | null;
-  avatar_url: string | null;
+  avatar_url: string | null; // raw
 };
 
 // uuid 判定
@@ -62,6 +60,10 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
+function safeText(v: any): string {
+  return typeof v === "string" ? v.trim() : String(v ?? "").trim();
+}
+
 function formatHHMM(iso: string): string {
   if (!iso) return "";
   const dt = new Date(iso);
@@ -69,6 +71,28 @@ function formatHHMM(iso: string): string {
   const hh = dt.getHours().toString().padStart(2, "0");
   const mm = dt.getMinutes().toString().padStart(2, "0");
   return `${hh}:${mm}`;
+}
+
+function isProbablyHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * ★ SearchPage を完全踏襲（bucket名も一致させる）
+ */
+const AVATAR_BUCKET = "avatars";
+
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  const v = safeText(raw);
+  if (!v) return null;
+  if (isProbablyHttpUrl(v)) return v;
+
+  const path = v.startsWith(`${AVATAR_BUCKET}/`)
+    ? v.slice(AVATAR_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return data?.publicUrl ?? null;
 }
 
 // ==============================
@@ -96,13 +120,11 @@ export default function MessagesPage() {
 
         if (cancelled) return;
 
-        // Auth uuid が取れたらそれを正にする
         if (isUuid(authId)) {
           setViewerId(authId as UserId);
           return;
         }
 
-        // fallback（guest-xxxx 等）
         const fallback = getCurrentUserId();
         setViewerId((fallback ?? "") as UserId);
       } catch {
@@ -132,14 +154,7 @@ export default function MessagesPage() {
         setRelations(rows ?? []);
       } catch (e: any) {
         if (cancelled) return;
-        console.error(
-          "[messages.getRelationsForUser] error:",
-          e,
-          "message:",
-          e?.message,
-          "code:",
-          e?.code
-        );
+        console.error("[messages.getRelationsForUser] error:", e);
         setRelations([]);
       }
     })();
@@ -174,7 +189,6 @@ export default function MessagesPage() {
         // 自分のスレッド一覧
         const base: DbDmThreadRow[] = (await getThreadsForUser(viewerId)) ?? [];
 
-        // partnerId 抽出（last_message_at が無いスレは現状非表示）
         const normalized = base
           .map((row) => {
             const partnerId =
@@ -194,7 +208,7 @@ export default function MessagesPage() {
           new Set(normalized.map((x) => x.partnerId))
         );
 
-        // 相手 users 一括取得
+        // 1) users 一括
         const usersMap = new Map<string, DbUserMini>();
         if (partnerIds.length > 0) {
           const { data: usersRows, error } = await supabase
@@ -212,12 +226,15 @@ export default function MessagesPage() {
           }
         }
 
-        // 相手が therapist の場合 display_name を優先したい
-        const therapistMap = new Map<string, string>();
+        // 2) therapists 一括（★ avatar_url も取る）
+        const therapistMap = new Map<
+          string,
+          { displayName: string; avatarUrl: string | null }
+        >();
         if (partnerIds.length > 0) {
           const { data: thRows, error } = await supabase
             .from("therapists")
-            .select("user_id, display_name")
+            .select("user_id, display_name, avatar_url")
             .in("user_id", partnerIds);
 
           if (error) {
@@ -225,15 +242,21 @@ export default function MessagesPage() {
           } else {
             (thRows ?? []).forEach((t: any) => {
               const rt = t as DbTherapistMini;
-              const uid = rt.user_id;
-              const dn = rt.display_name?.trim() ?? "";
-              if (uid && dn) therapistMap.set(uid, dn);
+              const uid = safeText(rt.user_id);
+              if (!uid) return;
+
+              const dn = safeText(rt.display_name);
+              const av = resolveAvatarUrl(rt.avatar_url);
+              therapistMap.set(uid, { displayName: dn, avatarUrl: av });
             });
           }
         }
 
-        // 相手が store の場合 stores.name / stores.avatar_url を優先（owner_user_id で引く）
-        const storeMap = new Map<string, { name: string; avatarUrl: string | null }>();
+        // 3) stores 一括（owner_user_id で引く）
+        const storeMap = new Map<
+          string,
+          { name: string; avatarUrl: string | null }
+        >();
         if (partnerIds.length > 0) {
           const { data: stRows, error } = await supabase
             .from("stores")
@@ -245,10 +268,12 @@ export default function MessagesPage() {
           } else {
             (stRows ?? []).forEach((s: any) => {
               const rs = s as DbStoreMini;
-              const owner = rs.owner_user_id ?? "";
-              const nm = rs.name?.trim() ?? "";
+              const owner = safeText(rs.owner_user_id);
               if (!owner) return;
-              storeMap.set(owner, { name: nm || "店舗", avatarUrl: rs.avatar_url ?? null });
+
+              const nm = safeText(rs.name) || "店舗";
+              const av = resolveAvatarUrl(rs.avatar_url);
+              storeMap.set(owner, { name: nm, avatarUrl: av });
             });
           }
         }
@@ -257,32 +282,35 @@ export default function MessagesPage() {
           .map(({ row, partnerId }) => {
             const u = usersMap.get(partnerId) ?? null;
 
-            // role 解決（users.role を正）
-            const roleRaw = (u?.role ?? "").toString();
+            // role（users.role を正）
+            const roleRaw = safeText(u?.role);
             const partnerRole: ThreadListItem["partnerRole"] =
               roleRaw === "store" || roleRaw === "therapist" || roleRaw === "user"
                 ? (roleRaw as any)
                 : "unknown";
 
-            // 表示名：store > therapist > users.name > fallback
             const storeOverride = storeMap.get(partnerId) ?? null;
             const therapistOverride = therapistMap.get(partnerId) ?? null;
 
+            // 表示名：store > therapist > users.name > fallback
             const partnerName =
-              storeOverride?.name?.trim()
-                ? storeOverride.name.trim()
-                : therapistOverride?.trim()
-                ? therapistOverride.trim()
-                : u?.name?.trim()
-                ? u.name.trim()
+              safeText(storeOverride?.name)
+                ? safeText(storeOverride?.name)
+                : safeText(therapistOverride?.displayName)
+                ? safeText(therapistOverride?.displayName)
+                : safeText(u?.name)
+                ? safeText(u?.name)
                 : "相手";
 
             const partnerHandle =
-              u?.name && u.name.trim().length > 0 ? `@${u.name.trim()}` : `@${partnerId}`;
+              safeText(u?.name) ? `@${safeText(u?.name)}` : `@${partnerId}`;
 
-            // avatar：store(stores.avatar_url) > users.avatar_url
+            // avatar：store > users > therapist （★ users が空の therapist を救う）
             const avatarUrl =
-              storeOverride?.avatarUrl?.trim?.() ? storeOverride.avatarUrl : u?.avatar_url ?? null;
+              storeOverride?.avatarUrl ??
+              resolveAvatarUrl(u?.avatar_url) ??
+              therapistOverride?.avatarUrl ??
+              null;
 
             const lastMessageAt = row.last_message_at as string;
             const lastMessageTime = formatHHMM(lastMessageAt);
@@ -398,29 +426,34 @@ export default function MessagesPage() {
                   href={`/messages/${encodeURIComponent(t.threadId)}`}
                   className="thread-link"
                 >
-                  <div className="thread-avatar-wrap">
-                    <AvatarCircle
-                      size={40}
-                      avatarUrl={t.avatarUrl}
-                      displayName={t.partnerName || "?"}
-                    />
-                  </div>
-
                   <div className="thread-main">
                     <div className="thread-header-row">
-                      <div className="thread-name">
-                        {t.partnerName}
-                        <span className="thread-handle">{t.partnerHandle}</span>
-                        {t.partnerRole !== "unknown" && (
-                          <span className="thread-role">
-                            {t.partnerRole === "store"
-                              ? "店舗"
-                              : t.partnerRole === "therapist"
-                              ? "セラピスト"
-                              : "ユーザー"}
-                          </span>
-                        )}
+                      {/* ★ アイコンを「名前の左側（同じ行）」へ */}
+                      <div className="thread-name-row">
+                        <div className="thread-avatar-inline">
+                          <AvatarCircle
+                            size={34}
+                            avatarUrl={t.avatarUrl}
+                            displayName={t.partnerName || "?"}
+                            alt={t.partnerName || "avatar"}
+                          />
+                        </div>
+
+                        <div className="thread-name">
+                          {t.partnerName}
+                          <span className="thread-handle">{t.partnerHandle}</span>
+                          {t.partnerRole !== "unknown" && (
+                            <span className="thread-role">
+                              {t.partnerRole === "store"
+                                ? "店舗"
+                                : t.partnerRole === "therapist"
+                                ? "セラピスト"
+                                : "ユーザー"}
+                            </span>
+                          )}
+                        </div>
                       </div>
+
                       <div className="thread-time">{t.lastMessageTime}</div>
                     </div>
 
@@ -490,22 +523,13 @@ export default function MessagesPage() {
         }
 
         .thread-link {
-          display: flex;
-          gap: 10px;
+          display: block;
           padding: 10px 4px;
           text-decoration: none;
           color: inherit;
         }
 
-        .thread-avatar-wrap {
-          flex-shrink: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-
         .thread-main {
-          flex: 1;
           min-width: 0;
           display: flex;
           flex-direction: column;
@@ -515,8 +539,24 @@ export default function MessagesPage() {
         .thread-header-row {
           display: flex;
           justify-content: space-between;
-          align-items: baseline;
-          gap: 8px;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+        }
+
+        .thread-name-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+          flex: 1;
+        }
+
+        .thread-avatar-inline {
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
 
         .thread-name {
@@ -563,6 +603,7 @@ export default function MessagesPage() {
           justify-content: space-between;
           align-items: center;
           gap: 8px;
+          padding-left: 44px; /* アイコン(34) + gap(10) */
         }
 
         .thread-last-message {

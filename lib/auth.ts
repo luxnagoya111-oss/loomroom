@@ -4,9 +4,13 @@ import { inferRoleFromId } from "@/types/user";
 import { supabase } from "@/lib/supabaseClient";
 
 /**
- * LoomRoom の「現在ID」保持ルール
- * - 未ログイン: guest-xxxxxx を localStorage に保存
- * - ログイン済み: Supabase Auth の uuid を localStorage に保存
+ * LoomRoom の「現在ID」保持ルール（互換維持）
+ * - 未ログイン: guest-xxxxxx を localStorage に保存（旧仕様）
+ * - ログイン済み: Supabase Auth の uuid を localStorage に保存（旧仕様）
+ *
+ * ★追加（NEW）：
+ * - DB操作（いいね/通報/DMなど）は auth.uid() が必須なので、
+ *   未ログイン時は Anonymous sign-in で UUID を発行し、それを返す。
  */
 const STORAGE_KEY = "loomroom_current_user";
 
@@ -24,6 +28,16 @@ function isBrowser(): boolean {
 function createGuestId(): UserId {
   const random = Math.random().toString(36).slice(2, 8);
   return `guest-${random}`;
+}
+
+/**
+ * UUID判定（Auth uid のみ “DB操作できるID”）
+ */
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(v: any): v is string {
+  return typeof v === "string" && UUID_REGEX.test(v);
 }
 
 /**
@@ -54,10 +68,14 @@ export function clearStoredUserId(): void {
 }
 
 /**
- * 現在のユーザーIDを返す（同期）
+ * 現在のユーザーIDを返す（同期・互換維持）
  *
  * - SSR / build 中： "guest" 固定（ブラウザ側で再評価される想定）
  * - ブラウザ：localStorage があればそれ、なければ guest を作成して保存
+ *
+ * 注意：
+ * - これは “画面の識別子” としては使えるが、DB書き込み（like等）には使わないこと。
+ * - DB書き込みは ensureViewerId() を使う。
  */
 export function getCurrentUserId(): UserId {
   if (!isBrowser()) {
@@ -73,9 +91,7 @@ export function getCurrentUserId(): UserId {
 }
 
 /**
- * 現在のユーザーロールを返すヘルパー
- * - IDプレフィックスや UUID から Role を推定
- * - まだ何もない場合は "guest"
+ * 現在のユーザーロールを返すヘルパー（互換維持）
  */
 export function getCurrentUserRole(): Role {
   const id = getCurrentUserId();
@@ -84,11 +100,7 @@ export function getCurrentUserRole(): Role {
 
 /**
  * Supabase Auth から現在のユーザーを取得し、
- * もしログイン済みなら localStorage に uuid を保存するユーティリティ
- *
- * 期待用途：
- * - /login 後の遷移直後
- * - /mypage 等の入口で「セッションがあるなら uuid に確定」させたい時
+ * もしログイン済みなら localStorage に uuid を保存するユーティリティ（互換維持）
  */
 export async function syncAuthUserToLocalId(): Promise<UserId | null> {
   const { data, error } = await supabase.auth.getUser();
@@ -100,8 +112,7 @@ export async function syncAuthUserToLocalId(): Promise<UserId | null> {
 }
 
 /**
- * 追加：Supabase のセッションがあるなら優先して uuid を返す（非SSR向け）
- * - 画面側で「確実に会員IDが欲しい」場面に使える
+ * セッションがあるなら uuid を返す（互換維持）
  * - セッション無しなら null
  */
 export async function getAuthUserId(): Promise<UserId | null> {
@@ -111,12 +122,45 @@ export async function getAuthUserId(): Promise<UserId | null> {
 }
 
 /**
- * 追加：確認メールの再送（signup未確認ユーザー向け）
- * - Email not confirmed が出た時の救済導線として使う
+ * ★NEW：DB操作のために「必ず UUID（auth.uid）」を返す
  *
- * 注意：
- * - emailRedirectTo は本番URLに固定（localhost事故防止）
- * - Redirect URLs に https://lroom.jp/** が入っている必要あり
+ * - すでにセッションがあれば、その uuid を返す
+ * - セッションが無ければ Anonymous sign-in して uuid を作る
+ * - 取得した uuid は localStorage にも保存して、画面側も uuid に寄せられるようにする
+ *
+ * 前提：
+ * - Supabase Dashboard で Anonymous Sign-ins を有効化しておくこと
+ */
+export async function ensureViewerId(): Promise<UserId> {
+  // SSRでは実行しない（呼び出し側は useEffect などブラウザ限定で）
+  if (!isBrowser()) return "guest";
+
+  // 1) 既にセッションがあれば最優先
+  const { data: sessionData } = await supabase.auth.getSession();
+  const sessionUid = sessionData.session?.user?.id ?? null;
+  if (sessionUid && isUuid(sessionUid)) {
+    // localStorage が guest-* のままなら uuid に上書きしておく
+    const stored = getStoredUserId();
+    if (!stored || !isUuid(stored)) persistCurrentUserId(sessionUid as UserId);
+    return sessionUid as UserId;
+  }
+
+  // 2) localStorage に uuid が入っている場合でも、セッションが無いならDBには使えない
+  //    → 必ず anonymous sign-in を実行してセッションを作る
+  const { data, error } = await supabase.auth.signInAnonymously();
+  if (error) throw error;
+
+  const uid = data.user?.id ?? null;
+  if (!uid || !isUuid(uid)) {
+    throw new Error("Anonymous sign-in succeeded but user.id is invalid");
+  }
+
+  persistCurrentUserId(uid as UserId);
+  return uid as UserId;
+}
+
+/**
+ * 追加：確認メールの再送（signup未確認ユーザー向け）
  */
 export async function resendSignupConfirmation(email: string): Promise<void> {
   const normalized = (email || "").trim();
@@ -136,8 +180,7 @@ export async function resendSignupConfirmation(email: string): Promise<void> {
 }
 
 /**
- * 追加：ログインエラーが「未確認メール」かどうか判定するヘルパー
- * - UI側で「再送ボタン」を出す条件に使う
+ * 追加：ログインエラーが「未確認メール」かどうか判定
  */
 export function isEmailNotConfirmedError(message?: string | null): boolean {
   if (!message) return false;

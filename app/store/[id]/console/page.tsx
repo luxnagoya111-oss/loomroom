@@ -605,7 +605,7 @@ useEffect(() => {
           <div className="store-section-title">基本情報</div>
 
           <div className="field-row">
-            <label className="field-label">エリア（任意）</label>
+            <label className="field-label">エリア</label>
             <input
               type="text"
               className="field-input"
@@ -616,7 +616,7 @@ useEffect(() => {
           </div>
 
           <div className="field-row">
-            <label className="field-label">公式サイトURL（任意）</label>
+            <label className="field-label">公式サイトURL</label>
             <input
               type="url"
               className="field-input"
@@ -627,7 +627,7 @@ useEffect(() => {
           </div>
 
           <div className="field-row">
-            <label className="field-label">公式LINE / 予約リンク（任意）</label>
+            <label className="field-label">公式LINE / 予約リンク</label>
             <input
               type="url"
               className="field-input"
@@ -638,7 +638,7 @@ useEffect(() => {
           </div>
 
           <div className="field-row">
-            <label className="field-label">X（旧Twitter）URL（任意）</label>
+            <label className="field-label">X（旧Twitter）URL</label>
             <input
               type="url"
               className="field-input"
@@ -649,7 +649,7 @@ useEffect(() => {
           </div>
 
           <div className="field-row">
-            <label className="field-label">ツイキャスURL（任意）</label>
+            <label className="field-label">ツイキャスURL</label>
             <input
               type="url"
               className="field-input"
@@ -660,7 +660,7 @@ useEffect(() => {
           </div>
 
           <div className="field-row">
-            <label className="field-label">自己紹介（任意）</label>
+            <label className="field-label">プロフィール</label>
             <textarea
               className="field-textarea"
               value={state.description}
