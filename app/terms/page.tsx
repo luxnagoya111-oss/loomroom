@@ -16,9 +16,9 @@ export default function TermsPage() {
 
       <main className="policy-main">
         <section className="policy-section">
-          <h1 className="policy-title">LoomRoom 利用規約（案）</h1>
+          <h1 className="policy-title">LRoom 利用規約（案）</h1>
           <p className="policy-description">
-            このページは、LoomRoomの利用ルールを整理するための
+            このページは、LRoomの利用ルールを整理するための
             ベータ版の利用規約案です。正式公開の前に、内容を見直し、
             必要に応じて専門家の確認を受けた上で改定します。
           </p>
@@ -26,7 +26,7 @@ export default function TermsPage() {
           <div className="policy-card">
             <h2 className="policy-heading">第1条（本規約の適用）</h2>
             <p className="policy-text">
-              本規約は、LoomRoom（以下「本サービス」といいます）の利用条件を定めるものです。
+              本規約は、LRoom（以下「本サービス」といいます）の利用条件を定めるものです。
               利用者は、本サービスを利用することにより、本規約に同意したものとみなされます。
             </p>
 
@@ -100,7 +100,7 @@ export default function TermsPage() {
             </p>
 
             <p className="policy-footer-note">
-              ※この利用規約は、LoomRoomの企画・開発段階における案です。
+              ※この利用規約は、LRoomの企画・開発段階における案です。
               実際のサービス公開時には、内容を見直したうえで、必要に応じて専門家の確認を行ったのち正式版を掲載します。
             </p>
           </div>

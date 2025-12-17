@@ -4,7 +4,7 @@ import { inferRoleFromId } from "@/types/user";
 import { supabase } from "@/lib/supabaseClient";
 
 /**
- * LoomRoom の「現在ID」保持ルール（互換維持）
+ * LRoom の「現在ID」保持ルール（互換維持）
  * - 未ログイン: guest-xxxxxx を localStorage に保存（旧仕様）
  * - ログイン済み: Supabase Auth の uuid を localStorage に保存（旧仕様）
  *

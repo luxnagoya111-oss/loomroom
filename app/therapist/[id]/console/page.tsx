@@ -11,20 +11,15 @@ import { uploadAvatar } from "@/lib/avatarStorage";
 
 const hasUnread = true;
 
-type Area =
-  | "北海道"
-  | "東北"
-  | "関東"
-  | "中部"
-  | "近畿"
-  | "中国"
-  | "四国"
-  | "九州"
-  | "沖縄";
-
 type TherapistProfile = {
   displayName: string;
-  area: Area | "";
+
+  /**
+   * ★ エリアは自由入力（選択なし）
+   * - DBも string なので、string に統一
+   */
+  area: string;
+
   intro: string; // UI上は intro のまま。DBには profile として保存する
   snsX?: string;
   snsLine?: string;
@@ -152,6 +147,8 @@ const TherapistConsolePage: React.FC = () => {
         setData((prev) => ({
           ...prev,
           ...parsed,
+          // ★ area は自由入力 string のまま
+          area: typeof parsed.area === "string" ? parsed.area : prev.area,
           avatarUrl: safeAvatar ?? prev.avatarUrl ?? null,
           dmNotice:
             typeof parsed.dmNotice === "boolean" ? parsed.dmNotice : prev.dmNotice,
@@ -203,7 +200,7 @@ const TherapistConsolePage: React.FC = () => {
         setData((prev) => ({
           ...prev,
           displayName: dbRow.display_name ?? prev.displayName,
-          area: (dbRow.area as Area) ?? prev.area,
+          area: (dbRow.area ?? prev.area ?? "") as string, // ★自由入力
           intro: dbRow.profile ?? prev.intro,
           snsX: dbRow.sns_x ?? prev.snsX,
           snsLine: dbRow.sns_line ?? prev.snsLine,
@@ -345,7 +342,10 @@ const TherapistConsolePage: React.FC = () => {
       return;
     }
 
-    const { error } = await supabase.from("users").update({ name }).eq("id", therapistUserId);
+    const { error } = await supabase
+      .from("users")
+      .update({ name })
+      .eq("id", therapistUserId);
 
     if (error) {
       console.error("[TherapistConsole] failed to update users.name:", {
@@ -367,6 +367,8 @@ const TherapistConsolePage: React.FC = () => {
         ...data,
         // ★ dataURL が入っていたら消す（念のため）
         avatarUrl: data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null,
+        // ★ area は自由入力のまま
+        area: (data.area ?? "").toString(),
       };
       window.localStorage.setItem(storageKey, JSON.stringify(payloadForLocal));
     } catch (e) {
@@ -387,7 +389,7 @@ const TherapistConsolePage: React.FC = () => {
 
       const updatePayload: Partial<DbTherapistRow> = {
         display_name: (data.displayName || "").trim() || null,
-        area: data.area || null,
+        area: (data.area || "").trim() || null, // ★自由入力
         profile: data.intro || null,
         sns_x: data.snsX || null,
         sns_line: data.snsLine || null,
@@ -701,23 +703,15 @@ const TherapistConsolePage: React.FC = () => {
             </div>
 
             <div className="field">
-              <label className="field-label">よくいるエリア</label>
-              <select
+              <label className="field-label">エリア</label>
+              <input
                 className="field-input"
                 value={data.area}
-                onChange={(e) => updateField("area", e.target.value as Area)}
-              >
-                <option value="">未設定</option>
-                <option value="北海道">北海道</option>
-                <option value="東北">東北</option>
-                <option value="関東">関東</option>
-                <option value="中部">中部</option>
-                <option value="近畿">近畿</option>
-                <option value="中国">中国</option>
-                <option value="四国">四国</option>
-                <option value="九州">九州</option>
-                <option value="沖縄">沖縄</option>
-              </select>
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  updateField("area", e.target.value)
+                }
+                placeholder="例）名古屋 / 東海エリア など"
+              />
             </div>
 
             <div className="field">

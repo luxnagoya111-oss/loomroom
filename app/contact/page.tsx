@@ -84,7 +84,7 @@ export default function ContactPage() {
         <section className="page-section">
           <h1 className="page-title">お問い合わせ</h1>
           <p className="page-description">
-            LoomRoomに関するご意見や不具合のご報告、
+            LRoomに関するご意見や不具合のご報告、
             導入のご相談などがあればこちらからお知らせください。
             現時点ではテスト運用中のため、返信にお時間をいただく場合があります。
           </p>

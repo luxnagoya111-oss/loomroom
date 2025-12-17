@@ -634,7 +634,7 @@ export default function LoomRoomHome() {
 
   return (
     <div className="page-root">
-      <AppHeader title="LoomRoom" />
+      <AppHeader title="LRoom" />
 
       <main className="page-main">
         <section className="feed-filters">

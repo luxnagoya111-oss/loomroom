@@ -24,35 +24,6 @@ import { RelationActions } from "@/components/RelationActions";
 
 import type { DbTherapistRow, DbUserRow, DbPostRow, DbStoreRow } from "@/types/db";
 
-type Area =
-  | "北海道"
-  | "東北"
-  | "関東"
-  | "中部"
-  | "近畿"
-  | "中国"
-  | "四国"
-  | "九州"
-  | "沖縄";
-
-const KNOWN_AREAS: Area[] = [
-  "北海道",
-  "東北",
-  "関東",
-  "中部",
-  "近畿",
-  "中国",
-  "四国",
-  "九州",
-  "沖縄",
-];
-
-function toArea(value: string | null | undefined): Area | "" {
-  if (!value) return "";
-  const trimmed = value.trim() as Area;
-  return KNOWN_AREAS.includes(trimmed) ? trimmed : "";
-}
-
 // ===== uuid 判定（relations は users.id = uuid で運用する）=====
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -113,7 +84,13 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 type TherapistProfile = {
   displayName: string;
   handle: string;
-  area: Area | "";
+
+  /**
+   * ★ 対応エリアは自由入力（string）
+   * - console 側に合わせる
+   */
+  area: string;
+
   intro: string;
   avatarUrl?: string | null;
 
@@ -125,7 +102,12 @@ type TherapistProfile = {
 type TherapistPost = {
   id: string;
   body: string;
-  area: Area | "";
+
+  /**
+   * 投稿側の area も string（自由入力/将来の仕様変更に耐える）
+   */
+  area: string;
+
   timeAgo: string;
 };
 
@@ -174,7 +156,7 @@ const TherapistProfilePage: React.FC = () => {
       ? makeThreadId(viewerIdForThread, targetIdForThread)
       : null;
 
-  const [relations, setRelations] = useState<RelationFlags>({
+  const [relations, setRelations] = useState<RelationFlags>( {
     following: false,
     muted: false,
     blocked: false,
@@ -340,16 +322,16 @@ const TherapistProfilePage: React.FC = () => {
           return;
         }
 
-        setTherapistUserId(therapist.user_id);
-        setLinkedStoreId(therapist.store_id);
+        setTherapistUserId((therapist as any).user_id ?? null);
+        setLinkedStoreId((therapist as any).store_id ?? null);
 
         // 2) users（handle用 + avatar優先用）
         let user: DbUserRow | null = null;
-        if (therapist.user_id) {
+        if ((therapist as any).user_id) {
           const { data: userRow, error: uError } = await supabase
             .from("users")
             .select("id, name, avatar_url")
-            .eq("id", therapist.user_id)
+            .eq("id", (therapist as any).user_id)
             .maybeSingle<DbUserRow>();
 
           if (!cancelled) {
@@ -364,16 +346,22 @@ const TherapistProfilePage: React.FC = () => {
         if (cancelled) return;
 
         const displayName =
-          therapist.display_name?.trim().length ? therapist.display_name : "";
+          (therapist as any).display_name?.trim().length
+            ? (therapist as any).display_name
+            : "";
 
         const handle =
           user?.name && user.name.trim().length ? `@${user.name.trim()}` : "";
 
-        const area = toArea(therapist.area);
+        // ★ 自由入力エリア（string）
+        const area =
+          typeof (therapist as any).area === "string"
+            ? (therapist as any).area.trim()
+            : "";
 
         const intro =
-          therapist.profile && therapist.profile.trim().length
-            ? therapist.profile
+          (therapist as any).profile && (therapist as any).profile.trim().length
+            ? (therapist as any).profile
             : "";
 
         // avatar: users.avatar_url 優先 → therapists.avatar_url
@@ -396,11 +384,11 @@ const TherapistProfilePage: React.FC = () => {
         setLoadingProfile(false);
 
         // 3) posts（このページの投稿は「users.id（uuid）」で author_id を持つ前提）
-        if (therapist.user_id) {
+        if ((therapist as any).user_id) {
           const { data: postRows, error: pError } = await supabase
             .from("posts")
             .select("id, author_id, body, area, created_at")
-            .eq("author_id", therapist.user_id)
+            .eq("author_id", (therapist as any).user_id)
             .order("created_at", { ascending: false })
             .limit(50);
 
@@ -415,17 +403,12 @@ const TherapistProfilePage: React.FC = () => {
             setPosts([]);
           } else {
             const rows = (postRows ?? []) as DbPostRow[];
-            const mapped: TherapistPost[] = rows.map((row: DbPostRow) => {
-              const a: Area | "" = KNOWN_AREAS.includes((row.area ?? "") as Area)
-                ? ((row.area as Area) ?? "")
-                : "";
-              return {
-                id: row.id,
-                body: row.body ?? "",
-                area: a,
-                timeAgo: timeAgo(row.created_at),
-              };
-            });
+            const mapped: TherapistPost[] = rows.map((row: DbPostRow) => ({
+              id: row.id,
+              body: row.body ?? "",
+              area: typeof row.area === "string" ? row.area.trim() : "",
+              timeAgo: timeAgo(row.created_at),
+            }));
             setPosts(mapped);
           }
         } else {
@@ -528,6 +511,8 @@ const TherapistProfilePage: React.FC = () => {
   // 関連リンク（SNS）が空ならブロック自体を出さない
   const showSnsBlock = !!(profile.snsX || profile.snsLine || profile.snsOther);
 
+  const areaLabel = profile.area?.trim() ? profile.area.trim() : "未設定";
+
   return (
     <>
       <div className="app-shell">
@@ -575,9 +560,15 @@ const TherapistProfilePage: React.FC = () => {
                   </span>
                 </div>
 
+                {/* ★ 表示仕様：アカウント種別 / 対応エリア */}
                 <div className="profile-meta-row">
-                  {profile.area && <span>{profile.area}</span>}
-                  <span>セラピスト</span>
+                  <span className="profile-meta-item">
+                    アカウント種別：セラピスト
+                  </span>
+                  <span className="profile-meta-item">
+                    対応エリア：{areaLabel}
+                  </span>
+
                   {!isStoreLinked && (
                     <span className="profile-tag">
                       テスト参加中（店舗と紐づけ前）
@@ -616,7 +607,7 @@ const TherapistProfilePage: React.FC = () => {
             {!isStoreLinked && (
               <p className="profile-notice">
                 このセラピストは現在テスト参加中です。店舗と紐づくまで、
-                LoomRoomからのDMはご利用いただけません。
+                LRoomからのDMはご利用いただけません。
               </p>
             )}
 
@@ -679,7 +670,11 @@ const TherapistProfilePage: React.FC = () => {
                 {loadingStore && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle size={46} fallbackText="…" className="store-avatar" />
+                      <AvatarCircle
+                        size={46}
+                        fallbackText="…"
+                        className="store-avatar"
+                      />
                       <div className="linked-store-main">
                         <div className="linked-store-name">読み込み中…</div>
                         <div className="linked-store-meta">
@@ -693,10 +688,17 @@ const TherapistProfilePage: React.FC = () => {
                 {!loadingStore && storeError && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle size={46} fallbackText="!" className="store-avatar" />
+                      <AvatarCircle
+                        size={46}
+                        fallbackText="!"
+                        className="store-avatar"
+                      />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
-                        <div className="linked-store-meta" style={{ color: "#b00020" }}>
+                        <div
+                          className="linked-store-meta"
+                          style={{ color: "#b00020" }}
+                        >
                           {storeError}
                         </div>
                       </div>
@@ -729,7 +731,11 @@ const TherapistProfilePage: React.FC = () => {
                 {!loadingStore && !storeError && !linkedStore && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle size={46} fallbackText="S" className="store-avatar" />
+                      <AvatarCircle
+                        size={46}
+                        fallbackText="S"
+                        className="store-avatar"
+                      />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
                         <div className="linked-store-meta">
@@ -791,7 +797,7 @@ const TherapistProfilePage: React.FC = () => {
                           </div>
                           <div className="post-meta">
                             {p.area && <span>{p.area}</span>}
-                            <span>・</span>
+                            {p.area && <span>・</span>}
                             <span>{p.timeAgo}</span>
                           </div>
                         </div>
@@ -860,7 +866,7 @@ const TherapistProfilePage: React.FC = () => {
           font-size: 11px;
           color: var(--text-sub);
           display: flex;
-          gap: 8px;
+          gap: 10px;
           flex-wrap: wrap;
           align-items: center;
         }

@@ -181,7 +181,7 @@ export default function ConfirmClient() {
 
   return (
     <div className="app-shell">
-      <AppHeader title="メール確認" subtitle="LoomRoom" showBack={false} />
+      <AppHeader title="メール確認" subtitle="LRoom" showBack={false} />
       <main className="app-main">
         <div className="confirm-root">
           <div

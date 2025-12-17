@@ -18,7 +18,7 @@ export default function GuidelinePage() {
           <h1 className="policy-title">コミュニティガイドライン（案）</h1>
 
           <p className="policy-description">
-            LoomRoom を安全に使うための基本的なルールをまとめた
+            LRoom を安全に使うための基本的なルールをまとめた
             ベータ版のガイドラインです。正式公開の前に内容を見直し、
             必要に応じて改定していきます。
           </p>
@@ -81,7 +81,7 @@ export default function GuidelinePage() {
 
             <p className="policy-footer-note">
               制定日：2025年12月（ベータ版）<br />
-              LoomRoom の実際の運用状況を見ながら、随時見直し・調整していきます。
+              LRoom の実際の運用状況を見ながら、随時見直し・調整していきます。
             </p>
           </div>
         </section>

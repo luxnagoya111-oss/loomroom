@@ -554,7 +554,7 @@ useEffect(() => {
       <main className="app-main store-main">
         <h1 className="app-title">店舗コンソール</h1>
         <p className="app-header-sub">
-          LoomRoom 内での店舗情報を設定します。後からいつでも変更できます。
+          LRoom 内での店舗情報を設定します。後からいつでも変更できます。
         </p>
 
         {/* 店舗プロフィール */}

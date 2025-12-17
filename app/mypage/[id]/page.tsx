@@ -34,24 +34,15 @@ const hasUnread = true;
 // ★ IDごとにキーを分ける（旧localStorageデータ用）
 const STORAGE_PREFIX = "loomroom_profile_v1_";
 
-type Area =
-  | ""
-  | "北海道"
-  | "東北"
-  | "関東"
-  | "中部"
-  | "近畿"
-  | "中国"
-  | "四国"
-  | "九州"
-  | "沖縄";
+// ★ 修正：自由入力に合わせて Area を string に
+type Area = string;
 
 type AccountType = "ゲスト" | "会員";
 
 type UserProfile = {
   displayName: string;
   handle: string;
-  area: Area;
+  area: Area; // ★ string
   intro: string;
   messagePolicy: string;
   accountType: AccountType;
@@ -66,8 +57,7 @@ const DEFAULT_PROFILE: UserProfile = {
   displayName: "あなた",
   handle: "@user",
   area: "",
-  intro:
-    "まだ自己紹介は書かれていません。ゆっくり整えていく予定のページです。",
+  intro: "まだ自己紹介は書かれていません。ゆっくり整えていく予定のページです。",
   messagePolicy:
     "通知にすぐ気づけないこともあるので、ゆっくりペースでやりとりできたら嬉しいです。",
   accountType: "ゲスト",
@@ -114,22 +104,9 @@ type DbPostRow = {
 type UserPost = {
   id: string;
   body: string;
-  area: Area | "";
+  area: string; // ★ 修正：自由入力なので string
   timeAgo: string;
 };
-
-const knownAreas: Area[] = [
-  "",
-  "北海道",
-  "東北",
-  "関東",
-  "中部",
-  "近畿",
-  "中国",
-  "四国",
-  "九州",
-  "沖縄",
-];
 
 // ===== uuid 判定（relations は users.id = uuid で運用する）=====
 const UUID_REGEX =
@@ -172,6 +149,11 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 
   const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
   return data?.publicUrl ?? null;
+}
+
+function normalizeFreeText(v: any): string {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s;
 }
 
 const PublicMyPage: React.FC = () => {
@@ -289,16 +271,13 @@ const PublicMyPage: React.FC = () => {
             .maybeSingle<DbTherapistRow>();
 
           if (!cancelled && !tError && t) {
-            const areaValue: Area = knownAreas.includes((t.area ?? "") as Area)
-              ? ((t.area as Area) ?? "")
-              : "";
-
             setTherapistId(t.id);
 
             baseProfile = {
               ...baseProfile,
               displayName: t.display_name ?? baseProfile.displayName,
-              area: areaValue,
+              // ★ 修正：自由入力としてそのまま
+              area: normalizeFreeText(t.area),
               intro:
                 t.profile && t.profile.trim().length > 0
                   ? t.profile
@@ -313,16 +292,13 @@ const PublicMyPage: React.FC = () => {
             .maybeSingle<DbStoreRow>();
 
           if (!cancelled && !sError && s) {
-            const areaValue: Area = knownAreas.includes((s.area ?? "") as Area)
-              ? ((s.area as Area) ?? "")
-              : "";
-
             setStoreId(s.id);
 
             baseProfile = {
               ...baseProfile,
               displayName: s.name ?? baseProfile.displayName,
-              area: areaValue,
+              // ★ 修正：自由入力としてそのまま
+              area: normalizeFreeText(s.area),
               intro:
                 s.description && s.description.trim().length > 0
                   ? s.description
@@ -487,7 +463,8 @@ const PublicMyPage: React.FC = () => {
         ...prev,
         handle: `@${userId}`,
         displayName: data.nickname || prev.displayName,
-        area: (data.area as Area) || prev.area,
+        // ★ 修正：自由入力（string）をそのまま
+        area: typeof data.area === "string" ? data.area : prev.area,
         intro:
           typeof data.intro === "string" && data.intro.trim().length > 0
             ? data.intro
@@ -545,14 +522,11 @@ const PublicMyPage: React.FC = () => {
 
         const rows = (data ?? []) as DbPostRow[];
         const mapped: UserPost[] = rows.map((row) => {
-          const areaVal: Area | "" = knownAreas.includes((row.area ?? "") as Area)
-            ? ((row.area as Area) ?? "")
-            : "";
-
           return {
             id: row.id,
             body: row.body ?? "",
-            area: areaVal,
+            // ★ 修正：自由入力としてそのまま
+            area: normalizeFreeText(row.area),
             timeAgo: timeAgo(row.created_at),
           };
         });
@@ -656,9 +630,10 @@ const PublicMyPage: React.FC = () => {
                   </span>
                 </div>
 
+                {/* ★ 修正：表示を「アカウント種別：会員 / エリア：〇〇」形式に（グレー・太字なし） */}
                 <div className="therapist-meta-row">
-                  {profile.area && <span>{profile.area}</span>}
                   <span>アカウント種別：{profile.accountType}</span>
+                  <span>エリア：{profile.area || "未設定"}</span>
                 </div>
 
                 <div className="therapist-stats-row">
@@ -741,8 +716,7 @@ const PublicMyPage: React.FC = () => {
           <section className="therapist-posts-section">
             <h2 className="therapist-section-title">このページについて</h2>
             <div className="empty-hint">
-              LoomRoomの中で、その人の雰囲気や、
-              どんなペースで過ごしたいかをふんわり共有するためのページです。
+              LRoomの中で、その人の雰囲気や、どんなペースで過ごしたいかをふんわり共有するためのページです。
             </div>
           </section>
 
@@ -750,7 +724,9 @@ const PublicMyPage: React.FC = () => {
           <section className="therapist-posts-section">
             <h2 className="therapist-section-title">投稿</h2>
 
-            {loadingPosts && <div className="empty-hint">投稿を読み込んでいます…</div>}
+            {loadingPosts && (
+              <div className="empty-hint">投稿を読み込んでいます…</div>
+            )}
 
             {postError && !loadingPosts && (
               <div className="empty-hint" style={{ color: "#b00020" }}>
@@ -799,7 +775,7 @@ const PublicMyPage: React.FC = () => {
                           </div>
                           <div className="post-meta">
                             {p.area && <span className="post-area">{p.area}</span>}
-                            <span className="post-dot">・</span>
+                            {p.area && <span className="post-dot">・</span>}
                             <span className="post-time">{p.timeAgo}</span>
                           </div>
                         </div>
@@ -864,6 +840,7 @@ const PublicMyPage: React.FC = () => {
           gap: 6px;
         }
 
+        /* ★ meta はグレー（太字なし） */
         .therapist-meta-row {
           font-size: 11px;
           color: var(--text-sub);

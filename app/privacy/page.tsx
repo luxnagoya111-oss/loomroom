@@ -18,7 +18,7 @@ export default function PrivacyPage() {
           <h1 className="policy-title">プライバシーポリシー（案）</h1>
 
           <p className="policy-description">
-            LoomRoomのプライバシーポリシーについてまとめたベータ版です。
+            LRoomのプライバシーポリシーについてまとめたベータ版です。
             正式公開前に内容を見直し、必要に応じて改定します。
           </p>
 

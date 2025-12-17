@@ -233,7 +233,7 @@ export default function CreatorSignupStartPage() {
           ) : (
             <>
               <p className="lead">
-                LoomRoom に掲載するセラピスト / 店舗の登録フォームです。
+                LRoom に掲載するセラピスト / 店舗の登録フォームです。
                 まずはどちらとして使いたいかを選んでください。
               </p>
 
@@ -495,7 +495,7 @@ export default function CreatorSignupStartPage() {
                   </button>
 
                   <p className="note">
-                    ※ 入力内容は、LoomRoom 内での運用とご連絡のためにのみ利用します。
+                    ※ 入力内容は、LRoom 内での運用とご連絡のためにのみ利用します。
                   </p>
                 </form>
               )}

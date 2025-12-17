@@ -149,8 +149,8 @@ const StoreProfilePage: React.FC = () => {
     fallbackSlug === "lux"
       ? "LuX nagoya"
       : fallbackSlug === "loomroom"
-      ? "LoomRoom"
-      : "LoomRoom 提携サロン";
+      ? "LRoom"
+      : "LRoom 提携サロン";
 
   const initialAreaLabel =
     AREA_LABEL_MAP[fallbackSlug] || "全国（オンライン案内中心）";
@@ -760,7 +760,7 @@ const StoreProfilePage: React.FC = () => {
 
           {therapists.length === 0 ? (
             <p className="store-caption">
-              まだ LoomRoom 上では在籍セラピストが登録されていません。
+              まだ LRoom 上では在籍セラピストが登録されていません。
             </p>
           ) : (
             <ul className="therapist-list">
@@ -840,7 +840,7 @@ const StoreProfilePage: React.FC = () => {
           </div>
 
           <p className="store-caption">
-            ※ 上記リンクは LoomRoom 外のサービスです。各サービスごとの利用規約・ポリシーをご確認のうえご利用ください。
+            ※ 上記リンクは LRoom 外のサービスです。各サービスごとの利用規約・ポリシーをご確認のうえご利用ください。
           </p>
         </section>
 

@@ -164,7 +164,7 @@ export default function LoginPage() {
     <>
       <AppHeader
         title="ログイン / 新規登録"
-        subtitle="LoomRoom アカウントへ"
+        subtitle="LRoom アカウントへ"
         showBack={true}
       />
 
@@ -206,7 +206,7 @@ export default function LoginPage() {
                   <label className="form-label">
                     表示名
                     <span className="form-label-sub">
-                      LoomRoom 内で表示される名前です。
+                      LRoom 内で表示される名前です。
                     </span>
                   </label>
                   <input
@@ -214,7 +214,7 @@ export default function LoginPage() {
                     className="form-input"
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="例）LoomRoom さん"
+                    placeholder="例）LRoom さん"
                     autoComplete="name"
                   />
                 </div>
@@ -294,7 +294,7 @@ export default function LoginPage() {
           <section className="login-subsection">
             <h2 className="login-subsection-title">ログインについて</h2>
             <p className="login-subsection-text">
-              一度ログインすると、この端末ではログアウトするまで同じアカウントで LoomRoom を利用できます。
+              一度ログインすると、この端末ではログアウトするまで同じアカウントで LRoom を利用できます。
             </p>
           </section>
         </div>

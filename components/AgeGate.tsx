@@ -57,7 +57,7 @@ export default function AgeGate() {
           18歳以上の方のみご利用いただけます
         </h2>
         <p className="text-sm text-gray-700 mb-6 text-center leading-relaxed">
-          LoomRoomは18歳以上の方のみを対象としたサービスです。
+          LRoomは18歳以上の方のみを対象としたサービスです。
           <br />
           あなたは18歳以上ですか？
         </p>

@@ -9,18 +9,6 @@ import BottomNav from "@/components/BottomNav";
 import { supabase } from "@/lib/supabaseClient";
 import { uploadAvatar } from "@/lib/avatarStorage";
 
-type Area =
-  | ""
-  | "北海道"
-  | "東北"
-  | "関東"
-  | "中部"
-  | "近畿"
-  | "中国"
-  | "四国"
-  | "九州"
-  | "沖縄";
-
 type AccountType = "ゲスト" | "会員";
 
 const STORAGE_KEY = "loomroom_profile_v1";
@@ -31,12 +19,13 @@ const MyPageConsole: React.FC = () => {
   const userId = (params?.id as string) || "user";
 
   // ID からゲスト or 会員を自動判定（guest- ならゲスト、それ以外は会員）
-  const accountType: AccountType = userId.startsWith("guest-")
-    ? "ゲスト"
-    : "会員";
+  const accountType: AccountType = userId.startsWith("guest-") ? "ゲスト" : "会員";
 
   const [nickname, setNickname] = useState<string>("あなた");
-  const [area, setArea] = useState<Area>("");
+
+  // ★ 修正：Area型 + select をやめて自由入力（文字列）
+  const [area, setArea] = useState<string>("");
+
   const [intro, setIntro] = useState<string>("");
 
   // SNS系リンク
@@ -68,7 +57,7 @@ const MyPageConsole: React.FC = () => {
 
       const data = JSON.parse(raw) as {
         nickname?: string;
-        area?: Area;
+        area?: string; // ★ 修正：string
         intro?: string;
         notifyFavPosts?: boolean;
         notifyDm?: boolean;
@@ -82,10 +71,9 @@ const MyPageConsole: React.FC = () => {
       };
 
       if (data.nickname) setNickname(data.nickname);
-      if (data.area) setArea(data.area);
+      if (typeof data.area === "string") setArea(data.area);
       if (typeof data.intro === "string") setIntro(data.intro);
-      if (typeof data.notifyFavPosts === "boolean")
-        setNotifyFavPosts(data.notifyFavPosts);
+      if (typeof data.notifyFavPosts === "boolean") setNotifyFavPosts(data.notifyFavPosts);
       if (typeof data.notifyDm === "boolean") setNotifyDm(data.notifyDm);
       if (typeof data.notifyNews === "boolean") setNotifyNews(data.notifyNews);
 
@@ -97,7 +85,7 @@ const MyPageConsole: React.FC = () => {
       if (typeof data.snsLine === "string") setSnsLine(data.snsLine);
       if (typeof data.snsOther === "string") setSnsOther(data.snsOther);
     } catch (e) {
-      console.warn("Failed to load LoomRoom profile", e);
+      console.warn("Failed to load LRoom profile", e);
     } finally {
       setLoaded(true);
     }
@@ -139,7 +127,7 @@ const MyPageConsole: React.FC = () => {
     };
   }, [userId, accountType]);
 
-  // ===== Avatar 選択時の処理（ここを修正）=====
+  // ===== Avatar 選択時の処理 =====
   // AvatarUploader が Promise<string> を期待する前提で「URL（またはdataURL）を返す」
   const handleAvatarFileSelect = async (file: File): Promise<string> => {
     if (!file) return "";
@@ -178,16 +166,11 @@ const MyPageConsole: React.FC = () => {
       const publicUrl = await uploadAvatar(file, uid);
 
       // DB に保存（このページの userId の行を更新）
-      const { error } = await supabase
-        .from("users")
-        .update({ avatar_url: publicUrl })
-        .eq("id", userId);
+      const { error } = await supabase.from("users").update({ avatar_url: publicUrl }).eq("id", userId);
 
       if (error) {
         console.error("[MyPageConsole] failed to update avatar_url:", error);
-        throw new Error(
-          "アイコン画像の保存に失敗しました。時間をおいて再度お試しください。"
-        );
+        throw new Error("アイコン画像の保存に失敗しました。時間をおいて再度お試しください。");
       }
 
       setAvatarDataUrl(publicUrl);
@@ -209,7 +192,7 @@ const MyPageConsole: React.FC = () => {
 
     const payload = {
       nickname,
-      area,
+      area, // ★ string
       intro,
       notifyFavPosts,
       notifyDm,
@@ -224,7 +207,7 @@ const MyPageConsole: React.FC = () => {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch (e) {
-      console.error("Failed to save LoomRoom profile (localStorage)", e);
+      console.error("Failed to save LRoom profile (localStorage)", e);
     }
 
     // 会員のときは users.name を更新（avatar_url はファイル選択時に更新済み）
@@ -240,15 +223,11 @@ const MyPageConsole: React.FC = () => {
 
         if (error) {
           console.error("[MyPageConsole] failed to update users.name:", error);
-          alert(
-            "サーバー側のプロフィール保存に失敗しました。時間をおいて再度お試しください。"
-          );
+          alert("サーバー側のプロフィール保存に失敗しました。時間をおいて再度お試しください。");
         }
       } catch (e) {
         console.error("[MyPageConsole] handleSave users update error:", e);
-        alert(
-          "サーバー側のプロフィール保存に失敗しました。通信環境をご確認ください。"
-        );
+        alert("サーバー側のプロフィール保存に失敗しました。通信環境をご確認ください。");
       } finally {
         setSaving(false);
       }
@@ -258,7 +237,7 @@ const MyPageConsole: React.FC = () => {
       [
         "マイページの設定を保存しました。",
         isMember
-          ? "（この端末と LoomRoom アカウントの両方に保存されています）"
+          ? "（この端末と LRoom アカウントの両方に保存されています）"
           : "（この端末の中にだけ保存されています）",
         "",
         `ID：${userId}`,
@@ -293,16 +272,8 @@ const MyPageConsole: React.FC = () => {
               <AvatarUploader
                 avatarUrl={avatarDataUrl}
                 displayName={nickname || "U"}
-                 onPreview={
-                  accountType === "ゲスト"
-                    ? (dataUrl: string) => setAvatarDataUrl(dataUrl)
-                    : undefined
-                }
-                onUploaded={
-                  accountType === "会員"
-                    ? (url: string) => setAvatarDataUrl(url)
-                    : undefined
-                }
+                onPreview={accountType === "ゲスト" ? (dataUrl: string) => setAvatarDataUrl(dataUrl) : undefined}
+                onUploaded={accountType === "会員" ? (url: string) => setAvatarDataUrl(url) : undefined}
                 onFileSelect={handleAvatarFileSelect}
               />
 
@@ -310,30 +281,21 @@ const MyPageConsole: React.FC = () => {
                 <input
                   className="profile-nickname-input"
                   value={nickname}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    setNickname(e.target.value)
-                  }
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setNickname(e.target.value)}
                   placeholder="ニックネームを入力"
                 />
-                <div className="profile-id-hint">LoomRoomの中で表示される名前です</div>
-                {avatarUploading && (
-                  <div className="profile-id-hint">アイコン画像を保存しています…</div>
-                )}
+                <div className="profile-id-hint">LRoomの中で表示される名前です</div>
+                {avatarUploading && <div className="profile-id-hint">アイコン画像を保存しています…</div>}
               </div>
             </div>
 
             <div className="profile-sub-row">
-              <div className="pill pill--accent profile-sub-pill">
-                アカウント種別：{accountType}
-              </div>
+              <div className="pill pill--accent profile-sub-pill">アカウント種別：{accountType}</div>
               <div className="pill profile-sub-pill profile-sub-pill--soft">
                 この端末の中だけで、静かに情報を管理します
               </div>
             </div>
           </section>
-
-          {/* 以降のUIはあなたの元コードのまま */}
-          {/* ...（ここから下は一切変更なしでOK）... */}
 
           <section className="surface-card mypage-card">
             <h2 className="mypage-section-title">基本情報</h2>
@@ -343,33 +305,20 @@ const MyPageConsole: React.FC = () => {
               <input
                 className="field-input"
                 value={nickname}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setNickname(e.target.value)
-                }
-                placeholder="例）momo / ゆっくりさん など"
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setNickname(e.target.value)}
+                placeholder="自由入力"
               />
             </div>
 
             <div className="field">
               <label className="field-label">エリア</label>
-              <select
+              {/* ★ 修正：select → input（自由入力） */}
+              <input
                 className="field-input"
                 value={area}
-                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                  setArea(e.target.value as Area)
-                }
-              >
-                <option value="">選択しない</option>
-                <option value="北海道">北海道</option>
-                <option value="東北">東北</option>
-                <option value="関東">関東</option>
-                <option value="中部">中部</option>
-                <option value="近畿">近畿</option>
-                <option value="中国">中国</option>
-                <option value="四国">四国</option>
-                <option value="九州">九州</option>
-                <option value="沖縄">沖縄</option>
-              </select>
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setArea(e.target.value)}
+                placeholder="例）名古屋 / 東海エリア など"
+              />
             </div>
 
             <div className="field">
@@ -377,9 +326,7 @@ const MyPageConsole: React.FC = () => {
               <textarea
                 className="field-input"
                 value={intro}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                  setIntro(e.target.value)
-                }
+                onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setIntro(e.target.value)}
                 placeholder="例）人見知りですが、ゆっくり会話できる時間が好きです。"
               />
             </div>
@@ -392,9 +339,7 @@ const MyPageConsole: React.FC = () => {
               <input
                 className="field-input"
                 value={snsX}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setSnsX(e.target.value)
-                }
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsX(e.target.value)}
                 placeholder="https://x.com/..."
               />
             </div>
@@ -403,9 +348,7 @@ const MyPageConsole: React.FC = () => {
               <input
                 className="field-input"
                 value={snsLine}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setSnsLine(e.target.value)
-                }
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsLine(e.target.value)}
                 placeholder="https://lin.ee/..."
               />
             </div>
@@ -414,9 +357,7 @@ const MyPageConsole: React.FC = () => {
               <input
                 className="field-input"
                 value={snsOther}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setSnsOther(e.target.value)
-                }
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsOther(e.target.value)}
                 placeholder="Instagram / Misskey などのURL"
               />
             </div>
@@ -448,9 +389,7 @@ const MyPageConsole: React.FC = () => {
             >
               <div className="toggle-main">
                 <div className="toggle-title">DMの通知</div>
-                <div className="toggle-caption">
-                  大事なメッセージを見逃さないようにしたいときに。
-                </div>
+                <div className="toggle-caption">大事なメッセージを見逃さないようにしたいときに。</div>
               </div>
               <div className="toggle-switch">
                 <div className="toggle-knob" />
@@ -463,10 +402,8 @@ const MyPageConsole: React.FC = () => {
               onClick={() => setNotifyNews((v) => !v)}
             >
               <div className="toggle-main">
-                <div className="toggle-title">LoomRoom からのお知らせ</div>
-                <div className="toggle-caption">
-                  リリース情報など、大切なことだけに使う予定です。
-                </div>
+                <div className="toggle-title">LRoom からのお知らせ</div>
+                <div className="toggle-caption">リリース情報など、大切なことだけに使う予定です。</div>
               </div>
               <div className="toggle-switch">
                 <div className="toggle-knob" />
@@ -489,7 +426,6 @@ const MyPageConsole: React.FC = () => {
         <BottomNav active="mypage" hasUnread={hasUnread} />
       </div>
 
-      {/* styles は元のまま */}
       <style jsx>{`
         .app-shell {
           min-height: 100vh;

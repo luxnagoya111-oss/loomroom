@@ -1,5 +1,5 @@
 // lib/dmPolicy.ts
-// DM・投稿まわりのロール別ポリシー（LoomRoom 正式版）
+// DM・投稿まわりのロール別ポリシー（LRoom 正式版）
 
 import type { Role } from "@/types/user";
 

@@ -14,7 +14,7 @@ type AppHeaderProps = {
 };
 
 const AppHeader: React.FC<AppHeaderProps> = ({
-  title = "LoomRoom",
+  title = "LRoom",
   subtitle,
   showBack = true,
   rightSlot,

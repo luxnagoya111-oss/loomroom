@@ -20,7 +20,7 @@ export default function CreatorSignupPage() {
 
           <h1 className="page-title">店舗・セラピストの登録案内</h1>
           <p className="page-description">
-            LoomRoomを「お店の管理ツール」「セラピストの活動ベース」として
+            LRoomを「お店の管理ツール」「セラピストの活動ベース」として
             使いたい方向けのご案内です。
             <br />
             いまはクローズドテストの段階のため、登録方法を少しずつ整えている途中です。
@@ -61,7 +61,7 @@ export default function CreatorSignupPage() {
                 <li>店舗アカウントの審査フロー</li>
                 <li>セラピストアカウント発行フロー</li>
                 <li>売上・予約管理コンソールとの連携</li>
-                <li>LoomRoom内プロフィールとタイムラインの連携</li>
+                <li>LRoom内プロフィールとタイムラインの連携</li>
               </ul>
               <p className="card-note">
                 これらは、一度にすべてではなく、
@@ -78,7 +78,7 @@ export default function CreatorSignupPage() {
               </p>
               <ul className="bullet-list bullet-list--soft">
                 <li>まずはLuX nagoyaのホームページをご覧いただく</li>
-                <li>公式LINEやDMで「LoomRoomについて聞きたい」とお知らせいただく</li>
+                <li>公式LINEやDMで「LRoomについて聞きたい」とお知らせいただく</li>
                 <li>こちらからテスト参加の条件や流れをご案内</li>
               </ul>
               <p className="card-note">
