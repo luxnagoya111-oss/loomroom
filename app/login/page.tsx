@@ -13,6 +13,17 @@ import { resendSignupConfirmation, isEmailNotConfirmedError } from "@/lib/auth";
 
 type Mode = "login" | "signup";
 
+function hasOAuthParamsInUrl(): boolean {
+  if (typeof window === "undefined") return false;
+  const sp = new URLSearchParams(window.location.search);
+  return (
+    sp.has("code") ||
+    sp.has("error") ||
+    sp.has("error_description") ||
+    sp.has("state")
+  );
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>("login");
@@ -37,12 +48,20 @@ export default function LoginPage() {
   /**
    * 画面を開いた時点でセッションがあるなら、そのまま /mypage へ
    * （「ログイン画面にいるのに実はログイン済み」を吸収）
+   *
+   * ★修正：
+   * OAuth の戻り（code 等が付いたURL）でここが走ると
+   * PKCEが壊れたり、途中で /mypage に飛んで不安定になることがあるため、
+   * code/error が付いている場合はこの自動遷移をスキップする。
    */
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
+        // OAuth の戻り口っぽいなら、自動遷移しない
+        if (hasOAuthParamsInUrl()) return;
+
         const { data, error } = await supabase.auth.getSession();
         if (cancelled) return;
         if (error) return;
@@ -53,7 +72,7 @@ export default function LoginPage() {
           router.replace(`/mypage/${uid}`);
         }
       } catch {
-        // ここは無視でOK
+        // noop
       }
     })();
 
@@ -68,12 +87,15 @@ export default function LoginPage() {
    * - 壊れた状態を引きずるので、開始前に必ず resetAuthFlow() を呼ぶ
    */
   const handleGoogle = async () => {
+    if (loading || resending) return;
+
     resetMessages();
 
     try {
       setLoading(true);
 
-      // ★超重要：壊れたOAuth/PKCE状態を掃除してから開始
+      // ★重要：壊れたOAuth/PKCE状態を掃除してから開始
+      // （ここは必ず await。並走すると verifier が壊れやすい）
       await resetAuthFlow();
 
       const redirectTo = getAuthRedirectTo("/auth/callback");
@@ -82,6 +104,10 @@ export default function LoginPage() {
         provider: "google",
         options: {
           redirectTo,
+          // ★追加：毎回アカウント選択を出す（テストと運用が安定）
+          queryParams: {
+            prompt: "select_account",
+          },
         },
       });
 
@@ -160,17 +186,10 @@ export default function LoginPage() {
         return;
       }
 
-      /**
-       * Supabase の設定次第で
-       * - user は返るが session が無い（確認前）
-       * - user すら null の場合
-       * があるので、ここでは “確認メールを見てね” を基本にする
-       */
+      // 確認前に /mypage へは飛ばさない（混乱と不整合を避ける）
       setInfoMsg(
         "仮登録が完了しました。確認メールを送信しました。メール内のリンクを開いて登録を完了してください。"
       );
-
-      // 確認前に /mypage へは飛ばさない（混乱と不整合を避ける）
       return;
     } catch (e: any) {
       console.error("login/signup unexpected error:", e);

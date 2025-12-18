@@ -1,7 +1,7 @@
 // app/auth/callback/CallbackClient.tsx
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { supabase } from "@/lib/supabaseClient";
@@ -37,6 +37,20 @@ function isRecoverableOAuthErrorMessage(msg: string): boolean {
   );
 }
 
+function stripOAuthParamsFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("code");
+    url.searchParams.delete("error");
+    url.searchParams.delete("error_description");
+    url.searchParams.delete("state");
+    // Next の内部パラメータ等があれば必要に応じて追加で消す
+    window.history.replaceState({}, "", url.toString());
+  } catch {
+    // noop
+  }
+}
+
 export default function CallbackClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -46,7 +60,13 @@ export default function CallbackClient() {
   const [canRecover, setCanRecover] = useState(false);
   const [recovering, setRecovering] = useState(false);
 
+  // ★ 二重実行ガード（Next/Reactの再レンダで effect が複数回走るのを防ぐ）
+  const didRunRef = useRef(false);
+
   useEffect(() => {
+    if (didRunRef.current) return;
+    didRunRef.current = true;
+
     let cancelled = false;
 
     const fail = (msg: string) => {
@@ -61,6 +81,7 @@ export default function CallbackClient() {
       if (cancelled) return;
       setStep("success");
       setMessage("ログインしました。移動します…");
+      // ★ callback に留まらない（リロード時に code 無しで再評価されるのを防ぐ）
       router.replace(`/mypage/${uid}`);
     };
 
@@ -72,30 +93,28 @@ export default function CallbackClient() {
         const errorDesc = searchParams.get("error_description");
 
         if (error || errorDesc) {
+          // エラーが来ている場合はパラメータを消してから失敗表示
+          stripOAuthParamsFromUrl();
           fail(`認証に失敗しました：${errorDesc ?? error ?? "unknown error"}`);
           return;
         }
 
         /**
-         * 1) code が無い場合
-         * - すでに session が残っている（成功済み）可能性があるので getSession を確認
+         * ★重要変更：
+         * code が無い場合に「getSession() を拾って成功扱い」にしない
+         *
+         * 理由：
+         * - Supabase側の users を消してもブラウザに session が残る
+         * - その session を getSession で拾うと「前のデータでログインした」ように見える
+         *
+         * → callback は OAuth の戻り口なので、code が無いなら「正常な戻りではない」扱いにする
+         *   （リロードや直打ち等は /login へ戻す）
          */
         if (!code) {
-          const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-          if (sessionErr) {
-            fail(`セッション確認に失敗しました：${sessionErr.message}`);
-            return;
-          }
-
-          const uid = sessionData?.session?.user?.id ?? null;
-          if (!uid) {
-            fail(
-              "認証コードが見つかりませんでした。\n一度ログイン状態をリセットしてから、もう一度 Google でログインしてください。"
-            );
-            return;
-          }
-
-          succeedAndGo(uid);
+          stripOAuthParamsFromUrl();
+          fail(
+            "認証コードが見つかりませんでした。\nこのページを更新したか、ログイン処理が途中で中断された可能性があります。\n「ログイン状態をリセットしてやり直す」を押して、/login から再度 Google ログインしてください。"
+          );
           return;
         }
 
@@ -104,6 +123,7 @@ export default function CallbackClient() {
          */
         const { data, error: exErr } = await supabase.auth.exchangeCodeForSession(code);
         if (exErr) {
+          stripOAuthParamsFromUrl();
           fail(`セッション確立に失敗しました：${exErr.message}`);
           return;
         }
@@ -111,16 +131,20 @@ export default function CallbackClient() {
         const user = (data as any)?.user ?? (data as any)?.session?.user ?? null;
         const uid = user?.id ?? null;
         if (!uid) {
+          stripOAuthParamsFromUrl();
           fail("ユーザー情報を取得できませんでした。");
           return;
         }
+
+        // ★ URL に code が残ると再訪問/再レンダで事故るので消す
+        stripOAuthParamsFromUrl();
 
         // localStorage 同期
         persistCurrentUserId(uid);
 
         /**
          * 3) users テーブル upsert（失敗してもログイン自体は継続）
-         * - ここは RLS やタイミングで落ちやすいので、例外は握りつぶす
+         * - RLS やタイミングで落ちやすいので、例外は握りつぶす
          */
         try {
           const name = pickNameFromUser(user);
@@ -153,11 +177,10 @@ export default function CallbackClient() {
         }
 
         if (cancelled) return;
-        setStep("success");
-        setMessage("ログインしました。移動します…");
-        router.replace(`/mypage/${uid}`);
+        succeedAndGo(uid);
       } catch (e: any) {
         console.error("[auth/callback] unexpected error:", e);
+        stripOAuthParamsFromUrl();
         fail(e?.message ?? "不明なエラーが発生しました。");
       }
     };
@@ -167,12 +190,14 @@ export default function CallbackClient() {
     return () => {
       cancelled = true;
     };
-  }, [router, searchParams]);
+    // ★ searchParams を依存に入れると再実行の温床になりやすいので入れない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router]);
 
   const handleRecover = async () => {
     try {
       setRecovering(true);
-      // ここが重要：壊れたPKCE/セッションを掃除して再試行できる状態に戻す
+      // 壊れたPKCE/セッションを掃除して再試行できる状態に戻す
       await resetAuthFlow();
       router.replace("/login");
     } finally {
@@ -213,7 +238,6 @@ export default function CallbackClient() {
 
             {step === "error" && (
               <>
-                {/* 通常の戻る */}
                 <button
                   style={{
                     marginTop: 12,
@@ -233,7 +257,6 @@ export default function CallbackClient() {
                   ログイン画面へ戻る
                 </button>
 
-                {/* ★ 追加：復旧（PKCE/セッション掃除） */}
                 {canRecover && (
                   <button
                     style={{
@@ -256,9 +279,9 @@ export default function CallbackClient() {
                 )}
 
                 <p style={{ marginTop: 10, fontSize: 11, opacity: 0.7, lineHeight: 1.6 }}>
-                  何度も失敗する場合は、同じ端末・同じブラウザで開き直してください。
+                  何度も失敗する場合は、同じ端末・同じブラウザで /login を開き直してください。
                   <br />
-                  それでも直らない場合は、いったんブラウザのCookie/サイトデータを削除してください。
+                  それでも直らない場合は、いったんブラウザの Cookie/サイトデータを削除してください。
                 </p>
               </>
             )}

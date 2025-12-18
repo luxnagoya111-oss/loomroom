@@ -56,41 +56,37 @@ export function getCurrentUserRole(): Role {
   return inferRoleFromId(id);
 }
 
+function isForbiddenAuthError(err: any): boolean {
+  const status = err?.status ?? null;
+  const msg = String(err?.message ?? "").toLowerCase();
+  return status === 403 || msg.includes("forbidden");
+}
+
 /**
- * ===== OAuth/PKCE 事故復旧用 =====
- * Supabase がブラウザに残す auth/PKCE 関連キーを掃除
+ * Supabase がブラウザに残す auth/PKCE 関連キーを掃除（強め）
+ * - sb- で始まるキーを丸ごと消す（PKCE verifier も確実に消す）
  */
 export function clearSupabaseAuthStorage(): void {
   if (!isBrowser()) return;
 
   try {
-    const keys = Object.keys(window.localStorage);
-    keys.forEach((k) => {
-      if (k.startsWith("sb-") && k.includes("auth")) {
-        window.localStorage.removeItem(k);
-      }
+    const lKeys = Object.keys(window.localStorage);
+    lKeys.forEach((k) => {
+      if (k.startsWith("sb-")) window.localStorage.removeItem(k);
     });
 
     const sKeys = Object.keys(window.sessionStorage);
     sKeys.forEach((k) => {
-      if (k.startsWith("sb-") && k.includes("auth")) {
-        window.sessionStorage.removeItem(k);
-      }
+      if (k.startsWith("sb-")) window.sessionStorage.removeItem(k);
     });
   } catch {
     // noop
   }
 }
 
-function isForbiddenAuthError(err: any): boolean {
-  const status = err?.status ?? err?.code ?? null;
-  const msg = String(err?.message ?? "").toLowerCase();
-  return status === 403 || msg.includes("forbidden");
-}
-
 /**
  * OAuth/ログインフローが壊れた時の復旧用（ブラウザ限定）
- * - signOut（local）
+ * - signOut(local)
  * - loomroom_current_user クリア
  * - supabase auth storage / PKCE verifier を掃除
  */
@@ -98,7 +94,7 @@ export async function resetAuthFlow(): Promise<void> {
   if (!isBrowser()) return;
 
   try {
-    // local で十分（他端末まで落とさない）
+    // 型の都合で any
     await supabase.auth.signOut({ scope: "local" } as any);
   } catch {
     // noop
@@ -115,21 +111,15 @@ export async function resetAuthFlow(): Promise<void> {
 export async function syncAuthUserToLocalId(): Promise<UserId | null> {
   try {
     const { data, error } = await supabase.auth.getUser();
-
     if (error || !data.user) {
-      if (isForbiddenAuthError(error)) {
-        await resetAuthFlow();
-      }
+      if (isForbiddenAuthError(error)) await resetAuthFlow();
       return null;
     }
-
     const id = data.user.id as UserId;
     persistCurrentUserId(id);
     return id;
   } catch (e: any) {
-    if (isForbiddenAuthError(e)) {
-      await resetAuthFlow();
-    }
+    if (isForbiddenAuthError(e)) await resetAuthFlow();
     return null;
   }
 }
@@ -141,7 +131,7 @@ export async function getAuthUserId(): Promise<UserId | null> {
 }
 
 /**
- * DB操作のための viewer uuid を返す
+ * DB操作のための viewer uuid を返す（Anonymousは使わない）
  * - ログイン済みなら uuid
  * - 未ログインなら null
  * - 403なら自動掃除して null
@@ -150,11 +140,8 @@ export async function ensureViewerId(): Promise<UserId | null> {
   if (!isBrowser()) return null;
 
   const { data, error } = await supabase.auth.getUser();
-
   if (error || !data.user) {
-    if (isForbiddenAuthError(error)) {
-      await resetAuthFlow();
-    }
+    if (isForbiddenAuthError(error)) await resetAuthFlow();
     return null;
   }
 
@@ -174,9 +161,7 @@ export async function resendSignupConfirmation(email: string): Promise<void> {
   const { error } = await supabase.auth.resend({
     type: "signup",
     email: normalized,
-    options: {
-      emailRedirectTo: EMAIL_CONFIRM_REDIRECT_TO,
-    },
+    options: { emailRedirectTo: EMAIL_CONFIRM_REDIRECT_TO },
   });
 
   if (error) throw error;
@@ -188,9 +173,7 @@ export function isEmailNotConfirmedError(message?: string | null): boolean {
 }
 
 /**
- * ログアウト処理（1か所に集約）
- * - Supabase から signOut（local）
- * - localStorage / supabase auth storage を掃除
+ * ログアウト処理（復旧掃除込み）
  */
 export async function logout(): Promise<void> {
   await resetAuthFlow();
