@@ -5,7 +5,6 @@ import React, { useEffect, useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
-import { getCurrentUserId } from "@/lib/auth"; // 既存概念（guest-判定）を残す
 import { supabase } from "@/lib/supabaseClient";
 import {
   createStoreSignup,
@@ -35,7 +34,6 @@ type TherapistForm = {
 };
 
 function buildLoginUrl(nextPath: string) {
-  // next は相対パスのみ許可（安全）
   const next = nextPath.startsWith("/") ? nextPath : "/signup/creator/start";
   return `/login?next=${encodeURIComponent(next)}`;
 }
@@ -46,26 +44,16 @@ export default function CreatorSignupStartPage() {
   // SSR / 初期描画時は null（まだ判定していない状態）
   const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
 
-  // セッション（Auth）を基準にログイン判定
+  // Authセッションを基準にログイン判定（getCurrentUserId は使わない）
   useEffect(() => {
     let cancelled = false;
 
     const run = async () => {
-      // 既存のUI判定（guest- をログイン扱いしない）を維持
-      const currentUserId = getCurrentUserId();
-      const guestBasedLoggedIn =
-        !!currentUserId && !currentUserId.startsWith("guest-");
-
-      // Authセッションを確認（例外が出ない getSession を使用）
       const { data, error } = await supabase.auth.getSession();
       const authLoggedIn = !!data.session?.user;
 
-      if (!cancelled) {
-        // UI意味は維持：guest判定 AND Supabase auth の両方がtrueでログイン扱い
-        setIsLoggedIn(guestBasedLoggedIn && authLoggedIn);
-      }
+      if (!cancelled) setIsLoggedIn(authLoggedIn);
 
-      // もし error があっても、ここでは落とさない（利用者に影響を出さない）
       if (error) {
         console.warn("[CreatorSignupStartPage] getSession error:", error);
       }
@@ -120,28 +108,19 @@ export default function CreatorSignupStartPage() {
     setError(null);
 
     try {
-      // ★ 実運用での事故をここで吸収：申請はログイン必須にする
-      // 判定がまだ (null) の場合もあるので、submit時点で session を必ず確認する
+      // ★ submit時点で必ずAuthセッション確認（これだけで十分）
       const { data: sessionData, error: sessionError } =
         await supabase.auth.getSession();
 
       const sessionUser = sessionData.session?.user ?? null;
 
-      // guest-判定も維持（UIロジックと整合）
-      const currentUserId = getCurrentUserId();
-      const guestBasedLoggedIn =
-        !!currentUserId && !currentUserId.startsWith("guest-");
-
-      const canSubmit = !!sessionUser && guestBasedLoggedIn;
-
-      if (!canSubmit) {
-        // ログインへ誘導（この画面に戻す）
-        router.push(buildLoginUrl("/signup/creator/start"));
-        return;
-      }
-
       if (sessionError) {
         console.warn("[CreatorSignupStartPage] getSession error:", sessionError);
+      }
+
+      if (!sessionUser) {
+        router.push(buildLoginUrl("/signup/creator/start"));
+        return;
       }
 
       if (kind === "store") {
@@ -150,10 +129,8 @@ export default function CreatorSignupStartPage() {
           return;
         }
 
-        // payload はフォームのみ（currentUserId 等は絶対に混ぜない）
-        const payload = {
-          ...storeForm,
-        };
+        // payload はフォームのみ（ここではAuthやlocalStorageのIDは混ぜない）
+        const payload = { ...storeForm };
 
         const result = await createStoreSignup({
           name: storeForm.storeName.trim(),
@@ -161,9 +138,9 @@ export default function CreatorSignupStartPage() {
           payload,
         });
 
-        // result が null の場合は「未ログイン/セッション欠落」が多いのでログイン誘導
+        // 申請が入らない事故を握り潰さない（nullなら明示エラー）
         if (!result) {
-          router.push(buildLoginUrl("/signup/creator/start"));
+          setError("送信に失敗しました。ログイン状態をご確認ください。");
           return;
         }
       } else if (kind === "therapist") {
@@ -172,9 +149,7 @@ export default function CreatorSignupStartPage() {
           return;
         }
 
-        const payload = {
-          ...therapistForm,
-        };
+        const payload = { ...therapistForm };
 
         const result = await createTherapistSignup({
           name: therapistForm.name.trim(),
@@ -183,7 +158,7 @@ export default function CreatorSignupStartPage() {
         });
 
         if (!result) {
-          router.push(buildLoginUrl("/signup/creator/start"));
+          setError("送信に失敗しました。ログイン状態をご確認ください。");
           return;
         }
       }
@@ -250,8 +225,8 @@ export default function CreatorSignupStartPage() {
 
               {showLoginNotice && (
                 <p className="lead">
-                  ※ ログインされていない場合、後からアカウントと申請内容をひも付けできないことがあります。
-                  可能であれば先にメールアドレスでログインしてからご利用ください。
+                  ※ ログインされていない場合、申請を受け付けできません。
+                  先にメールアドレスでログインしてからご利用ください。
                 </p>
               )}
 
