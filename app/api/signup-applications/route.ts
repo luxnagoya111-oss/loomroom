@@ -2,8 +2,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-// ★重要：Edge だと auth.getUser(token) 周りが不安定になりやすいので Node 固定
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic"; // 念のためキャッシュ回避
+
+const API_VERSION = "signup-applications@2025-12-18.v2";
 
 function toText(v: any): string {
   if (v == null) return "";
@@ -14,55 +16,43 @@ function safeNowIso() {
   return new Date().toISOString();
 }
 
-/**
- * Authorization: Bearer <token> から token を抜く
- * - "Bearer" だけ（token空）や短すぎるtokenは null にする
- */
-function pickBearerToken(req: NextRequest): { token: string | null; raw: string | null } {
-  // NextRequest は小文字が基本。念のため両方見る
-  const raw =
-    req.headers.get("authorization") ??
-    req.headers.get("Authorization");
-
-  if (!raw) return { token: null, raw: null };
-
-  // "Bearer xxx" の xxx 部分を抜く（xxx は1文字以上）
-  const m = raw.match(/^Bearer\s+(.+)$/i);
-  const extracted = m ? (m[1] ?? "").trim() : "";
-
-  // token が空/短すぎる場合は無効扱い（JWT は通常かなり長い）
-  if (!extracted || extracted.length < 30) {
-    return { token: null, raw };
-  }
-
-  return { token: extracted, raw };
+function pickBearerToken(req: NextRequest): string | null {
+  const h = req.headers.get("authorization") || req.headers.get("Authorization");
+  if (!h) return null;
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1].trim() : null;
 }
 
 function isValidType(v: any): v is "store" | "therapist" | "user" {
   return v === "store" || v === "therapist" || v === "user";
 }
 
+function jsonNoStore(payload: any, init?: ResponseInit) {
+  return NextResponse.json(payload, {
+    ...init,
+    headers: {
+      "Cache-Control": "no-store",
+      ...(init?.headers || {}),
+    },
+  });
+}
+
 export async function POST(req: NextRequest) {
-  // ★ここで毎回ログを出す（トップレベルでは1回しか出ない）
-  const hitAt = new Date().toISOString();
-
   try {
-    // 0) ログ（Bearerが空かどうか即わかる）
-    const authHeader = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-    console.log("[signup-applications] HIT", hitAt);
-    console.log("[signup-applications] auth header len =", authHeader.length);
-    // 中身は漏らさない（先頭だけ）
-    console.log("[signup-applications] auth header head =", authHeader.slice(0, 40));
+    const authHeader = req.headers.get("authorization") ?? "";
+    console.log("[signup-applications] HIT", API_VERSION);
+    console.log("[signup-applications] auth exists =", !!authHeader);
+    console.log(
+      "[signup-applications] service key exists =",
+      !!process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
 
-    // 1) Bearer 必須（cookie では認証しない）
-    const { token, raw } = pickBearerToken(req);
-    console.log("[signup-applications] bearer raw len =", raw?.length ?? 0);
-    console.log("[signup-applications] bearer token len =", token?.length ?? 0);
-
+    const token = pickBearerToken(req);
     if (!token) {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           ok: false,
+          version: API_VERSION,
           error: "not authenticated",
           code: "P0001",
           details: "missing bearer token",
@@ -72,14 +62,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2) token -> user を確定（service role で検証）
+    // token -> user（service roleで検証）
     const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
     const user = userData?.user ?? null;
 
     if (userErr || !user) {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           ok: false,
+          version: API_VERSION,
           error: "not authenticated",
           code: "P0001",
           details: userErr?.message ?? "user is null",
@@ -89,11 +80,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3) body
     const body = await req.json().catch(() => null);
     if (!body) {
-      return NextResponse.json(
-        { ok: false, error: "Invalid JSON body" },
+      return jsonNoStore(
+        { ok: false, version: API_VERSION, error: "Invalid JSON body" },
         { status: 400 }
       );
     }
@@ -104,9 +94,10 @@ export async function POST(req: NextRequest) {
     const payload = body.payload ?? null;
 
     if (!isValidType(typeRaw) || !name) {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           ok: false,
+          version: API_VERSION,
           error: "missing required fields",
           received: { type: !!typeRaw, name: !!name },
         },
@@ -115,9 +106,8 @@ export async function POST(req: NextRequest) {
     }
 
     const type = typeRaw;
-    const applicant_user_id = user.id; // ★必ず token 由来で確定
+    const applicant_user_id = user.id;
 
-    // 4) signup_applications に保存（service role なので RLS はバイパスされる）
     const { data, error } = await supabaseAdmin
       .from("signup_applications")
       .insert({
@@ -132,9 +122,10 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (error) {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           ok: false,
+          version: API_VERSION,
           error: error.message,
           code: error.code,
           details: error.details,
@@ -144,15 +135,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 5) therapist は自動承認 + therapists 作成 + users.role 更新
     if (type === "therapist") {
       const reviewedAt = safeNowIso();
 
-      // role 更新
-      await supabaseAdmin
-        .from("users")
-        .update({ role: "therapist" })
-        .eq("id", applicant_user_id);
+      await supabaseAdmin.from("users").update({ role: "therapist" }).eq("id", applicant_user_id);
 
       const area = payload?.area ? toText(payload.area).trim() : "";
       const profileText =
@@ -187,36 +173,28 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      const { data: updatedApp, error: updErr } = await supabaseAdmin
+      const { data: updatedApp } = await supabaseAdmin
         .from("signup_applications")
         .update({ status: "approved", reviewed_at: reviewedAt })
         .eq("id", data.id)
         .select("*")
         .single();
 
-      if (updErr) {
-        // 申請作成はできているので、ここは500にせず、作成データを返す（運用を止めない）
-        console.warn("[signup-applications] approve update failed:", updErr.message);
-        return NextResponse.json({ ok: true, data });
-      }
-
-      return NextResponse.json({ ok: true, data: updatedApp ?? data });
+      return jsonNoStore({ ok: true, version: API_VERSION, data: updatedApp ?? data });
     }
 
-    return NextResponse.json({ ok: true, data });
+    return jsonNoStore({ ok: true, version: API_VERSION, data });
   } catch (e: any) {
-    console.error("[signup-applications] unhandled error:", e);
-    return NextResponse.json(
-      { ok: false, error: e?.message ?? "Unknown error" },
+    return jsonNoStore(
+      { ok: false, version: API_VERSION, error: e?.message ?? "Unknown error" },
       { status: 500 }
     );
   }
 }
 
-// 明示（なくても動くが、事故防止）
 export async function GET() {
-  return NextResponse.json(
-    { ok: false, error: "Method Not Allowed" },
+  return jsonNoStore(
+    { ok: false, version: API_VERSION, error: "Method Not Allowed" },
     { status: 405 }
   );
 }
