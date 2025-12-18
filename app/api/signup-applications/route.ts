@@ -2,39 +2,65 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+/**
+ * 安全な文字列化
+ */
 function toText(v: any): string {
   if (v == null) return "";
   return String(v);
 }
-function safeNowIso() {
+
+function nowIso() {
   return new Date().toISOString();
+}
+
+/**
+ * Authorization ヘッダからユーザーを確定
+ * ※ applicant_user_id を body から受け取らない
+ */
+async function requireAuthUser(req: NextRequest) {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader) throw new Error("Missing Authorization header");
+
+  const token = authHeader.replace("Bearer ", "");
+  const { data, error } = await supabaseAdmin.auth.getUser(token);
+
+  if (error || !data?.user) {
+    throw new Error("Invalid or expired session");
+  }
+
+  return data.user;
 }
 
 export async function POST(req: NextRequest) {
   try {
+    const user = await requireAuthUser(req);
+
     const body = await req.json().catch(() => null);
     if (!body) {
-      return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
-    }
-
-    const type = body.type as "store" | "therapist" | "user";
-    const name = toText(body.name).trim();
-    const contact = body.contact ?? null;
-    const payload = body.payload ?? null;
-    const applicant_user_id = toText(body.applicant_user_id);
-
-    if (!type || !name || !applicant_user_id) {
       return NextResponse.json(
-        { ok: false, error: "missing required fields", received: { type, name, applicant_user_id: !!applicant_user_id } },
+        { ok: false, error: "Invalid JSON body" },
         { status: 400 }
       );
     }
 
-    // signup_applications に保存
-    const { data, error } = await supabaseAdmin
+    const type = body.type as "store" | "therapist";
+    const name = toText(body.name).trim();
+    const contact = body.contact ? toText(body.contact).trim() : null;
+    const payload = body.payload ?? {};
+
+    if (!type || !name) {
+      return NextResponse.json(
+        { ok: false, error: "missing required fields" },
+        { status: 400 }
+      );
+    }
+
+    // ---- signup_applications に保存（service role）----
+    const { data: app, error: insertError } = await supabaseAdmin
       .from("signup_applications")
       .insert({
-        applicant_user_id,
+        applicant_user_id: user.id,
         type,
         status: "pending",
         name,
@@ -44,31 +70,37 @@ export async function POST(req: NextRequest) {
       .select("*")
       .single();
 
-    if (error) {
+    if (insertError || !app) {
       return NextResponse.json(
-        { ok: false, error: error.message, code: error.code, details: error.details, hint: error.hint },
+        {
+          ok: false,
+          error: insertError?.message ?? "insert failed",
+          code: insertError?.code,
+        },
         { status: 500 }
       );
     }
 
-    // therapist は自動承認 + therapists 作成 + users.role 更新
+    // ---- therapist は自動承認 ----
     if (type === "therapist") {
-      const reviewedAt = safeNowIso();
+      const reviewedAt = nowIso();
 
-      await supabaseAdmin.from("users").update({ role: "therapist" }).eq("id", applicant_user_id);
+      // users.role 更新
+      await supabaseAdmin
+        .from("users")
+        .update({ role: "therapist" })
+        .eq("id", user.id);
 
-      const area = payload?.area ? toText(payload.area).trim() : "";
-      const profileText =
-        payload?.note?.trim?.()
-          ? toText(payload.note).trim()
-          : payload?.experience
-          ? `経験/背景: ${toText(payload.experience).trim()}`
-          : "";
+      const area = payload.area ? toText(payload.area).trim() : null;
+      const profile =
+        payload.note?.trim?.() ||
+        payload.experience?.trim?.() ||
+        null;
 
       const { data: existing } = await supabaseAdmin
         .from("therapists")
         .select("id")
-        .eq("user_id", applicant_user_id)
+        .eq("user_id", user.id)
         .maybeSingle();
 
       if (existing?.id) {
@@ -76,32 +108,39 @@ export async function POST(req: NextRequest) {
           .from("therapists")
           .update({
             display_name: name,
-            area: area || null,
-            profile: profileText || null,
+            area,
+            profile,
           })
           .eq("id", existing.id);
       } else {
         await supabaseAdmin.from("therapists").insert({
-          user_id: applicant_user_id,
+          user_id: user.id,
           store_id: null,
           display_name: name,
-          area: area || null,
-          profile: profileText || null,
+          area,
+          profile,
         });
       }
 
-      const { data: updatedApp } = await supabaseAdmin
+      const { data: updated } = await supabaseAdmin
         .from("signup_applications")
-        .update({ status: "approved", reviewed_at: reviewedAt })
-        .eq("id", data.id)
+        .update({
+          status: "approved",
+          reviewed_at: reviewedAt,
+        })
+        .eq("id", app.id)
         .select("*")
         .single();
 
-      return NextResponse.json({ ok: true, data: updatedApp ?? data });
+      return NextResponse.json({ ok: true, data: updated ?? app });
     }
 
-    return NextResponse.json({ ok: true, data });
+    // ---- store は pending のまま ----
+    return NextResponse.json({ ok: true, data: app });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? "Unknown error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e.message ?? "Unknown error" },
+      { status: 401 }
+    );
   }
 }
