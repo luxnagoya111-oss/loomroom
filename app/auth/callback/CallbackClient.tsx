@@ -1,7 +1,7 @@
 // app/auth/callback/CallbackClient.tsx
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { supabase } from "@/lib/supabaseClient";
@@ -20,12 +20,6 @@ function pickNameFromUser(user: any): string {
   );
 }
 
-/**
- * Supabase OAuth の典型的な失敗（PKCE/コード交換系）をざっくり判定
- * - 400 invalid request
- * - code_verifier_missing
- * - invalid_grant
- */
 function isRecoverableOAuthErrorMessage(msg: string): boolean {
   const s = (msg || "").toLowerCase();
   return (
@@ -33,22 +27,17 @@ function isRecoverableOAuthErrorMessage(msg: string): boolean {
     s.includes("code_verifier") ||
     s.includes("invalid request") ||
     s.includes("invalid_grant") ||
+    s.includes("pkce") ||
     s.includes("400")
   );
 }
 
-function stripOAuthParamsFromUrl() {
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("code");
-    url.searchParams.delete("error");
-    url.searchParams.delete("error_description");
-    url.searchParams.delete("state");
-    // Next の内部パラメータ等があれば必要に応じて追加で消す
-    window.history.replaceState({}, "", url.toString());
-  } catch {
-    // noop
-  }
+function parseHashParams(hash: string): Record<string, string> {
+  const h = (hash || "").replace(/^#/, "");
+  const params = new URLSearchParams(h);
+  const obj: Record<string, string> = {};
+  params.forEach((v, k) => (obj[k] = v));
+  return obj;
 }
 
 export default function CallbackClient() {
@@ -60,13 +49,7 @@ export default function CallbackClient() {
   const [canRecover, setCanRecover] = useState(false);
   const [recovering, setRecovering] = useState(false);
 
-  // ★ 二重実行ガード（Next/Reactの再レンダで effect が複数回走るのを防ぐ）
-  const didRunRef = useRef(false);
-
   useEffect(() => {
-    if (didRunRef.current) return;
-    didRunRef.current = true;
-
     let cancelled = false;
 
     const fail = (msg: string) => {
@@ -81,123 +64,133 @@ export default function CallbackClient() {
       if (cancelled) return;
       setStep("success");
       setMessage("ログインしました。移動します…");
-      // ★ callback に留まらない（リロード時に code 無しで再評価されるのを防ぐ）
       router.replace(`/mypage/${uid}`);
+    };
+
+    const upsertUsersRowBestEffort = async (uid: string, user: any) => {
+      try {
+        const name = pickNameFromUser(user);
+
+        const { data: existing, error: ex1 } = await supabase
+          .from("users")
+          .select("id, role, name")
+          .eq("id", uid)
+          .maybeSingle();
+
+        if (ex1) throw ex1;
+
+        const roleToSave = (existing as any)?.role ?? "user";
+        const nameToSave = String((existing as any)?.name ?? name).trim() || "LRoom";
+
+        if ((existing as any)?.id) {
+          const { error: upErr } = await supabase.from("users").update({ name: nameToSave }).eq("id", uid);
+          if (upErr) throw upErr;
+        } else {
+          const { error: inErr } = await supabase
+            .from("users")
+            .insert([{ id: uid, name: nameToSave, role: roleToSave }]);
+          if (inErr) throw inErr;
+        }
+      } catch (e) {
+        console.warn("[auth/callback] users upsert skipped:", e);
+      }
     };
 
     const run = async () => {
       try {
-        // Google など OAuth から戻ると query で code / error が来る
-        const code = searchParams.get("code");
+        // 1) error が来ていれば即失敗
         const error = searchParams.get("error");
         const errorDesc = searchParams.get("error_description");
-
         if (error || errorDesc) {
-          // エラーが来ている場合はパラメータを消してから失敗表示
-          stripOAuthParamsFromUrl();
           fail(`認証に失敗しました：${errorDesc ?? error ?? "unknown error"}`);
           return;
         }
 
-        /**
-         * ★重要変更：
-         * code が無い場合に「getSession() を拾って成功扱い」にしない
-         *
-         * 理由：
-         * - Supabase側の users を消してもブラウザに session が残る
-         * - その session を getSession で拾うと「前のデータでログインした」ように見える
-         *
-         * → callback は OAuth の戻り口なので、code が無いなら「正常な戻りではない」扱いにする
-         *   （リロードや直打ち等は /login へ戻す）
-         */
-        if (!code) {
-          stripOAuthParamsFromUrl();
-          fail(
-            "認証コードが見つかりませんでした。\nこのページを更新したか、ログイン処理が途中で中断された可能性があります。\n「ログイン状態をリセットしてやり直す」を押して、/login から再度 Google ログインしてください。"
-          );
-          return;
-        }
+        // 2) まず hash（implicit）を吸う： #access_token=... #refresh_token=...
+        //    ※ code が無くても成功できるようにする
+        const hashObj = parseHashParams(typeof window !== "undefined" ? window.location.hash : "");
+        const access_token = hashObj["access_token"];
+        const refresh_token = hashObj["refresh_token"];
 
-        /**
-         * 2) code → session 交換（本丸）
-         */
-        const { data, error: exErr } = await supabase.auth.exchangeCodeForSession(code);
-        if (exErr) {
-          stripOAuthParamsFromUrl();
-          fail(`セッション確立に失敗しました：${exErr.message}`);
-          return;
-        }
+        if (access_token && refresh_token) {
+          const { data, error: setErr } = await supabase.auth.setSession({
+            access_token,
+            refresh_token,
+          });
 
-        const user = (data as any)?.user ?? (data as any)?.session?.user ?? null;
-        const uid = user?.id ?? null;
-        if (!uid) {
-          stripOAuthParamsFromUrl();
-          fail("ユーザー情報を取得できませんでした。");
-          return;
-        }
-
-        // ★ URL に code が残ると再訪問/再レンダで事故るので消す
-        stripOAuthParamsFromUrl();
-
-        // localStorage 同期
-        persistCurrentUserId(uid);
-
-        /**
-         * 3) users テーブル upsert（失敗してもログイン自体は継続）
-         * - RLS やタイミングで落ちやすいので、例外は握りつぶす
-         */
-        try {
-          const name = pickNameFromUser(user);
-
-          const { data: existing, error: ex1 } = await supabase
-            .from("users")
-            .select("id, role, name")
-            .eq("id", uid)
-            .maybeSingle();
-
-          if (ex1) throw ex1;
-
-          const roleToSave = (existing as any)?.role ?? "user";
-          const nameToSave = String((existing as any)?.name ?? name).trim() || "LRoom";
-
-          if ((existing as any)?.id) {
-            const { error: upErr } = await supabase
-              .from("users")
-              .update({ name: nameToSave })
-              .eq("id", uid);
-            if (upErr) throw upErr;
-          } else {
-            const { error: inErr } = await supabase
-              .from("users")
-              .insert([{ id: uid, name: nameToSave, role: roleToSave }]);
-            if (inErr) throw inErr;
+          if (setErr) {
+            fail(`セッション確立に失敗しました：${setErr.message}`);
+            return;
           }
-        } catch (e) {
-          console.warn("[auth/callback] users upsert skipped:", e);
+
+          const uid = data.session?.user?.id ?? null;
+          if (!uid) {
+            fail("ユーザー情報を取得できませんでした。");
+            return;
+          }
+
+          // hash を残すと再読み込み時に事故るので消す
+          try {
+            window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+          } catch {}
+
+          await upsertUsersRowBestEffort(uid, data.session?.user);
+          succeedAndGo(uid);
+          return;
         }
 
-        if (cancelled) return;
-        succeedAndGo(uid);
+        // 3) 次に code（PKCE）を吸う
+        const code = searchParams.get("code");
+        if (code) {
+          const { data, error: exErr } = await supabase.auth.exchangeCodeForSession(code);
+          if (exErr) {
+            fail(`セッション確立に失敗しました：${exErr.message}`);
+            return;
+          }
+
+          const user = (data as any)?.user ?? (data as any)?.session?.user ?? null;
+          const uid = user?.id ?? null;
+          if (!uid) {
+            fail("ユーザー情報を取得できませんでした。");
+            return;
+          }
+
+          await upsertUsersRowBestEffort(uid, user);
+          succeedAndGo(uid);
+          return;
+        }
+
+        // 4) 保険：すでに session があればそれを採用
+        const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+        if (sessionErr) {
+          fail(`セッション確認に失敗しました：${sessionErr.message}`);
+          return;
+        }
+        const uid = sessionData?.session?.user?.id ?? null;
+        if (uid) {
+          succeedAndGo(uid);
+          return;
+        }
+
+        // 5) ここまで来たら本当に失敗
+        fail(
+          "認証情報を取得できませんでした。\nこのページを更新したか、ログイン処理が途中で中断された可能性があります。\n「ログイン状態をリセットしてやり直す」を押して、/login から再度 Google ログインしてください。"
+        );
       } catch (e: any) {
         console.error("[auth/callback] unexpected error:", e);
-        stripOAuthParamsFromUrl();
         fail(e?.message ?? "不明なエラーが発生しました。");
       }
     };
 
     run();
-
     return () => {
       cancelled = true;
     };
-    // ★ searchParams を依存に入れると再実行の温床になりやすいので入れない
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  }, [router, searchParams]);
 
   const handleRecover = async () => {
     try {
       setRecovering(true);
-      // 壊れたPKCE/セッションを掃除して再試行できる状態に戻す
       await resetAuthFlow();
       router.replace("/login");
     } finally {
@@ -224,15 +217,7 @@ export default function CallbackClient() {
               {step === "processing" ? "処理中" : step === "success" ? "完了" : "失敗"}
             </h1>
 
-            <p
-              style={{
-                margin: 0,
-                fontSize: 13,
-                opacity: 0.8,
-                lineHeight: 1.7,
-                whiteSpace: "pre-wrap",
-              }}
-            >
+            <p style={{ margin: 0, fontSize: 13, opacity: 0.8, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
               {message}
             </p>
 
@@ -277,12 +262,6 @@ export default function CallbackClient() {
                     {recovering ? "リセット中…" : "ログイン状態をリセットしてやり直す"}
                   </button>
                 )}
-
-                <p style={{ marginTop: 10, fontSize: 11, opacity: 0.7, lineHeight: 1.6 }}>
-                  何度も失敗する場合は、同じ端末・同じブラウザで /login を開き直してください。
-                  <br />
-                  それでも直らない場合は、いったんブラウザの Cookie/サイトデータを削除してください。
-                </p>
               </>
             )}
           </div>
