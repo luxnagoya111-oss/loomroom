@@ -7,7 +7,7 @@ import type {
 } from "@/types/db";
 
 export type CreateSignupPayload = {
-  type: DbSignupType;
+  type: DbSignupType; // "store" | "therapist" | "user"
   name: string;
   contact?: string | null;
   payload: Record<string, any>;
@@ -19,102 +19,112 @@ function preview(s: string, n = 300) {
 }
 
 /**
- * approve_store_signup() が期待する payload キーへ寄せる
- * - フォームから来るキー（area, website, note...）をDB側が読むキーへ変換
+ * ブラウザ側セッションから access_token を取得
+ * - API Route が Bearer 必須設計のため、ここが必須
  */
-function normalizeSignupPayload(
-  type: DbSignupType,
-  raw: Record<string, any>
-): Record<string, any> {
-  const p = raw ?? {};
-
-  // storeForm:
-  //  storeName, area, contactName, contact, website, note
-  // function expects:
-  //  payload->>'area', payload->>'description', payload->>'website_url', payload->>'x_url', payload->>'twicas_url', payload->>'line_url', payload->>'dm_notice', payload->>'avatar_url'
-  if (type === "store") {
-    return {
-      // approve_store_signup が読むキー
-      area: p.area ?? "",
-      description: p.note ?? p.description ?? "",
-      website_url: p.website ?? p.website_url ?? "",
-      line_url: p.line ?? p.line_url ?? "",
-      x_url: p.x ?? p.x_url ?? "",
-      twicas_url: p.twicas ?? p.twicas_url ?? "",
-      dm_notice:
-        typeof p.dm_notice === "boolean"
-          ? p.dm_notice
-          : p.dmNotice ?? true,
-      avatar_url: p.avatar_url ?? p.avatarUrl ?? "",
-
-      // 参照用に残しておく（運用メモ）
-      contact_name: p.contactName ?? p.contact_name ?? "",
-      contact_raw: p.contact ?? "",
-    };
+async function getAccessToken(): Promise<string | null> {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) {
+    console.warn("[signupRepository] getSession error:", error.message);
   }
+  const raw = data.session?.access_token ?? null;
+  const token = raw?.trim() ?? null;
+  // access_token は十分長いので、短すぎる場合は異常扱い
+  if (!token || token.length < 30) return null;
+  return token;
+}
 
-  // therapistForm:
-  //  name, area, experience, contact, wishStore, note
-  if (type === "therapist") {
-    return {
-      area: p.area ?? "",
-      experience: p.experience ?? "",
-      wish_store: p.wishStore ?? p.wish_store ?? "",
-      note: p.note ?? "",
-      contact_raw: p.contact ?? "",
-    };
+async function safeReadText(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    return "";
   }
+}
 
-  // user signupなど（必要に応じて整形）
-  return { ...p };
+function safeJsonParse<T = any>(text: string): T | null {
+  try {
+    return text ? (JSON.parse(text) as T) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function createSignupApplication(
   params: CreateSignupPayload
 ): Promise<DbSignupApplicationRow | null> {
-  const { type, name, contact = null } = params;
+  const { type, name, contact = null, payload } = params;
 
-  // Authユーザー（= applicant_user_id）
-  const { data: userData, error: userError } = await supabase.auth.getUser();
-  const user = userData?.user;
+  // ===== デバッグ：送信直前にセッションの user id だけ出す（秘密は出さない）=====
+  try {
+    const { data: s } = await supabase.auth.getSession();
+    console.log(
+      "[signupRepository] session user id =",
+      s.session?.user?.id ?? null
+    );
+  } catch {}
+  // ======================================================================
 
-  if (userError || !user) {
-    console.error("[signupRepository] Not authenticated", userError);
+  const token = await getAccessToken();
+  if (!token) {
+    console.error("[signupRepository] Not authenticated: missing access_token");
     return null;
   }
 
-  const payload = normalizeSignupPayload(type, params.payload);
+  // ===== デバッグ：token先頭だけ =====
+  console.log("[signupRepository] token head =", token.slice(0, 24));
+  // ==================================
 
-  // ★ API 経由にせず、フロントから直接 insert（Auth JWT が載るのでRLSが通る）
-  const { data, error } = await supabase
-    .from("signup_applications")
-    .insert({
-      applicant_user_id: user.id,
-      type,
-      name,
-      contact,
-      payload,
-      // status はDB defaultがある想定。無ければここで "pending" を入れる
-      // status: "pending",
-    })
-    .select("*")
-    .single();
-
-  if (error) {
-    console.error("[signupRepository] insert signup_applications error:", {
-      code: (error as any).code,
-      message: error.message,
-      details: (error as any).details,
-      hint: (error as any).hint,
-      type,
-      name,
-      contact,
-      payloadPreview: preview(JSON.stringify(payload)),
+  let res: Response;
+  try {
+    res = await fetch("/api/signup-applications", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        // ★重要：API側が Bearer 必須
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        type,
+        name,
+        contact,
+        payload,
+      }),
     });
+  } catch (e) {
+    console.error("[signupRepository] fetch failed", e);
     return null;
   }
 
-  return (data ?? null) as DbSignupApplicationRow | null;
+  const ct = res.headers.get("content-type") ?? "";
+  const bodyText = await safeReadText(res);
+
+  if (!res.ok) {
+    console.error(
+      `[signupRepository] API error: status=${res.status} ${res.statusText} content-type=${ct} body=${preview(
+        bodyText
+      )}`
+    );
+    const j = safeJsonParse(bodyText);
+    if (j) {
+      console.error(
+        `[signupRepository] API error json=${preview(JSON.stringify(j))}`
+      );
+    }
+    return null;
+  }
+
+  const json = safeJsonParse<{ ok?: boolean; data?: any }>(bodyText);
+  if (!json) {
+    console.error(
+      "[signupRepository] response is not json",
+      { ct, body: preview(bodyText) }
+    );
+    return null;
+  }
+
+  return (json.data ?? null) as DbSignupApplicationRow | null;
 }
 
 export async function createStoreSignup(params: {
@@ -125,7 +135,7 @@ export async function createStoreSignup(params: {
   return createSignupApplication({
     type: "store",
     name: params.name,
-    contact: params.contact,
+    contact: params.contact ?? null,
     payload: params.payload,
   });
 }
@@ -138,7 +148,7 @@ export async function createTherapistSignup(params: {
   return createSignupApplication({
     type: "therapist",
     name: params.name,
-    contact: params.contact,
+    contact: params.contact ?? null,
     payload: params.payload,
   });
 }
@@ -151,14 +161,12 @@ export async function createUserSignup(params: {
   return createSignupApplication({
     type: "user",
     name: params.name,
-    contact: params.contact,
+    contact: params.contact ?? null,
     payload: params.payload,
   });
 }
 
 // ===== 管理画面用（一覧取得 / ステータス更新）=====
-// ※ 管理画面は supabaseAdmin 経由APIがより安全（RLSに左右されない）
-// ただし「一覧が0件」の時は、まず insert が入っているかを優先で確認。
 
 export async function listSignupApplications(params?: {
   type?: DbSignupType;

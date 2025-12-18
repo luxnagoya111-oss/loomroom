@@ -44,7 +44,7 @@ export default function CreatorSignupStartPage() {
   // SSR / 初期描画時は null（まだ判定していない状態）
   const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
 
-  // Authセッションを基準にログイン判定（getCurrentUserId は使わない）
+  // Authセッションを基準にログイン判定
   useEffect(() => {
     let cancelled = false;
 
@@ -108,7 +108,7 @@ export default function CreatorSignupStartPage() {
     setError(null);
 
     try {
-      // ★ submit時点で必ずAuthセッション確認（これだけで十分）
+      // submit時点で必ずAuthセッション確認
       const { data: sessionData, error: sessionError } =
         await supabase.auth.getSession();
 
@@ -129,7 +129,6 @@ export default function CreatorSignupStartPage() {
           return;
         }
 
-        // payload はフォームのみ（ここではAuthやlocalStorageのIDは混ぜない）
         const payload = { ...storeForm };
 
         const result = await createStoreSignup({
@@ -138,7 +137,6 @@ export default function CreatorSignupStartPage() {
           payload,
         });
 
-        // 申請が入らない事故を握り潰さない（nullなら明示エラー）
         if (!result) {
           setError("送信に失敗しました。ログイン状態をご確認ください。");
           return;
@@ -233,7 +231,9 @@ export default function CreatorSignupStartPage() {
               <div className="kind-selector">
                 <button
                   type="button"
-                  className={kind === "store" ? "kind-btn kind-btn-active" : "kind-btn"}
+                  className={
+                    kind === "store" ? "kind-btn kind-btn-active" : "kind-btn"
+                  }
                   onClick={() => setKind("store")}
                 >
                   店舗として申し込む
@@ -241,7 +241,9 @@ export default function CreatorSignupStartPage() {
                 <button
                   type="button"
                   className={
-                    kind === "therapist" ? "kind-btn kind-btn-active" : "kind-btn"
+                    kind === "therapist"
+                      ? "kind-btn kind-btn-active"
+                      : "kind-btn"
                   }
                   onClick={() => setKind("therapist")}
                 >
@@ -307,7 +309,9 @@ export default function CreatorSignupStartPage() {
                       </div>
 
                       <div className="field">
-                        <label className="label">連絡先（メール / LINE など）</label>
+                        <label className="label">
+                          連絡先（メール / LINE など）
+                        </label>
                         <input
                           type="text"
                           className="input"
@@ -426,7 +430,9 @@ export default function CreatorSignupStartPage() {
                       </div>
 
                       <div className="field">
-                        <label className="label">連絡先（メール / LINE など）</label>
+                        <label className="label">
+                          連絡先（メール / LINE など）
+                        </label>
                         <input
                           type="text"
                           className="input"
@@ -461,11 +467,7 @@ export default function CreatorSignupStartPage() {
 
                   {error && <p className="error-text">{error}</p>}
 
-                  <button
-                    type="submit"
-                    className="submit-btn"
-                    disabled={submitting}
-                  >
+                  <button type="submit" className="submit-btn" disabled={submitting}>
                     {submitting ? "送信中..." : "この内容で申請する"}
                   </button>
 
