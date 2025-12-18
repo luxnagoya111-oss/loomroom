@@ -1,8 +1,10 @@
+// app/api/signup-applications/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
-const VERSION = "signup-applications@2025-12-18.v4";
+const VERSION = "signup-applications@2025-12-18.v5";
 
 function toText(v: any): string {
   if (v == null) return "";
@@ -25,14 +27,27 @@ function fail(step: string, status: number, payload: any) {
   return NextResponse.json({ ok: false, version: VERSION, step, ...payload }, { status });
 }
 
+function userClient(accessToken: string) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  return createClient(url, anon, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    global: {
+      headers: {
+        Authorization: `Bearer ${accessToken}`, // ★これが重要（DB側の auth.uid() が生きる）
+      },
+    },
+  });
+}
+
 export async function POST(req: NextRequest) {
-  const stepBase = "auth";
   try {
     console.log(`[signup-applications] HIT ${VERSION}`);
 
+    // 1) Bearer 必須
     const token = pickBearerToken(req);
     if (!token) {
-      return fail(stepBase, 401, {
+      return fail("auth", 401, {
         error: "not authenticated",
         code: "P0001",
         details: "missing bearer token",
@@ -40,11 +55,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // 2) token -> user を確定（service role で検証）
     const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
     const user = userData?.user ?? null;
 
     if (userErr || !user) {
-      return fail(stepBase, 401, {
+      return fail("auth", 401, {
         error: "not authenticated",
         code: "P0001",
         details: userErr?.message ?? "user is null",
@@ -52,9 +68,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const stepBody = "body";
+    // 3) body
     const body = await req.json().catch(() => null);
-    if (!body) return fail(stepBody, 400, { error: "Invalid JSON body" });
+    if (!body) return fail("body", 400, { error: "Invalid JSON body" });
 
     const typeRaw = body.type;
     const name = toText(body.name).trim();
@@ -62,18 +78,19 @@ export async function POST(req: NextRequest) {
     const payload = body.payload ?? null;
 
     if (!isValidType(typeRaw) || !name) {
-      return fail(stepBody, 400, {
+      return fail("body", 400, {
         error: "missing required fields",
         received: { type: !!typeRaw, name: !!name },
       });
     }
 
     const type = typeRaw;
-    const applicant_user_id = user.id;
+    const applicant_user_id = user.id; // token由来で確定
 
-    // ---- INSERT signup_applications
-    const stepInsert = "insert_signup_applications";
-    const ins = await supabaseAdmin
+    // 4) signup_applications への insert は「ユーザーJWT」で実行（RLS/トリガー対策）
+    const supabaseUser = userClient(token);
+
+    const ins = await supabaseUser
       .from("signup_applications")
       .insert({
         applicant_user_id,
@@ -88,7 +105,7 @@ export async function POST(req: NextRequest) {
 
     if (ins.error) {
       console.log("[signup-applications] insert error =", ins.error);
-      return fail(stepInsert, 500, {
+      return fail("insert_signup_applications", 500, {
         error: ins.error.message,
         code: ins.error.code,
         details: ins.error.details,
@@ -98,15 +115,14 @@ export async function POST(req: NextRequest) {
 
     const appRow = ins.data;
 
-    // ---- therapist auto-approve
+    // 5) therapist は自動承認（ここは特権操作なので service role）
     if (type === "therapist") {
-      const stepTherapist = "therapist_auto_approve";
       const reviewedAt = safeNowIso();
 
       const u1 = await supabaseAdmin.from("users").update({ role: "therapist" }).eq("id", applicant_user_id);
       if (u1.error) {
         console.log("[signup-applications] users update error =", u1.error);
-        return fail(stepTherapist, 500, {
+        return fail("therapist_auto_approve", 500, {
           error: u1.error.message,
           code: u1.error.code,
           details: u1.error.details,
@@ -125,7 +141,7 @@ export async function POST(req: NextRequest) {
       const ex = await supabaseAdmin.from("therapists").select("id").eq("user_id", applicant_user_id).maybeSingle();
       if (ex.error) {
         console.log("[signup-applications] therapists select error =", ex.error);
-        return fail(stepTherapist, 500, {
+        return fail("therapist_auto_approve", 500, {
           error: ex.error.message,
           code: ex.error.code,
           details: ex.error.details,
@@ -140,7 +156,7 @@ export async function POST(req: NextRequest) {
           .eq("id", ex.data.id);
         if (up.error) {
           console.log("[signup-applications] therapists update error =", up.error);
-          return fail(stepTherapist, 500, {
+          return fail("therapist_auto_approve", 500, {
             error: up.error.message,
             code: up.error.code,
             details: up.error.details,
@@ -157,7 +173,7 @@ export async function POST(req: NextRequest) {
         });
         if (cr.error) {
           console.log("[signup-applications] therapists insert error =", cr.error);
-          return fail(stepTherapist, 500, {
+          return fail("therapist_auto_approve", 500, {
             error: cr.error.message,
             code: cr.error.code,
             details: cr.error.details,
@@ -175,7 +191,7 @@ export async function POST(req: NextRequest) {
 
       if (ap.error) {
         console.log("[signup-applications] app approve update error =", ap.error);
-        return fail(stepTherapist, 500, {
+        return fail("therapist_auto_approve", 500, {
           error: ap.error.message,
           code: ap.error.code,
           details: ap.error.details,
@@ -189,7 +205,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, version: VERSION, step: "done", data: appRow });
   } catch (e: any) {
     console.log("[signup-applications] catch error =", e);
-    return NextResponse.json({ ok: false, version: VERSION, step: "catch", error: e?.message ?? "Unknown error" }, { status: 500 });
+    return fail("catch", 500, { error: e?.message ?? "Unknown error" });
   }
 }
 
