@@ -9,9 +9,7 @@ if (!supabaseAnonKey) throw new Error("NEXT_PUBLIC_SUPABASE_ANON_KEY is missing"
 
 export const supabase = createBrowserClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    // ★重要：OAuth を PKCE(code) に固定
-    flowType: "pkce",
-
+    flowType: "pkce", // ★これ
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
