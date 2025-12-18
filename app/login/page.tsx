@@ -98,7 +98,10 @@ export default function LoginPage() {
       // （ここは必ず await。並走すると verifier が壊れやすい）
       await resetAuthFlow();
 
-      const redirectTo = getAuthRedirectTo("/auth/callback");
+      const redirectTo =
+        typeof window === "undefined"
+          ? "https://lroom.jp/auth/callback"
+          : new URL("/auth/callback", window.location.origin).toString();
 
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
