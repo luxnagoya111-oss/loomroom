@@ -13,17 +13,6 @@ import type { UserId } from "@/types/user";
 import type { DbRelationRow } from "@/types/db";
 import { getCurrentUserId, ensureViewerId } from "@/lib/auth";
 
-type Area =
-  | "北海道"
-  | "東北"
-  | "関東"
-  | "中部"
-  | "近畿"
-  | "中国"
-  | "四国"
-  | "九州"
-  | "沖縄";
-
 type AuthorKind = "therapist" | "store" | "user";
 
 type Post = {
@@ -41,7 +30,6 @@ type Post = {
   /** 表示用のURL（http or public url） */
   avatarUrl?: string | null;
 
-  area: Area;
   body: string;
   timeAgo: string;
 
@@ -59,7 +47,6 @@ type DbPostRow = {
   author_id: string | null; // users.id or therapists.id or stores.id の可能性あり
   author_kind: "therapist" | "store" | "user" | null;
   body: string | null;
-  area: string | null;
   created_at: string;
   like_count: number | null;
   reply_count: number | null;
@@ -99,32 +86,24 @@ function isUuid(id: string | null | undefined): id is string {
 
 const hasUnread = false;
 
-const knownAreas: Area[] = [
-  "北海道",
-  "東北",
-  "関東",
-  "中部",
-  "近畿",
-  "中国",
-  "四国",
-  "九州",
-  "沖縄",
-];
-
 const renderGoldBadge = (kind: AuthorKind) => {
   if (kind === "therapist") return <span className="badge-gold">✦</span>;
   if (kind === "store") return <span className="badge-gold">🏛</span>;
   return null;
 };
 
-const getHandle = (post: Post): string | null => {
-  if (!post.authorId) return null;
-  if (post.authorKind === "therapist")
-    return `@therapist_${post.authorId.slice(0, 4)}`;
-  if (post.authorKind === "store") return `@store_${post.authorId.slice(0, 4)}`;
-  if (post.authorKind === "user") return `@user_${post.authorId.slice(0, 4)}`;
-  return null;
-};
+/**
+ * handle生成：never推論回避のため string を確定させてから slice
+ */
+function getHandle(kind: AuthorKind, authorId: unknown): string | null {
+  const s = typeof authorId === "string" ? authorId.trim() : "";
+  if (!s) return null;
+  if (!UUID_REGEX.test(s)) return null;
+
+  if (kind === "therapist") return `@therapist_${s.slice(0, 4)}`;
+  if (kind === "store") return `@store_${s.slice(0, 4)}`;
+  return `@user_${s.slice(0, 4)}`;
+}
 
 const goToProfile = (post: Post) => {
   if (typeof window === "undefined") return;
@@ -193,7 +172,6 @@ export default function LoomRoomHome() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [areaFilter, setAreaFilter] = useState<Area | "all">("all");
   const [kindFilter, setKindFilter] = useState<AuthorKind | "all">("all");
   const [openPostMenuId, setOpenPostMenuId] = useState<string | null>(null);
 
@@ -208,7 +186,7 @@ export default function LoomRoomHome() {
 
     (async () => {
       try {
-        const uid = await ensureViewerId(); // uuid or null（Anonymous撤去版）
+        const uid = await ensureViewerId(); // uuid or null
         if (cancelled) return;
         setViewerUuid(uid);
       } catch (e: any) {
@@ -261,9 +239,7 @@ export default function LoomRoomHome() {
       try {
         const { data: postData, error: postError } = await supabase
           .from("posts")
-          .select(
-            "id, author_id, author_kind, body, area, created_at, like_count, reply_count"
-          )
+          .select("id, author_id, author_kind, body, created_at, like_count, reply_count")
           .order("created_at", { ascending: false })
           .limit(100);
 
@@ -443,11 +419,8 @@ export default function LoomRoomHome() {
             if (store?.owner_user_id) canonicalUserId = store.owner_user_id;
           }
 
-          const user = isUuid(canonicalUserId) ? userMap.get(canonicalUserId) ?? null : null;
-
-          const area: Area = knownAreas.includes((row.area ?? "") as Area)
-            ? ((row.area as Area) ?? "中部")
-            : "中部";
+          const user =
+            isUuid(canonicalUserId) ? userMap.get(canonicalUserId) ?? null : null;
 
           const likeCount = row.like_count ?? 0;
           const liked = likedIdSet.has(row.id);
@@ -505,7 +478,6 @@ export default function LoomRoomHome() {
             authorName,
             authorKind: inferredKind,
             avatarUrl: roleAvatar ?? userAvatar ?? null,
-            area,
             body: row.body ?? "",
             timeAgo: timeAgo(row.created_at),
             likeCount,
@@ -638,13 +610,12 @@ export default function LoomRoomHome() {
     });
 
     return posts.filter((post) => {
-      if (areaFilter !== "all" && post.area !== areaFilter) return false;
       if (kindFilter !== "all" && post.authorKind !== kindFilter) return false;
       if (mutedTargets.has(post.authorId)) return false;
       if (blockedTargets.has(post.authorId)) return false;
       return true;
     });
-  }, [posts, areaFilter, kindFilter, relations]);
+  }, [posts, kindFilter, relations]);
 
   const viewerReady = !!viewerUuid && isUuid(viewerUuid);
 
@@ -655,38 +626,12 @@ export default function LoomRoomHome() {
       <main className="page-main">
         <section className="feed-filters">
           <div className="filter-group">
-            <label className="filter-label">エリア</label>
-            <select
-              className="filter-select"
-              value={areaFilter}
-              onChange={(e) =>
-                setAreaFilter(
-                  e.target.value === "all" ? "all" : (e.target.value as Area)
-                )
-              }
-            >
-              <option value="all">すべて</option>
-              <option value="北海道">北海道</option>
-              <option value="東北">東北</option>
-              <option value="関東">関東</option>
-              <option value="中部">中部</option>
-              <option value="近畿">近畿</option>
-              <option value="中国">中国</option>
-              <option value="四国">四国</option>
-              <option value="九州">九州</option>
-              <option value="沖縄">沖縄</option>
-            </select>
-          </div>
-
-          <div className="filter-group">
             <label className="filter-label">表示</label>
             <select
               className="filter-select"
               value={kindFilter}
               onChange={(e) =>
-                setKindFilter(
-                  e.target.value === "all" ? "all" : (e.target.value as AuthorKind)
-                )
+                setKindFilter(e.target.value === "all" ? "all" : (e.target.value as AuthorKind))
               }
             >
               <option value="all">すべて</option>
@@ -705,9 +650,7 @@ export default function LoomRoomHome() {
           )}
 
           {loading && !error && (
-            <div className="feed-message feed-loading">
-              タイムラインを読み込んでいます…
-            </div>
+            <div className="feed-message feed-loading">タイムラインを読み込んでいます…</div>
           )}
 
           {!loading && !error && filteredPosts.length === 0 && (
@@ -715,7 +658,7 @@ export default function LoomRoomHome() {
           )}
 
           {filteredPosts.map((post) => {
-            const handle = getHandle(post);
+            const handle = getHandle(post.authorKind, post.authorId);
             const profileClickable = !!post.profilePath;
 
             return (
@@ -769,8 +712,6 @@ export default function LoomRoomHome() {
                     </div>
 
                     <div className="post-meta">
-                      <span className="post-area">{post.area}</span>
-                      <span className="post-dot">・</span>
                       <span className="post-time">{post.timeAgo}</span>
                     </div>
 
@@ -951,10 +892,6 @@ export default function LoomRoomHome() {
           font-size: 11px;
           color: var(--text-sub, #777777);
           margin-top: 2px;
-        }
-
-        .post-dot {
-          margin: 0 4px;
         }
 
         .post-footer {

@@ -1,12 +1,7 @@
 // app/compose/page.tsx
 "use client";
 
-import React, {
-  useState,
-  useEffect,
-  ChangeEvent,
-  FormEvent,
-} from "react";
+import React, { useState, useEffect, ChangeEvent, FormEvent } from "react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import { getCurrentUserId, getCurrentUserRole } from "@/lib/auth";
@@ -24,8 +19,15 @@ type DbTherapistRowForStatus = {
   store_id: string | null;
 };
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(id: string | null | undefined): id is string {
+  return !!id && UUID_REGEX.test(id);
+}
+
 export default function ComposePage() {
-  const logicalUserId = getCurrentUserId(); // 例: "guest-xxxxx" or UUID
+  const logicalUserId = getCurrentUserId(); // "guest-xxxxx" or UUID
   const currentRole = getCurrentUserRole(); // "user" | "therapist" | "store" | "guest"
 
   const hasUnread = false; // DM未読は別フェーズで接続
@@ -37,9 +39,11 @@ export default function ComposePage() {
   );
 
   const [text, setText] = useState("");
-  const [area, setArea] = useState("中部");
+
+  // まだDBカラムを作っていない前提：UIだけ残す（将来カラム導入時に insert に復帰）
   const [visibility, setVisibility] = useState<"public" | "limited">("public");
   const [canReply, setCanReply] = useState(true);
+
   const [submitting, setSubmitting] = useState(false);
 
   // ロールに応じて投稿可否を決定
@@ -47,6 +51,14 @@ export default function ComposePage() {
     // セラピスト以外（user / store / guest）は今のところ制限なし
     if (currentRole !== "therapist") {
       setCanPost(true);
+      setCheckingStatus(false);
+      return;
+    }
+
+    // therapist でも UUID でない（=ゲスト表記など）なら照会しない
+    // ※ あり得ないケースだが、安全側に倒す
+    if (!isUuid(logicalUserId)) {
+      setCanPost(false);
       setCheckingStatus(false);
       return;
     }
@@ -67,10 +79,7 @@ export default function ComposePage() {
         if (cancelled) return;
 
         if (error) {
-          console.error(
-            "[Compose] failed to load therapist status:",
-            error
-          );
+          console.error("[Compose] failed to load therapist status:", error);
           // 安全側に倒して「投稿不可」とする
           setCanPost(false);
           return;
@@ -96,7 +105,7 @@ export default function ComposePage() {
       }
     };
 
-    checkTherapistStoreLink();
+    void checkTherapistStoreLink();
 
     return () => {
       cancelled = true;
@@ -117,7 +126,6 @@ export default function ComposePage() {
     if (!body) return;
 
     // 投稿禁止ならここで止める
-    // （セラピストかどうかに限らず canPost に従う）
     if (!canPost) {
       alert("現在、所属店舗が無いため投稿はできません。");
       return;
@@ -126,7 +134,8 @@ export default function ComposePage() {
     // Supabase 上の author_id に使う ID を決める
     // - ログイン済み（UUID）: そのまま author_id
     // - ゲスト（"guest-" から始まる）: GUEST_DB_USER_ID に集約
-    const isGuestLogical = logicalUserId.startsWith("guest-");
+    const isGuestLogical =
+      typeof logicalUserId === "string" && logicalUserId.startsWith("guest-");
     const authorId = isGuestLogical ? GUEST_DB_USER_ID : logicalUserId;
 
     // author_kind は role ベース（guest は user 扱い）
@@ -143,10 +152,11 @@ export default function ComposePage() {
       const { error } = await supabase.from("posts").insert([
         {
           body,
-          area,
+          // area は削除（posts テーブルからも drop する方針ならここは完全撤去）
           author_id: authorId,
           author_kind: authorKind,
-          // ここで visibility / can_reply を使うならカラム追加してから
+          // NOTE:
+          // visibility / can_reply をDBに入れるなら、posts側にカラム追加後にここを復帰
           // visibility,
           // can_reply: canReply,
         },
@@ -223,15 +233,7 @@ export default function ComposePage() {
               placeholder="いまの気持ちや、残しておきたいことを自由に書いてください"
             />
             <div className="compose-footer">
-              <span
-                className={
-                  remaining < 0
-                    ? "compose-count compose-count--over"
-                    : "compose-count"
-                }
-              >
-                {remaining}
-              </span>
+              <span className="compose-count">{remaining}</span>
 
               <button
                 type="submit"
@@ -243,30 +245,8 @@ export default function ComposePage() {
             </div>
           </div>
 
-          {/* 公開範囲・返信可否設定 */}
+          {/* 公開範囲・返信可否設定（現状はUIのみ） */}
           <div className="compose-card compose-settings">
-            {/* エリア */}
-            <div className="compose-setting-row">
-              <div className="compose-setting-label">エリア</div>
-              <div className="compose-setting-control">
-                <select
-                  className="compose-select"
-                  value={area}
-                  onChange={(e) => setArea(e.target.value)}
-                >
-                  <option value="北海道">北海道</option>
-                  <option value="東北">東北</option>
-                  <option value="関東">関東</option>
-                  <option value="中部">中部</option>
-                  <option value="近畿">近畿</option>
-                  <option value="中国">中国</option>
-                  <option value="四国">四国</option>
-                  <option value="九州">九州</option>
-                  <option value="沖縄">沖縄</option>
-                </select>
-              </div>
-            </div>
-
             {/* 公開範囲（カラム未作成なら見た目だけ） */}
             <div className="compose-setting-row">
               <div className="compose-setting-label">公開範囲</div>
@@ -355,10 +335,6 @@ export default function ComposePage() {
           color: var(--text-sub);
         }
 
-        .compose-count--over {
-          color: #e11d48;
-        }
-
         .compose-submit {
           border-radius: 999px;
           border: none;
@@ -401,15 +377,6 @@ export default function ComposePage() {
           display: flex;
           justify-content: flex-end;
           align-items: center;
-        }
-
-        .compose-select {
-          width: 140px;
-          border-radius: 999px;
-          border: 1px solid var(--border);
-          padding: 4px 10px;
-          font-size: 13px;
-          background: #fff;
         }
 
         .compose-visibility-toggle {
