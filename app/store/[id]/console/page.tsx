@@ -60,7 +60,6 @@ type DbTherapistStoreRequestRow = {
   status: "pending" | "approved" | "rejected" | string;
   created_at: string;
 
-  // API側では単体に正規化して返すが、防御的に両方許容
   therapist?: TherapistMini | TherapistMini[] | null;
 };
 
@@ -71,9 +70,38 @@ function normalizeUrl(v: string): string {
   return s;
 }
 
-function pickTherapistOne(t: DbTherapistStoreRequestRow["therapist"]): TherapistMini | null {
+function pickTherapistOne(
+  t: DbTherapistStoreRequestRow["therapist"]
+): TherapistMini | null {
   if (!t) return null;
   return Array.isArray(t) ? (t[0] ?? null) : t;
+}
+
+/**
+ * ブラウザ側の Supabase session から access_token を取得
+ * - store console の API は cookie 依存にすると環境で揺れるため、Bearer を明示して安定化
+ */
+async function getAccessToken(): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) return null;
+    return data.session?.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Authorization: Bearer を付けた fetch
+ * - Content-Type は「呼び出し側で必要な時だけ」付ける（副作用を避ける）
+ */
+async function authedFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const token = await getAccessToken();
+
+  const headers = new Headers(init?.headers || {});
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  return fetch(input, { ...init, headers });
 }
 
 const StoreConsolePage: React.FC = () => {
@@ -110,10 +138,15 @@ const StoreConsolePage: React.FC = () => {
 
   const [requests, setRequests] = useState<DbTherapistStoreRequestRow[]>([]);
   const [loadingRequests, setLoadingRequests] = useState(false);
-  const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(null);
+  const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(
+    null
+  );
 
   const [detachOpen, setDetachOpen] = useState(false);
-  const [detachTarget, setDetachTarget] = useState<{ therapistId: string; displayName: string } | null>(null);
+  const [detachTarget, setDetachTarget] = useState<{
+    therapistId: string;
+    displayName: string;
+  } | null>(null);
   const [detachPassword, setDetachPassword] = useState("");
   const [detaching, setDetaching] = useState(false);
   const [detachError, setDetachError] = useState<string | null>(null);
@@ -246,14 +279,17 @@ const StoreConsolePage: React.FC = () => {
     }
   }, [loaded, state, storageKey]);
 
-  // ========= ★ pending 申請取得（API経由） =========
+  // ========= ★ pending 申請取得（API経由 / Bearer付き） =========
   const loadPendingRequests = useCallback(async (sid: string) => {
     setLoadingRequests(true);
     try {
-      const res = await fetch(`/api/therapist-store-requests?storeId=${encodeURIComponent(sid)}`, {
-        method: "GET",
-        cache: "no-store",
-      });
+      const res = await authedFetch(
+        `/api/therapist-store-requests?storeId=${encodeURIComponent(sid)}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
 
       const json = await safeReadJson(res);
 
@@ -262,6 +298,13 @@ const StoreConsolePage: React.FC = () => {
           status: res.status,
           json,
         });
+
+        // 401 の場合：セッションが無い / 失効
+        if (res.status === 401) {
+          // ここで強制遷移したいなら、StoreConsoleにrouter導入でOK（今回は副作用最小）
+          // alert("ログインが必要です。再度ログインしてください。");
+        }
+
         setRequests([]);
         return;
       }
@@ -315,8 +358,10 @@ const StoreConsolePage: React.FC = () => {
 
   const canSave = state.storeName.trim().length > 0;
 
-  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setState((prev) => ({ ...prev, [key]: value }));
+  const updateField = <K extends keyof FormState>(
+    key: K,
+    value: FormState[K]
+  ) => setState((prev) => ({ ...prev, [key]: value }));
 
   const handleToggleDmNotice = () => {
     setState((prev) => ({ ...prev, dmNotice: !prev.dmNotice }));
@@ -358,7 +403,10 @@ const StoreConsolePage: React.FC = () => {
     if (!ownerUserId) return;
 
     try {
-      const { error } = await supabase.from("users").update({ name }).eq("id", ownerUserId);
+      const { error } = await supabase
+        .from("users")
+        .update({ name })
+        .eq("id", ownerUserId);
       if (error) console.error("[StoreConsole] users.name sync failed:", error);
     } catch (e) {
       console.error("[StoreConsole] users.name sync exception:", e);
@@ -378,7 +426,9 @@ const StoreConsolePage: React.FC = () => {
       const payload: Partial<DbStoreRow> = {
         name: state.storeName.trim() || null,
         area: state.area.trim() || null,
-        website_url: state.websiteUrl.trim() ? normalizeUrl(state.websiteUrl) : null,
+        website_url: state.websiteUrl.trim()
+          ? normalizeUrl(state.websiteUrl)
+          : null,
         line_url: state.lineUrl.trim() ? normalizeUrl(state.lineUrl) : null,
         avatar_url: state.avatarUrl?.trim() ? state.avatarUrl.trim() : null,
         x_url: state.xUrl.trim() ? normalizeUrl(state.xUrl) : null,
@@ -387,7 +437,10 @@ const StoreConsolePage: React.FC = () => {
         dm_notice: !!state.dmNotice,
       } as any;
 
-      const { error } = await supabase.from("stores").update(payload as any).eq("id", storeId);
+      const { error } = await supabase
+        .from("stores")
+        .update(payload as any)
+        .eq("id", storeId);
 
       if (error) {
         console.error("[StoreConsole] failed to update stores:", error);
@@ -434,7 +487,9 @@ const StoreConsolePage: React.FC = () => {
 
       const email = userRes.user?.email;
       if (!email) {
-        throw new Error("メール情報が取得できませんでした。再ログインしてからお試しください。");
+        throw new Error(
+          "メール情報が取得できませんでした。再ログインしてからお試しください。"
+        );
       }
 
       const { error: signInErr } = await supabase.auth.signInWithPassword({
@@ -443,9 +498,12 @@ const StoreConsolePage: React.FC = () => {
       });
       if (signInErr) throw new Error("パスワードが正しくありません。");
 
-      const { error: rpcErr } = await supabase.rpc("rpc_detach_therapist_from_store", {
-        p_therapist_id: detachTarget.therapistId,
-      });
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_detach_therapist_from_store",
+        {
+          p_therapist_id: detachTarget.therapistId,
+        }
+      );
       if (rpcErr) throw rpcErr;
 
       const joined = await listTherapistsForStore(storeId);
@@ -461,14 +519,18 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  const handleReviewRequest = async (requestId: string, decision: "approved" | "rejected") => {
+  const handleReviewRequest = async (
+    requestId: string,
+    decision: "approved" | "rejected"
+  ) => {
     if (!storeId) return;
 
     try {
       setReviewingRequestId(requestId);
 
-      const res = await fetch("/api/therapist-store-requests/review", {
+      const res = await authedFetch("/api/therapist-store-requests/review", {
         method: "POST",
+        cache: "no-store",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           requestId,
@@ -480,7 +542,9 @@ const StoreConsolePage: React.FC = () => {
 
       if (!res.ok || !json || (json as any).ok !== true) {
         console.error("[review] failed", { status: res.status, json });
-        const msg = (json as any)?.error || `failed to review request (status ${res.status})`;
+        const msg =
+          (json as any)?.error ||
+          `failed to review request (status ${res.status})`;
         throw new Error(msg);
       }
 
@@ -504,7 +568,9 @@ const StoreConsolePage: React.FC = () => {
 
       <main className="app-main store-main">
         <h1 className="app-title">店舗コンソール</h1>
-        <p className="app-header-sub">LRoom 内での店舗情報を設定します。後からいつでも変更できます。</p>
+        <p className="app-header-sub">
+          LRoom 内での店舗情報を設定します。後からいつでも変更できます。
+        </p>
 
         <section className="store-card">
           <div className="store-profile-row">
@@ -533,11 +599,15 @@ const StoreConsolePage: React.FC = () => {
               />
 
               <div className="store-sub-row">
-                <div className="store-sub-pill store-sub-pill--soft">種別: 女性向けリラクゼーション</div>
+                <div className="store-sub-pill store-sub-pill--soft">
+                  種別: 女性向けリラクゼーション
+                </div>
               </div>
 
               {avatarUploading && (
-                <div className="store-sub-pill store-sub-pill--soft">アイコン画像を保存しています…</div>
+                <div className="store-sub-pill store-sub-pill--soft">
+                  アイコン画像を保存しています…
+                </div>
               )}
             </div>
           </div>
@@ -618,7 +688,9 @@ const StoreConsolePage: React.FC = () => {
           <div className="toggle-row" onClick={handleToggleDmNotice}>
             <div className="toggle-main">
               <div className="toggle-title">DMの通知</div>
-              <div className="toggle-caption">セラピスト / ユーザーからのDMに関する通知を受け取ります</div>
+              <div className="toggle-caption">
+                セラピスト / ユーザーからのDMに関する通知を受け取ります
+              </div>
             </div>
 
             <div className={"toggle-switch" + (state.dmNotice ? " is-on" : "")}>
@@ -629,27 +701,41 @@ const StoreConsolePage: React.FC = () => {
 
         <section className="store-card therapist-card">
           <div className="store-section-title">セラピスト管理</div>
-          <p className="therapist-helper">在籍申請が届いたセラピストを承認すると、この店舗に紐づきます。</p>
+          <p className="therapist-helper">
+            在籍申請が届いたセラピストを承認すると、この店舗に紐づきます。
+          </p>
 
           <div className="therapist-block">
-            <h3 className="therapist-block-title">現在いっしょに活動しているセラピスト</h3>
+            <h3 className="therapist-block-title">
+              現在いっしょに活動しているセラピスト
+            </h3>
 
             {loadingTherapists && therapists.length === 0 ? (
               <p className="therapist-helper">読み込み中です…</p>
             ) : therapists.length === 0 ? (
-              <p className="therapist-helper">まだこの店舗に紐づいているセラピストはいません。</p>
+              <p className="therapist-helper">
+                まだこの店舗に紐づいているセラピストはいません。
+              </p>
             ) : (
               <ul className="therapist-list">
                 {therapists.map((t) => (
                   <li key={t.id} className="therapist-row">
                     <div className="therapist-row-main">
-                      <span className="therapist-name">{t.display_name || "名前未設定"}</span>
-                      <span className="therapist-meta">{t.area || "エリア未設定"}</span>
+                      <span className="therapist-name">
+                        {t.display_name || "名前未設定"}
+                      </span>
+                      <span className="therapist-meta">
+                        {t.area || "エリア未設定"}
+                      </span>
                     </div>
 
                     <div className="therapist-actions">
                       <span className="therapist-tag">店舗に参加中</span>
-                      <button type="button" className="therapist-detach-btn" onClick={() => openDetachModal(t)}>
+                      <button
+                        type="button"
+                        className="therapist-detach-btn"
+                        onClick={() => openDetachModal(t)}
+                      >
                         在籍解除
                       </button>
                     </div>
@@ -661,7 +747,9 @@ const StoreConsolePage: React.FC = () => {
 
           <div className="therapist-block">
             <h3 className="therapist-block-title">在籍申請（承認待ち）</h3>
-            <p className="therapist-helper">セラピスト側から「在籍申請」が届いた一覧です。承認/却下できます。</p>
+            <p className="therapist-helper">
+              セラピスト側から「在籍申請」が届いた一覧です。承認/却下できます。
+            </p>
 
             {loadingRequests && requests.length === 0 ? (
               <p className="therapist-helper">読み込み中です…</p>
@@ -710,7 +798,12 @@ const StoreConsolePage: React.FC = () => {
         </section>
 
         <div className="store-save-wrap">
-          <button type="button" className="store-save-btn" disabled={!canSave || saving} onClick={handleSave}>
+          <button
+            type="button"
+            className="store-save-btn"
+            disabled={!canSave || saving}
+            onClick={handleSave}
+          >
             {saving ? "保存中..." : "この内容で保存する"}
           </button>
         </div>
@@ -745,10 +838,20 @@ const StoreConsolePage: React.FC = () => {
             {detachError && <div className="modal-error">{detachError}</div>}
 
             <div className="modal-actions">
-              <button type="button" className="modal-cancel" onClick={closeDetachModal} disabled={detaching}>
+              <button
+                type="button"
+                className="modal-cancel"
+                onClick={closeDetachModal}
+                disabled={detaching}
+              >
                 キャンセル
               </button>
-              <button type="button" className="modal-danger" onClick={confirmDetach} disabled={detaching}>
+              <button
+                type="button"
+                className="modal-danger"
+                onClick={confirmDetach}
+                disabled={detaching}
+              >
                 {detaching ? "解除中…" : "解除する"}
               </button>
             </div>

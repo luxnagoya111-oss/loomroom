@@ -87,9 +87,7 @@ export function clearSupabaseAuthStorage(): void {
     window.localStorage.removeItem(SUPABASE_STORAGE_KEY);
 
     // 2) 念のため「PKCE系っぽい」ものだけ限定掃除（存在すれば）
-    //    - 実装差分や旧バージョンで残る可能性にだけ対応
     const candidates = [
-      // Supabase/Authの実装で過去に見かける系（存在しないなら何もしない）
       "supabase.auth.token",
       "supabase.auth.expires_at",
       "supabase.auth.refresh_token",
@@ -121,8 +119,6 @@ export function clearSupabaseAuthStorage(): void {
  * - signOut(local)
  * - loomroom_current_user クリア
  * - SUPABASE_STORAGE_KEY（loomroom-auth）を掃除
- *
- * ★重要：掃除対象を限定し、PKCEが必要な時に誤って別キーを破壊しない
  */
 export async function resetAuthFlow(): Promise<void> {
   if (!isBrowser()) return;
@@ -169,8 +165,6 @@ export async function getAuthUserId(): Promise<UserId | null> {
  * - ログイン済みなら uuid
  * - 未ログインなら null
  * - 403なら自動掃除して null
- *
- * 注意：isOwner判定・follow表示など「自分判定」は、基本これを使う。
  */
 export async function ensureViewerId(): Promise<UserId | null> {
   if (!isBrowser()) return null;
@@ -213,4 +207,31 @@ export function isEmailNotConfirmedError(message?: string | null): boolean {
  */
 export async function logout(): Promise<void> {
   await resetAuthFlow();
+}
+
+/* =========================================================
+   ★ 追加：Bearer を作るためのヘルパー
+   ========================================================= */
+
+/**
+ * 現在の access_token を返す（未ログインなら null）
+ * - getUser() では token は取れないので getSession() を使う
+ */
+export async function getAccessToken(): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) return null;
+    return data.session?.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * fetch 用 Authorization ヘッダを返す
+ * - token が取れた時だけ付与する（未ログインなら空）
+ */
+export async function buildAuthHeaders(): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
