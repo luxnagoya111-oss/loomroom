@@ -28,6 +28,7 @@ import {
 
 import type { UserId } from "@/types/user";
 import { RelationActions } from "@/components/RelationActions";
+import { toPublicHandleFromUserId } from "@/lib/handle";
 
 const hasUnread = true;
 
@@ -167,6 +168,12 @@ function roleLabel(role?: "user" | "therapist" | "store") {
   return "ユーザー";
 }
 
+// ★ handle統一（uuidは @xxxxxx、ゲストは @{id}）
+function toDisplayHandleFromPageId(pageId: string): string {
+  if (isUuid(pageId)) return toPublicHandleFromUserId(pageId) ?? "@user";
+  return `@${pageId}`;
+}
+
 const PublicMyPage: React.FC = () => {
   const router = useRouter();
 
@@ -183,7 +190,7 @@ const PublicMyPage: React.FC = () => {
 
   const [profile, setProfile] = useState<UserProfile>(() => ({
     ...DEFAULT_PROFILE,
-    handle: `@${userId}`,
+    handle: toDisplayHandleFromPageId(userId),
   }));
   const [loading, setLoading] = useState<boolean>(true);
 
@@ -246,7 +253,7 @@ const PublicMyPage: React.FC = () => {
           // デフォルト
           let p: UserProfile = {
             ...DEFAULT_PROFILE,
-            handle: `@${userId}`,
+            handle: toDisplayHandleFromPageId(userId),
             accountType: "ゲスト",
             role: "user",
           };
@@ -310,7 +317,7 @@ const PublicMyPage: React.FC = () => {
         // users正：ここで完成形を作る（不足は後で補完）
         let baseProfile: UserProfile = {
           ...DEFAULT_PROFILE,
-          handle: `@${userId}`,
+          handle: toDisplayHandleFromPageId(userId), // ★ @xxxxxx
           displayName:
             (user.name && user.name.trim().length > 0
               ? user.name

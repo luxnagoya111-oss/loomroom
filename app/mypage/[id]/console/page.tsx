@@ -60,12 +60,8 @@ const MyPageConsole: React.FC = () => {
   const STORAGE_KEY = `${STORAGE_PREFIX}${userId}`;
 
   const [nickname, setNickname] = useState<string>("あなた");
-
-  // ★ 自由入力（文字列）
-  const [area, setArea] = useState<string>("");
-
-  // ★ UI上の intro は users.description に保存する
-  const [intro, setIntro] = useState<string>("");
+  const [area, setArea] = useState<string>(""); // ★自由入力
+  const [intro, setIntro] = useState<string>(""); // ★UI上の intro は users.description に保存
 
   // SNS系リンク
   const [snsX, setSnsX] = useState<string>("");
@@ -149,7 +145,7 @@ const MyPageConsole: React.FC = () => {
           setAvatarDataUrl(data.avatar_url);
         }
 
-        // ★ 追加：DB優先で反映（空文字も許容）
+        // ★ DB優先で反映（空文字も許容）
         if (typeof data.area === "string") setArea(data.area);
         if (typeof data.description === "string") setIntro(data.description);
       } catch (e) {
@@ -190,7 +186,6 @@ const MyPageConsole: React.FC = () => {
     try {
       setAvatarUploading(true);
 
-      // セッション必須。auth.uid() を保存パスに使う
       const { data: userRes, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
 
@@ -201,7 +196,6 @@ const MyPageConsole: React.FC = () => {
 
       const publicUrl = await uploadAvatar(file, uid);
 
-      // DB に保存（このページの userId の行を更新）
       const { error } = await supabase.from("users").update({ avatar_url: publicUrl }).eq("id", userId);
 
       if (error) {
@@ -241,9 +235,7 @@ const MyPageConsole: React.FC = () => {
     // localStorage 保存（新キー）
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-
-      // 旧キーにも上書き（互換：古いページが参照しても破綻しない）
-      // ※不要なら削除OK
+      // 旧キーにも上書き（互換）
       window.localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(payload));
     } catch (e) {
       console.error("[MyPageConsole] Failed to save profile (localStorage)", e);
@@ -293,7 +285,7 @@ const MyPageConsole: React.FC = () => {
 
   if (!loaded) {
     return (
-      <div className="app-shell">
+      <div className="app-root">
         <AppHeader title="マイページ設定" subtitle="読み込み中…" />
         <main className="app-main mypage-main">
           <div className="loading-text">プロフィールを読み込んでいます…</div>
@@ -305,12 +297,15 @@ const MyPageConsole: React.FC = () => {
 
   return (
     <>
-      <div className="app-shell">
+      <div className="app-root">
         <AppHeader title="マイページ設定" subtitle={`ID: ${userId}`} />
 
         <main className="app-main mypage-main">
-          <section className="surface-card mypage-card profile-card">
-            <div className="profile-top-row">
+          {/* 表示情報（共通：surface-card + field） */}
+          <section className="surface-card mp-card">
+            <h2 className="mp-title">表示情報</h2>
+
+            <div className="mp-profile-row">
               <AvatarUploader
                 avatarUrl={avatarDataUrl}
                 displayName={nickname || "U"}
@@ -319,40 +314,37 @@ const MyPageConsole: React.FC = () => {
                 onFileSelect={handleAvatarFileSelect}
               />
 
-              <div className="profile-main-text">
-                <input
-                  className="profile-nickname-input"
-                  value={nickname}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setNickname(e.target.value)}
-                  placeholder="ニックネームを入力"
-                />
-                <div className="profile-id-hint">LRoomの中で表示される名前です</div>
-                {avatarUploading && <div className="profile-id-hint">アイコン画像を保存しています…</div>}
+              <div className="mp-profile-main">
+                <div className="mp-id-pill">User ID：{userId}</div>
+
+                <div className="field">
+                  <label className="field-label">ニックネーム</label>
+                  <input
+                    className="field-input"
+                    value={nickname}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setNickname(e.target.value)}
+                    placeholder="自由入力"
+                  />
+                </div>
+
+                <div className="mp-caption">
+                  LRoomの中で表示される名前です
+                  {avatarUploading && <span>（アイコン画像を保存しています…）</span>}
+                </div>
               </div>
             </div>
 
-            <div className="profile-sub-row">
-              <div className="pill pill--accent profile-sub-pill">アカウント種別：{accountType}</div>
-              <div className="pill profile-sub-pill profile-sub-pill--soft">
-                {isMember
-                  ? "この端末とアカウントの両方に保存します"
-                  : "この端末の中だけで、静かに情報を管理します"}
+            <div className="mp-sub-row">
+              <div className="mp-pill mp-pill--accent">アカウント種別：{accountType}</div>
+              <div className="mp-pill mp-pill--soft">
+                {isMember ? "この端末とアカウントの両方に保存します" : "この端末の中だけで、静かに情報を管理します"}
               </div>
             </div>
           </section>
 
-          <section className="surface-card mypage-card">
-            <h2 className="mypage-section-title">基本情報</h2>
-
-            <div className="field">
-              <label className="field-label">ニックネーム</label>
-              <input
-                className="field-input"
-                value={nickname}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setNickname(e.target.value)}
-                placeholder="自由入力"
-              />
-            </div>
+          {/* 基本情報 */}
+          <section className="surface-card mp-card">
+            <h2 className="mp-title">基本情報</h2>
 
             <div className="field">
               <label className="field-label">エリア</label>
@@ -367,7 +359,7 @@ const MyPageConsole: React.FC = () => {
             <div className="field">
               <label className="field-label">プロフィール</label>
               <textarea
-                className="field-input"
+                className="field-input mp-textarea"
                 value={intro}
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setIntro(e.target.value)}
                 placeholder="例）人見知りですが、ゆっくり会話できる時間が好きです。"
@@ -378,8 +370,10 @@ const MyPageConsole: React.FC = () => {
             </div>
           </section>
 
-          <section className="surface-card mypage-card">
-            <h2 className="mypage-section-title">SNSリンク</h2>
+          {/* SNSリンク */}
+          <section className="surface-card mp-card">
+            <h2 className="mp-title">SNSリンク</h2>
+
             <div className="field">
               <label className="field-label">X（任意）</label>
               <input
@@ -389,6 +383,7 @@ const MyPageConsole: React.FC = () => {
                 placeholder="https://x.com/..."
               />
             </div>
+
             <div className="field">
               <label className="field-label">LINE（任意）</label>
               <input
@@ -398,6 +393,7 @@ const MyPageConsole: React.FC = () => {
                 placeholder="https://lin.ee/..."
               />
             </div>
+
             <div className="field">
               <label className="field-label">その他（任意）</label>
               <input
@@ -409,233 +405,194 @@ const MyPageConsole: React.FC = () => {
             </div>
           </section>
 
-          <section className="surface-card mypage-card">
-            <h2 className="mypage-section-title">通知設定</h2>
+          {/* 通知設定（共通：toggle-row / toggle-switch） */}
+          <section className="surface-card mp-card">
+            <h2 className="mp-title">通知設定</h2>
 
-            <button
-              type="button"
-              className={"toggle-row" + (notifyFavPosts ? " toggle-row--on" : "")}
-              onClick={() => setNotifyFavPosts((v) => !v)}
-            >
-              <div className="toggle-main">
+            <div className="toggle-row">
+              <div className="toggle-text">
                 <div className="toggle-title">お気に入りの更新</div>
-                <div className="toggle-caption">
+                <div className="mp-caption">
                   お気に入りにした人の新しい投稿などを、アプリ内でさりげなくお知らせします。
                 </div>
               </div>
-              <div className="toggle-switch">
-                <div className="toggle-knob" />
-              </div>
-            </button>
 
-            <button
-              type="button"
-              className={"toggle-row" + (notifyDm ? " toggle-row--on" : "")}
-              onClick={() => setNotifyDm((v) => !v)}
-            >
-              <div className="toggle-main">
+              <button
+                type="button"
+                className={"toggle-switch" + (notifyFavPosts ? " is-on" : "")}
+                onClick={() => setNotifyFavPosts((v) => !v)}
+                aria-pressed={notifyFavPosts}
+              >
+                <span className="toggle-knob" />
+              </button>
+            </div>
+
+            <div className="mp-divider" />
+
+            <div className="toggle-row">
+              <div className="toggle-text">
                 <div className="toggle-title">DMの通知</div>
-                <div className="toggle-caption">大事なメッセージを見逃さないようにしたいときに。</div>
+                <div className="mp-caption">大事なメッセージを見逃さないようにしたいときに。</div>
               </div>
-              <div className="toggle-switch">
-                <div className="toggle-knob" />
-              </div>
-            </button>
 
-            <button
-              type="button"
-              className={"toggle-row" + (notifyNews ? " toggle-row--on" : "")}
-              onClick={() => setNotifyNews((v) => !v)}
-            >
-              <div className="toggle-main">
+              <button
+                type="button"
+                className={"toggle-switch" + (notifyDm ? " is-on" : "")}
+                onClick={() => setNotifyDm((v) => !v)}
+                aria-pressed={notifyDm}
+              >
+                <span className="toggle-knob" />
+              </button>
+            </div>
+
+            <div className="mp-divider" />
+
+            <div className="toggle-row">
+              <div className="toggle-text">
                 <div className="toggle-title">LRoom からのお知らせ</div>
-                <div className="toggle-caption">リリース情報など、大切なことだけに使う予定です。</div>
+                <div className="mp-caption">リリース情報など、大切なことだけに使う予定です。</div>
               </div>
-              <div className="toggle-switch">
-                <div className="toggle-knob" />
-              </div>
-            </button>
-          </section>
 
-          <section className="mypage-save-section">
-            <button
-              type="button"
-              className="primary-button primary-button--full"
-              onClick={handleSave}
-              disabled={saving}
-            >
-              {saving ? "保存中..." : "この内容で保存する"}
-            </button>
+              <button
+                type="button"
+                className={"toggle-switch" + (notifyNews ? " is-on" : "")}
+                onClick={() => setNotifyNews((v) => !v)}
+                aria-pressed={notifyNews}
+              >
+                <span className="toggle-knob" />
+              </button>
+            </div>
           </section>
         </main>
+
+        {/* 保存バー（共通：footer固定） */}
+        <footer className="mp-footer-bar">
+          <button
+            type="button"
+            className="btn-primary btn-primary--full"
+            onClick={handleSave}
+            disabled={saving}
+          >
+            {saving ? "保存中..." : "この内容で保存する"}
+          </button>
+        </footer>
 
         <BottomNav active="mypage" hasUnread={hasUnread} />
       </div>
 
       <style jsx>{`
-        .app-shell {
-          min-height: 100vh;
-          max-width: 480px;
-          margin: 0 auto;
-          background: var(--background);
-          color: var(--text-main);
-          display: flex;
-          flex-direction: column;
-        }
-        .app-main {
-          flex: 1;
-          padding-bottom: 80px;
-        }
         .mypage-main {
           padding: 12px 16px 140px;
         }
-        .mypage-card {
+
+        .mp-card {
+          margin-top: 12px;
+          padding: 12px;
           border-radius: 16px;
           border: 1px solid var(--border);
           background: var(--surface);
-          padding: 12px;
           box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
-          margin-top: 12px;
         }
-        .profile-card {
-          padding-top: 16px;
-        }
-        .profile-top-row {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-        }
-        .profile-main-text {
-          flex: 1;
-        }
-        .profile-nickname-input {
-          width: 100%;
-          border: none;
-          border-bottom: 1px solid var(--border);
-          padding: 4px 2px;
-          font-size: 16px;
-          font-weight: 600;
-          background: transparent;
-        }
-        .profile-nickname-input::placeholder {
-          color: var(--text-sub);
-        }
-        .profile-id-hint {
-          font-size: 11px;
-          color: var(--text-sub);
-          margin-top: 4px;
-        }
-        .profile-sub-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-          margin-top: 10px;
-        }
-        .profile-sub-pill {
-          font-size: 11px;
-        }
-        .profile-sub-pill--soft {
-          background: var(--surface-soft);
-          color: var(--text-sub);
-        }
-        .pill {
-          border-radius: 999px;
-          padding: 4px 10px;
-          background: var(--surface-soft);
-          font-size: 11px;
-        }
-        .pill--accent {
-          background: var(--accent-soft);
-          color: var(--accent);
-        }
-        .mypage-section-title {
+
+        .mp-title {
           font-size: 13px;
           font-weight: 600;
           margin-bottom: 8px;
           color: var(--text-sub);
         }
-        .field {
+
+        .mp-profile-row {
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+        }
+
+        .mp-profile-main {
+          flex: 1;
           display: flex;
           flex-direction: column;
-          gap: 4px;
-          margin-top: 8px;
+          gap: 8px;
+          min-width: 0;
         }
-        .field-label {
+
+        .mp-id-pill {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 8px;
+          border-radius: 999px;
+          background: var(--surface-soft);
           font-size: 11px;
           color: var(--text-sub);
+          width: fit-content;
         }
-        .field-input {
-          width: 100%;
-          border-radius: 12px;
-          border: 1px solid var(--border);
-          padding: 6px 10px;
-          font-size: 13px;
-          background: #fff;
+
+        .mp-sub-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: 10px;
         }
-        textarea.field-input {
-          min-height: 70px;
+
+        .mp-pill {
+          border-radius: 999px;
+          padding: 4px 10px;
+          background: var(--surface-soft);
+          font-size: 11px;
+          border: 1px solid rgba(0, 0, 0, 0.06);
+        }
+
+        .mp-pill--accent {
+          background: var(--accent-soft);
+          color: var(--accent);
+          border-color: rgba(180, 137, 90, 0.18);
+        }
+
+        .mp-pill--soft {
+          background: var(--surface-soft);
+          color: var(--text-sub);
+        }
+
+        .mp-caption {
+          font-size: 11px;
+          color: var(--text-sub);
+          line-height: 1.6;
+          margin-top: 2px;
+        }
+
+        .mp-textarea {
+          min-height: 80px;
+          line-height: 1.7;
           resize: vertical;
         }
-        .field-note {
-          font-size: 11px;
-          color: var(--text-sub);
-          margin-top: 4px;
-          line-height: 1.5;
+
+        .mp-divider {
+          height: 1px;
+          background: var(--border-soft, rgba(0, 0, 0, 0.06));
+          margin: 10px 0;
         }
-        .toggle-row {
-          margin-top: 8px;
-          border-radius: 12px;
-          border: 1px solid var(--border);
-          padding: 8px 10px;
+
+        /* 保存バー（store/therapist と同形） */
+        .mp-footer-bar {
+          position: fixed;
+          bottom: 58px;
+          left: 50%;
+          transform: translateX(-50%);
+          width: 100%;
+          max-width: 430px;
+          padding: 8px 16px;
+          background: linear-gradient(
+            to top,
+            rgba(247, 247, 250, 0.98),
+            rgba(247, 247, 250, 0.88)
+          );
+          border-top: 1px solid var(--border);
           display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: #fff;
+          justify-content: center;
+          z-index: 25;
         }
-        .toggle-row--on {
-          border-color: var(--accent);
-          background: var(--accent-soft);
-        }
-        .toggle-main {
-          flex: 1;
-          padding-right: 8px;
-        }
-        .toggle-title {
-          font-size: 13px;
-          font-weight: 500;
-          margin-bottom: 2px;
-        }
-        .toggle-caption {
-          font-size: 11px;
-          color: var(--text-sub);
-        }
-        .toggle-switch {
-          width: 38px;
-          height: 22px;
-          border-radius: 999px;
-          background: var(--border);
-          display: flex;
-          align-items: center;
-          padding: 2px;
-        }
-        .toggle-row--on .toggle-switch {
-          background: var(--accent);
-        }
-        .toggle-knob {
-          width: 18px;
-          height: 18px;
-          border-radius: 999px;
-          background: #fff;
-          margin-left: 0;
-          transition: margin 0.15s ease;
-        }
-        .toggle-row--on .toggle-knob {
-          margin-left: 16px;
-        }
-        .mypage-save-section {
-          margin: 18px 0 80px;
-        }
-        .primary-button {
+
+        /* btn-primary が globals に無い場合の保険 */
+        :global(.btn-primary) {
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -649,9 +606,56 @@ const MyPageConsole: React.FC = () => {
           color: #fff;
           box-shadow: 0 6px 16px rgba(180, 137, 90, 0.35);
         }
-        .primary-button--full {
+        :global(.btn-primary--full) {
           width: 100%;
         }
+        :global(.btn-primary[disabled]) {
+          opacity: 0.6;
+          cursor: default;
+        }
+
+        /* ===== 共通トグル（store/therapist と同形） ===== */
+        .toggle-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        .toggle-text {
+          flex: 1;
+          min-width: 0;
+        }
+        .toggle-title {
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 2px;
+        }
+        .toggle-switch {
+          width: 48px;
+          height: 28px;
+          border-radius: 999px;
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          position: relative;
+          padding: 0;
+          background: #d1d5db; /* OFF */
+        }
+        .toggle-switch.is-on {
+          background: linear-gradient(135deg, #d9b07c, #b4895a); /* ON=ゴールド */
+        }
+        .toggle-knob {
+          position: absolute;
+          top: 3px;
+          left: 3px;
+          width: 22px;
+          height: 22px;
+          border-radius: 999px;
+          background: #fff;
+          transition: transform 0.15s ease;
+        }
+        .toggle-switch.is-on .toggle-knob {
+          transform: translateX(20px);
+        }
+
         .loading-text {
           padding: 24px 16px;
           font-size: 13px;

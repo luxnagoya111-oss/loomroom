@@ -4,6 +4,7 @@
 import React, { useEffect, useState, ChangeEvent } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import AppHeader from "@/components/AppHeader";
 import AvatarUploader from "@/components/AvatarUploader";
 import BottomNav from "@/components/BottomNav";
 import { supabase } from "@/lib/supabaseClient";
@@ -537,21 +538,11 @@ const TherapistConsolePage: React.FC = () => {
 
   return (
     <>
-      <div className="app-shell">
-        <header className="app-header">
-          <button
-            type="button"
-            className="header-icon-btn"
-            onClick={() => window.history.back()}
-          >
-            ←
-          </button>
-          <div className="app-header-center">
-            <div className="app-title">セラピスト用コンソール</div>
-            <div className="app-header-sub">Therapist ID：{therapistId}</div>
-          </div>
-          <div style={{ width: 30 }} />
-        </header>
+      <div className="app-root">
+        <AppHeader
+          title="セラピスト用コンソール"
+          subtitle={therapistId ? `Therapist ID：${therapistId}` : undefined}
+        />
 
         <main className="app-main therapist-console-main">
           {/* 店舗とのつながり */}
@@ -730,9 +721,10 @@ const TherapistConsolePage: React.FC = () => {
           {/* DM通知 */}
           <section className="surface-card tc-card">
             <h2 className="tc-title">DM通知</h2>
-            <div className="dm-toggle-row">
-              <div className="dm-toggle-text">
-                <div className="dm-toggle-title">DM通知を受け取る</div>
+
+            <div className="toggle-row">
+              <div className="toggle-text">
+                <div className="toggle-title">DM通知を受け取る</div>
                 <div className="tc-caption">
                   ONにすると、新しいDMが届いたときに通知対象になります。
                 </div>
@@ -740,11 +732,11 @@ const TherapistConsolePage: React.FC = () => {
 
               <button
                 type="button"
-                className={"dm-switch" + (data.dmNotice ? " is-on" : " is-off")}
+                className={"toggle-switch" + (data.dmNotice ? " is-on" : "")}
                 onClick={() => updateField("dmNotice", !data.dmNotice)}
                 aria-pressed={data.dmNotice}
               >
-                <span className="dm-knob" />
+                <span className="toggle-knob" />
               </button>
             </div>
           </section>
@@ -862,7 +854,7 @@ const TherapistConsolePage: React.FC = () => {
         </div>
       )}
 
-      {/* styles は既存のまま */}
+      {/* styles は既存のまま（ヘッダーだけAppHeader側へ統一） */}
       <style jsx>{`
         .therapist-console-main {
           padding: 12px 16px 140px;
@@ -927,35 +919,35 @@ const TherapistConsolePage: React.FC = () => {
           z-index: 25;
         }
 
-        .dm-toggle-row {
+        /* ===== MyPageConsole基準のトグル見た目（toggle-row / toggle-switch） ===== */
+        .toggle-row {
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 12px;
         }
-        .dm-toggle-text {
+        .toggle-text {
           flex: 1;
+          min-width: 0;
         }
-        .dm-toggle-title {
+        .toggle-title {
           font-size: 13px;
           font-weight: 600;
           margin-bottom: 2px;
         }
-        .dm-switch {
+        .toggle-switch {
           width: 48px;
           height: 28px;
           border-radius: 999px;
           border: 1px solid rgba(0, 0, 0, 0.08);
           position: relative;
           padding: 0;
+          background: #d1d5db; /* OFF */
         }
-        .dm-switch.is-on {
-          background: linear-gradient(135deg, #d9b07c, #b4895a);
+        .toggle-switch.is-on {
+          background: linear-gradient(135deg, #d9b07c, #b4895a); /* ON=ゴールド */
         }
-        .dm-switch.is-off {
-          background: #d1d5db;
-        }
-        .dm-knob {
+        .toggle-knob {
           position: absolute;
           top: 3px;
           left: 3px;
@@ -965,7 +957,7 @@ const TherapistConsolePage: React.FC = () => {
           background: #fff;
           transition: transform 0.15s ease;
         }
-        .dm-switch.is-on .dm-knob {
+        .toggle-switch.is-on .toggle-knob {
           transform: translateX(20px);
         }
 

@@ -23,7 +23,7 @@ type ThreadListItem = {
   partnerId: string;
 
   partnerName: string;
-  partnerHandle: string;
+  partnerHandle: string; // ★ 表示用：@xxxxxx（相手ID短縮）
   partnerRole: "user" | "therapist" | "store" | "unknown";
   avatarUrl: string | null; // resolved (http)
 
@@ -43,7 +43,7 @@ type DbUserMini = {
 type DbTherapistMini = {
   user_id: string;
   display_name: string | null;
-  avatar_url: string | null; // ★ 追加：raw
+  avatar_url: string | null; // raw
 };
 
 type DbStoreMini = {
@@ -78,7 +78,19 @@ function isProbablyHttpUrl(url: string): boolean {
 }
 
 /**
- * ★ SearchPage を完全踏襲（bucket名も一致させる）
+ * ★ 6桁ID（表示用）
+ * - uuid なら "-" を除去して先頭6文字
+ * - それ以外も先頭6文字
+ */
+function toShortId(id: string): string {
+  const s = safeText(id);
+  if (!s) return "";
+  const compact = isUuid(s) ? s.replace(/-/g, "") : s;
+  return compact.slice(0, 6);
+}
+
+/**
+ * ★ SearchPage を踏襲（bucket名も一致させる）
  */
 const AVATAR_BUCKET = "avatars";
 
@@ -226,7 +238,7 @@ export default function MessagesPage() {
           }
         }
 
-        // 2) therapists 一括（★ avatar_url も取る）
+        // 2) therapists 一括（avatar_url も取る）
         const therapistMap = new Map<
           string,
           { displayName: string; avatarUrl: string | null }
@@ -253,10 +265,7 @@ export default function MessagesPage() {
         }
 
         // 3) stores 一括（owner_user_id で引く）
-        const storeMap = new Map<
-          string,
-          { name: string; avatarUrl: string | null }
-        >();
+        const storeMap = new Map<string, { name: string; avatarUrl: string | null }>();
         if (partnerIds.length > 0) {
           const { data: stRows, error } = await supabase
             .from("stores")
@@ -302,10 +311,10 @@ export default function MessagesPage() {
                 ? safeText(u?.name)
                 : "相手";
 
-            const partnerHandle =
-              safeText(u?.name) ? `@${safeText(u?.name)}` : `@${partnerId}`;
+            // ★ 表示ID：@xxxxxx（相手ID短縮）
+            const partnerHandle = `@${toShortId(partnerId) || "------"}`;
 
-            // avatar：store > users > therapist （★ users が空の therapist を救う）
+            // avatar：store > users > therapist
             const avatarUrl =
               storeOverride?.avatarUrl ??
               resolveAvatarUrl(u?.avatar_url) ??
@@ -425,10 +434,10 @@ export default function MessagesPage() {
                 <Link
                   href={`/messages/${encodeURIComponent(t.threadId)}`}
                   className="thread-link"
+                  title={t.partnerId} // ★ フルIDはツールチップで見える
                 >
                   <div className="thread-main">
                     <div className="thread-header-row">
-                      {/* ★ アイコンを「名前の左側（同じ行）」へ */}
                       <div className="thread-name-row">
                         <div className="thread-avatar-inline">
                           <AvatarCircle
@@ -439,18 +448,25 @@ export default function MessagesPage() {
                           />
                         </div>
 
-                        <div className="thread-name">
-                          {t.partnerName}
-                          <span className="thread-handle">{t.partnerHandle}</span>
-                          {t.partnerRole !== "unknown" && (
-                            <span className="thread-role">
-                              {t.partnerRole === "store"
-                                ? "店舗"
-                                : t.partnerRole === "therapist"
-                                ? "セラピスト"
-                                : "ユーザー"}
-                            </span>
-                          )}
+                        {/* ★ ここを「2行構造」に変更 */}
+                        <div className="thread-name-col">
+                          <div className="thread-name-top">
+                            <span className="thread-name">{t.partnerName}</span>
+
+                            {t.partnerRole !== "unknown" && (
+                              <span className="thread-role">
+                                {t.partnerRole === "store"
+                                  ? "店舗"
+                                  : t.partnerRole === "therapist"
+                                  ? "セラピスト"
+                                  : "ユーザー"}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="thread-name-bottom">
+                            <span className="thread-handle">{t.partnerHandle}</span>
+                          </div>
                         </div>
                       </div>
 
@@ -559,10 +575,22 @@ export default function MessagesPage() {
           justify-content: center;
         }
 
-        .thread-name {
+        /* ★ 2行カラム */
+        .thread-name-col {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .thread-name-top {
           display: flex;
           align-items: baseline;
           gap: 8px;
+          min-width: 0;
+        }
+
+        .thread-name {
           font-size: 14px;
           font-weight: 600;
           overflow: hidden;
@@ -571,6 +599,14 @@ export default function MessagesPage() {
           min-width: 0;
         }
 
+        .thread-name-bottom {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          min-width: 0;
+        }
+
+        /* ★ ここが「相手ID表示」 */
         .thread-handle {
           font-size: 11px;
           color: var(--muted-foreground);

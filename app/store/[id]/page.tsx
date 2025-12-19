@@ -9,8 +9,6 @@ import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
 
-import { makeThreadId } from "@/lib/dmThread";
-import { getCurrentUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
 
@@ -21,13 +19,9 @@ import {
   type RelationFlags,
 } from "@/lib/repositories/relationRepository";
 
-import {
-  getRelationFlags as getLocalRelationFlags,
-  setRelation as setLocalRelation,
-} from "@/lib/relationStorage";
-
 import type { UserId } from "@/types/user";
 import { RelationActions } from "@/components/RelationActions";
+import { toPublicHandleFromUserId } from "@/lib/handle";
 
 // ==============================
 // 型定義（Supabase から取る最低限）
@@ -63,6 +57,7 @@ type DbPostRow = {
 
 type DbTherapistRow = {
   id: string;
+  user_id: string | null;
   display_name: string | null;
   avatar_url: string | null;
 };
@@ -111,7 +106,6 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   if (!v) return null;
   if (isProbablyHttpUrl(v)) return v;
 
-  // "avatars/xxx.png" のような場合にも対応（先頭の "avatars/" を外す）
   const path = v.startsWith(`${AVATAR_BUCKET}/`)
     ? v.slice(AVATAR_BUCKET.length + 1)
     : v;
@@ -129,7 +123,15 @@ type StorePost = {
   timeAgo: string;
 };
 
-// 店舗IDごとのエリアラベル（DBに area が無い場合のフォールバック）
+type TherapistHit = {
+  id: string; // therapists.id
+  userId: string | null; // users.id(uuid)
+  displayName: string;
+  avatarUrl: string | null;
+  handle: string; // @xxxxxx
+};
+
+// 店舗IDがslugだった時代のフォールバック（ラベルだけ）
 const AREA_LABEL_MAP: Record<string, string> = {
   lux: "中部（名古屋・東海エリア）",
   tokyo: "関東（東京近郊）",
@@ -142,7 +144,7 @@ const StoreProfilePage: React.FC = () => {
   const params = useParams<{ id: string }>();
   const storeId = (params?.id as string) || "store";
 
-  // slug時代のフォールバック（ラベルだけ）
+  // slug時代のフォールバック（表示だけ）
   const fallbackSlug =
     storeId === "lux" || storeId === "loomroom" ? storeId : "lux";
 
@@ -160,7 +162,13 @@ const StoreProfilePage: React.FC = () => {
   // state
   // ==============================
   const [storeName, setStoreName] = useState<string>(initialStoreName);
-  const [storeHandle, setStoreHandle] = useState<string>(`@${fallbackSlug}`);
+
+  /**
+   * ★ handle は「owner_user_id(uuid) → @xxxxxx」に統一
+   * 初期は空にしておく（データ取得後に確定）
+   */
+  const [storeHandle, setStoreHandle] = useState<string>("");
+
   const [areaLabel, setAreaLabel] = useState<string>(initialAreaLabel);
   const [storeProfileText, setStoreProfileText] = useState<string | null>(null);
 
@@ -171,9 +179,6 @@ const StoreProfilePage: React.FC = () => {
 
   const [loadingProfile, setLoadingProfile] = useState<boolean>(false);
   const [profileError, setProfileError] = useState<string | null>(null);
-
-  // viewer（ゲスト含む）
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Supabase Auth（uuid会員）
   const [authUserId, setAuthUserId] = useState<string | null>(null);
@@ -189,14 +194,11 @@ const StoreProfilePage: React.FC = () => {
 
   // ★ Owner 判定は Auth を正とする（store.owner_user_id は uuid）
   const isOwner =
-    !!authUserId && !!storeOwnerUserId && authUserId === storeOwnerUserId;
-
-  // DMスレッドは「viewer(会員uuid優先) × storeOwner(uuid)」
-  const viewerIdForThread = authUserId ?? currentUserId;
-  const threadId =
-    viewerIdForThread && storeOwnerUserId && !isOwner
-      ? makeThreadId(viewerIdForThread, storeOwnerUserId)
-      : null;
+    !!authUserId &&
+    !!storeOwnerUserId &&
+    isUuid(authUserId) &&
+    isUuid(storeOwnerUserId) &&
+    authUserId === storeOwnerUserId;
 
   const [relations, setRelations] = useState<RelationFlags>({
     following: false,
@@ -205,9 +207,7 @@ const StoreProfilePage: React.FC = () => {
   });
 
   // 在籍セラピスト（DB）
-  const [therapists, setTherapists] = useState<
-    { id: string; display_name: string; avatar_url?: string | null }[]
-  >([]);
+  const [therapists, setTherapists] = useState<TherapistHit[]>([]);
 
   const [likes, setLikes] = useState<Record<string, boolean>>({});
 
@@ -220,11 +220,9 @@ const StoreProfilePage: React.FC = () => {
   const [applyLoading, setApplyLoading] = useState(false);
   const [applyDone, setApplyDone] = useState(false);
 
-  // viewer id 初期化（guest + auth）
+  // Auth 初期化
   useEffect(() => {
     if (typeof window === "undefined") return;
-
-    setCurrentUserId(getCurrentUserId());
 
     supabase.auth
       .getUser()
@@ -232,49 +230,38 @@ const StoreProfilePage: React.FC = () => {
       .catch(() => setAuthUserId(null));
   }, []);
 
-  // relation 復元
+  // relation 復元（uuid会員同士のみ）
   useEffect(() => {
-    const viewerId = authUserId ?? currentUserId;
-    if (!viewerId) return;
-
     // 自分のページは relation 無効
     if (isOwner) {
       setRelations({ following: false, muted: false, blocked: false });
       return;
     }
 
-    // Supabase relations（uuid同士）
-    if (isUuid(authUserId) && isUuid(storeOwnerUserId)) {
-      if (authUserId === storeOwnerUserId) return;
-
-      let cancelled = false;
-      (async () => {
-        const row = await getRelation(
-          authUserId as UserId,
-          storeOwnerUserId as UserId
-        );
-        if (cancelled) return;
-        setRelations(toRelationFlags(row));
-      })();
-      return () => {
-        cancelled = true;
-      };
+    if (!isUuid(authUserId) || !isUuid(storeOwnerUserId)) {
+      setRelations({ following: false, muted: false, blocked: false });
+      return;
     }
+    if (authUserId === storeOwnerUserId) return;
 
-    // guest 等：localStorage 版
-    const localTargetId = (storeOwnerUserId ?? storeId) as UserId;
-    if (viewerId !== (storeOwnerUserId ?? storeId)) {
-      const flags = getLocalRelationFlags(viewerId as UserId, localTargetId);
-      setRelations(flags);
-    }
-  }, [currentUserId, authUserId, storeOwnerUserId, storeId, isOwner]);
+    let cancelled = false;
+    (async () => {
+      const row = await getRelation(authUserId as UserId, storeOwnerUserId as UserId);
+      if (cancelled) return;
+      setRelations(toRelationFlags(row));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, storeOwnerUserId, isOwner]);
 
   // 在籍申請ボタン表示判定（uuid会員の therapist のみ）
   useEffect(() => {
     let cancelled = false;
 
     const checkEligibility = async () => {
-      if (!authUserId || !isUuid(authUserId)) {
+      if (!isUuid(authUserId)) {
         setCanApplyMembership(false);
         return;
       }
@@ -311,79 +298,47 @@ const StoreProfilePage: React.FC = () => {
     };
   }, [authUserId, storeOwnerUserId]);
 
-  // フォロー/ミュート/ブロック
+  // フォロー/ミュート/ブロック（uuid会員同士のみ）
   const handleToggleFollow = async () => {
-    const viewerId = authUserId ?? currentUserId;
-    if (!viewerId) return;
+    if (isOwner) return;
+    if (!isUuid(authUserId) || !isUuid(storeOwnerUserId)) return;
+    if (authUserId === storeOwnerUserId) return;
+
     const nextEnabled = !relations.following;
 
-    if (isOwner) return;
+    const ok = await setRelationOnServer({
+      userId: authUserId as UserId,
+      targetId: storeOwnerUserId as UserId,
+      type: nextEnabled ? "follow" : null,
+    });
+    if (!ok) return;
 
-    if (isUuid(authUserId) && isUuid(storeOwnerUserId)) {
-      if (authUserId === storeOwnerUserId) return;
-
-      const ok = await setRelationOnServer({
-        userId: authUserId as UserId,
-        targetId: storeOwnerUserId as UserId,
-        type: nextEnabled ? "follow" : null,
-      });
-      if (!ok) return;
-
-      setRelations({ following: nextEnabled, muted: false, blocked: false });
-      return;
-    }
-
-    const localTargetId = (storeOwnerUserId ?? storeId) as UserId;
-    if (viewerId !== (storeOwnerUserId ?? storeId)) {
-      const updated = setLocalRelation(
-        viewerId as UserId,
-        localTargetId,
-        "follow",
-        nextEnabled
-      );
-      setRelations(updated);
-    }
+    setRelations({ following: nextEnabled, muted: false, blocked: false });
   };
 
   const handleToggleMute = async () => {
-    const viewerId = authUserId ?? currentUserId;
-    if (!viewerId) return;
+    if (isOwner) return;
+    if (!isUuid(authUserId) || !isUuid(storeOwnerUserId)) return;
+    if (authUserId === storeOwnerUserId) return;
+
     const nextEnabled = !relations.muted;
 
-    if (isOwner) return;
+    const ok = await setRelationOnServer({
+      userId: authUserId as UserId,
+      targetId: storeOwnerUserId as UserId,
+      type: nextEnabled ? "mute" : null,
+    });
+    if (!ok) return;
 
-    if (isUuid(authUserId) && isUuid(storeOwnerUserId)) {
-      if (authUserId === storeOwnerUserId) return;
-
-      const ok = await setRelationOnServer({
-        userId: authUserId as UserId,
-        targetId: storeOwnerUserId as UserId,
-        type: nextEnabled ? "mute" : null,
-      });
-      if (!ok) return;
-
-      setRelations({ following: false, muted: nextEnabled, blocked: false });
-      return;
-    }
-
-    const localTargetId = (storeOwnerUserId ?? storeId) as UserId;
-    if (viewerId !== (storeOwnerUserId ?? storeId)) {
-      const updated = setLocalRelation(
-        viewerId as UserId,
-        localTargetId,
-        "mute",
-        nextEnabled
-      );
-      setRelations(updated);
-    }
+    setRelations({ following: false, muted: nextEnabled, blocked: false });
   };
 
   const handleToggleBlock = async () => {
-    const viewerId = authUserId ?? currentUserId;
-    if (!viewerId) return;
-    const nextEnabled = !relations.blocked;
-
     if (isOwner) return;
+    if (!isUuid(authUserId) || !isUuid(storeOwnerUserId)) return;
+    if (authUserId === storeOwnerUserId) return;
+
+    const nextEnabled = !relations.blocked;
 
     if (nextEnabled) {
       const ok = window.confirm(
@@ -392,40 +347,23 @@ const StoreProfilePage: React.FC = () => {
       if (!ok) return;
     }
 
-    if (isUuid(authUserId) && isUuid(storeOwnerUserId)) {
-      if (authUserId === storeOwnerUserId) return;
+    const ok = await setRelationOnServer({
+      userId: authUserId as UserId,
+      targetId: storeOwnerUserId as UserId,
+      type: nextEnabled ? "block" : null,
+    });
+    if (!ok) return;
 
-      const ok = await setRelationOnServer({
-        userId: authUserId as UserId,
-        targetId: storeOwnerUserId as UserId,
-        type: nextEnabled ? "block" : null,
-      });
-      if (!ok) return;
-
-      setRelations({ following: false, muted: false, blocked: nextEnabled });
-      return;
-    }
-
-    const localTargetId = (storeOwnerUserId ?? storeId) as UserId;
-    if (viewerId !== (storeOwnerUserId ?? storeId)) {
-      const updated = setLocalRelation(
-        viewerId as UserId,
-        localTargetId,
-        "block",
-        nextEnabled
-      );
-      setRelations(updated);
-    }
+    setRelations({ following: false, muted: false, blocked: nextEnabled });
   };
 
   // ==============================
-  // ★ 在籍申請：RPC直呼び（401回避の決定打）
+  // ★ 在籍申請：RPC直呼び（401回避）
   // ==============================
   const handleApplyMembership = async () => {
     try {
       setApplyLoading(true);
 
-      // 1) Auth確認（localStorage session のままOK）
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       const authId = userData?.user?.id ?? null;
 
@@ -433,13 +371,11 @@ const StoreProfilePage: React.FC = () => {
         throw new Error("unauthorized");
       }
 
-      // 2) RPC実行（auth.uid() が取れる）
       const { error } = await supabase.rpc("rpc_create_therapist_store_request", {
         p_store_id: storeId,
       });
 
       if (error) {
-        // 既に pending 等
         if (String(error.message || "").includes("already pending")) {
           setApplyDone(true);
           return;
@@ -502,13 +438,16 @@ const StoreProfilePage: React.FC = () => {
 
         setStoreOwnerUserId(row.owner_user_id ?? null);
 
+        // ★ 店舗 handle は owner_user_id から @6桁
+        setStoreHandle(toPublicHandleFromUserId(row.owner_user_id) ?? "");
+
         // ★ 店舗アイコン（DB正）
         const storeAvatarResolved = looksValidAvatarUrl(row.avatar_url ?? null)
           ? resolveAvatarUrl(row.avatar_url ?? null)
           : null;
         setStoreAvatarUrl(storeAvatarResolved);
 
-        // 2) users（handle + avatar fallback）
+        // 2) users（avatar fallback用）
         if (row.owner_user_id) {
           const { data: userRow, error: uError } = await supabase
             .from("users")
@@ -521,8 +460,6 @@ const StoreProfilePage: React.FC = () => {
           if (uError) {
             console.error("[StoreProfile] owner user fetch error:", uError);
           } else if (userRow) {
-            if (userRow.name?.trim()) setStoreHandle(`@${userRow.name.trim()}`);
-
             const ownerAvatarResolved = looksValidAvatarUrl(userRow.avatar_url)
               ? resolveAvatarUrl(userRow.avatar_url)
               : null;
@@ -530,7 +467,6 @@ const StoreProfilePage: React.FC = () => {
           }
 
           // 3) posts (author_id=owner_user_id)
-          // ★ 投稿の area を使わないので select から削除
           const { data: postRows, error: pError } = await supabase
             .from("posts")
             .select("id, author_id, body, created_at")
@@ -590,22 +526,28 @@ const StoreProfilePage: React.FC = () => {
       try {
         const { data, error } = await supabase
           .from("therapists")
-          .select("id, display_name, avatar_url, store_id")
+          .select("id, user_id, display_name, avatar_url, store_id")
           .eq("store_id", storeId);
 
         if (cancelled) return;
         if (error) throw error;
 
-        const rows = (data ?? []).map((t: any) => {
+        const rows: TherapistHit[] = (data ?? []).map((t: any) => {
           const raw = (t as DbTherapistRow).avatar_url ?? null;
           const resolved = looksValidAvatarUrl(raw) ? resolveAvatarUrl(raw) : null;
 
+          const displayName =
+            ((t as DbTherapistRow).display_name ?? "").trim() ||
+            "セラピスト";
+
+          const userId = (t as DbTherapistRow).user_id ?? null;
+
           return {
             id: String((t as DbTherapistRow).id),
-            display_name:
-              ((t as DbTherapistRow).display_name ?? "").trim() ||
-              String((t as DbTherapistRow).id),
-            avatar_url: resolved,
+            userId,
+            displayName,
+            avatarUrl: resolved,
+            handle: toPublicHandleFromUserId(userId) ?? "",
           };
         });
 
@@ -631,12 +573,20 @@ const StoreProfilePage: React.FC = () => {
     setLikes((prev) => ({ ...prev, [postId]: !prev[postId] }));
   };
 
+  // ★ Relation UI は uuid会員同士 + 自分以外 のときだけ
   const canShowRelationUi =
-    !!(authUserId ?? currentUserId) && !!storeOwnerUserId && !isOwner;
+    !isOwner && isUuid(authUserId) && isUuid(storeOwnerUserId);
+
+  // ★ DM は uuidログイン済み + 相手uuid + 自分以外 + ブロックしてない ときだけ
+  const canShowDmButton =
+    !isOwner &&
+    !relations.blocked &&
+    isUuid(authUserId) &&
+    isUuid(storeOwnerUserId);
 
   return (
     <div className="app-shell">
-      <AppHeader title={storeName} subtitle={storeHandle} />
+      <AppHeader title={storeName} subtitle={storeHandle || ""} />
 
       <main className="app-main">
         {profileError && (
@@ -660,11 +610,11 @@ const StoreProfilePage: React.FC = () => {
               <div className="store-name-row">
                 <span className="store-name">{storeName}</span>
                 <span className="store-handle">
-                  {storeHandle}
+                  {storeHandle || ""}
 
-                  {!isOwner && threadId && !relations.blocked && (
+                  {canShowDmButton && storeOwnerUserId && (
                     <Link
-                      href={`/messages/new?to=${storeOwnerUserId}`} // targetUserId = 相手の users.id(uuid)
+                      href={`/messages/new?to=${storeOwnerUserId}`}
                       className="dm-inline-btn no-link-style"
                     >
                       ✉
@@ -773,14 +723,14 @@ const StoreProfilePage: React.FC = () => {
                     <AvatarCircle
                       className="therapist-avatar"
                       size={40}
-                      avatarUrl={t.avatar_url ?? null}
-                      displayName={t.display_name}
+                      avatarUrl={t.avatarUrl}
+                      displayName={t.displayName}
                       alt=""
                     />
 
                     <div className="therapist-item-main">
-                      <div className="therapist-item-name">{t.display_name}</div>
-                      <div className="therapist-item-id">@{t.id}</div>
+                      <div className="therapist-item-name">{t.displayName}</div>
+                      <div className="therapist-item-id">{t.handle || ""}</div>
                     </div>
                   </Link>
                 </li>
@@ -894,10 +844,9 @@ const StoreProfilePage: React.FC = () => {
                         <div className="feed-header">
                           <div className="feed-name-row">
                             <span className="post-name">{storeName}</span>
-                            <span className="post-username">{storeHandle}</span>
+                            <span className="post-username">{storeHandle || ""}</span>
                           </div>
 
-                          {/* ★ 投稿エリア表示を撤去（時間だけ） */}
                           <div className="post-meta">
                             <span>{p.timeAgo}</span>
                           </div>

@@ -8,6 +8,7 @@ import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
+import { toPublicHandleFromUserId } from "@/lib/handle";
 
 type AuthorRole = "therapist" | "store" | "user";
 
@@ -25,9 +26,13 @@ type DetailPost = {
 
   author_role: AuthorRole;
   author_name: string;
+
+  // ★ 追加：@xxxxxx 表示用
+  author_handle: string | null;
+
   avatar_url: string | null;
 
-  // ここが今回追加：プロフィール先
+  // プロフィール先
   profile_path: string | null;
 };
 
@@ -102,7 +107,10 @@ export default function PostDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const profileClickable = useMemo(() => !!post?.profile_path, [post?.profile_path]);
+  const profileClickable = useMemo(
+    () => !!post?.profile_path,
+    [post?.profile_path]
+  );
 
   useEffect(() => {
     if (!postId) return;
@@ -237,7 +245,13 @@ export default function PostDetailPage() {
             ? "セラピスト"
             : "名無し");
 
-        // 7) avatar（あなたの方針に寄せる：role優先 → users）
+        // ★ 追加：@handle（canonical users.id から @6桁）
+        const authorHandle =
+          canonicalUserId && isUuid(canonicalUserId)
+            ? toPublicHandleFromUserId(canonicalUserId)
+            : null;
+
+        // 7) avatar（role優先 → users）
         const roleAvatarRaw =
           inferredKind === "therapist"
             ? therapist?.avatar_url ?? null
@@ -247,7 +261,8 @@ export default function PostDetailPage() {
 
         const userAvatarRaw = user?.avatar_url ?? null;
 
-        const avatarUrl = resolveAvatarUrl(roleAvatarRaw) ?? resolveAvatarUrl(userAvatarRaw);
+        const avatarUrl =
+          resolveAvatarUrl(roleAvatarRaw) ?? resolveAvatarUrl(userAvatarRaw);
 
         // 8) profile path（role id を優先）
         let profilePath: string | null = null;
@@ -272,6 +287,7 @@ export default function PostDetailPage() {
           canonical_user_id: canonicalUserId,
           author_role: inferredKind,
           author_name: authorName,
+          author_handle: authorHandle ?? null,
           avatar_url: avatarUrl ?? null,
           profile_path: profilePath,
         });
@@ -337,6 +353,12 @@ export default function PostDetailPage() {
 
               <div className="post-author">
                 <div className="post-author-name">{post.author_name}</div>
+
+                {/* ★ 追加：名前の下に @xxxxxx（その下に timeAgo） */}
+                {post.author_handle && (
+                  <div className="post-author-handle">{post.author_handle}</div>
+                )}
+
                 <div className="post-time">{timeAgo(post.created_at)}</div>
               </div>
             </div>
@@ -396,6 +418,12 @@ export default function PostDetailPage() {
         .post-author-name {
           font-weight: 600;
           font-size: 14px;
+        }
+
+        .post-author-handle {
+          font-size: 12px;
+          color: #777;
+          margin-top: 2px;
         }
 
         .post-time {

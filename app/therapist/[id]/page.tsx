@@ -9,7 +9,6 @@ import AvatarCircle from "@/components/AvatarCircle";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 
-import { makeThreadId } from "@/lib/dmThread";
 import { getCurrentUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
@@ -23,6 +22,7 @@ import type { UserId } from "@/types/user";
 import { RelationActions } from "@/components/RelationActions";
 
 import type { DbTherapistRow, DbUserRow, DbPostRow, DbStoreRow } from "@/types/db";
+import { toPublicHandleFromUserId } from "@/lib/handle";
 
 // ===== uuid 判定（relations は users.id = uuid で運用する）=====
 const UUID_REGEX =
@@ -83,6 +83,10 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 
 type TherapistProfile = {
   displayName: string;
+
+  /**
+   * ★ 表示ハンドルは統一：users.id(uuid) から @xxxxxx（先頭6桁）
+   */
   handle: string;
 
   /**
@@ -135,21 +139,15 @@ const TherapistProfilePage: React.FC = () => {
   const [loadingStore, setLoadingStore] = useState(false);
   const [storeError, setStoreError] = useState<string | null>(null);
 
-  // ★「自分のページ」判定は Supabase Auth を正とする
+  // ★「自分のページ」判定は Supabase Auth uuid を正とする
   const isOwner =
-    !!authUserId && !!therapistUserId && authUserId === therapistUserId;
+    !!authUserId &&
+    !!therapistUserId &&
+    isUuid(authUserId) &&
+    isUuid(therapistUserId) &&
+    authUserId === therapistUserId;
 
-  // ★ DM threadId は uuid を優先して作る
-  const viewerIdForThread = authUserId ?? currentUserId;
-  const targetIdForThread = therapistUserId ?? therapistId;
-
-  const threadId =
-    viewerIdForThread &&
-    targetIdForThread &&
-    viewerIdForThread !== targetIdForThread
-      ? makeThreadId(viewerIdForThread, targetIdForThread)
-      : null;
-
+  // relations 状態
   const [relations, setRelations] = useState<RelationFlags>({
     following: false,
     muted: false,
@@ -186,36 +184,32 @@ const TherapistProfilePage: React.FC = () => {
       .catch(() => setAuthUserId(null));
   }, []);
 
-  // relation の復元（自分のページは無効）
+  // relation の復元（uuid会員同士のみ / 自分のページは無効）
   useEffect(() => {
     if (isOwner) {
       setRelations({ following: false, muted: false, blocked: false });
       return;
     }
-    if (!currentUserId) return;
 
     // ★ relations は uuid 会員同士のみ
-    if (isUuid(authUserId) && isUuid(therapistUserId)) {
-      if (authUserId === therapistUserId) return;
-
-      let cancelled = false;
-      (async () => {
-        const row = await getRelation(
-          authUserId as UserId,
-          therapistUserId as UserId
-        );
-        if (cancelled) return;
-        setRelations(toRelationFlags(row));
-      })();
-
-      return () => {
-        cancelled = true;
-      };
+    if (!isUuid(authUserId) || !isUuid(therapistUserId)) {
+      setRelations({ following: false, muted: false, blocked: false });
+      return;
     }
 
-    // guest / 非uuid は relations を使わない
-    setRelations({ following: false, muted: false, blocked: false });
-  }, [currentUserId, authUserId, therapistUserId, isOwner]);
+    if (authUserId === therapistUserId) return;
+
+    let cancelled = false;
+    (async () => {
+      const row = await getRelation(authUserId as UserId, therapistUserId as UserId);
+      if (cancelled) return;
+      setRelations(toRelationFlags(row));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, therapistUserId, isOwner]);
 
   // ===== フォロー / ミュート / ブロック（uuid会員同士のみ）=====
   const handleToggleFollow = async () => {
@@ -316,16 +310,17 @@ const TherapistProfilePage: React.FC = () => {
           return;
         }
 
-        setTherapistUserId((therapist as any).user_id ?? null);
+        const tuid = (therapist as any).user_id ?? null;
+        setTherapistUserId(tuid);
         setLinkedStoreId((therapist as any).store_id ?? null);
 
-        // 2) users（handle用 + avatar優先用）
+        // 2) users（avatar優先用 / handle用）
         let user: DbUserRow | null = null;
-        if ((therapist as any).user_id) {
+        if (tuid) {
           const { data: userRow, error: uError } = await supabase
             .from("users")
             .select("id, name, avatar_url")
-            .eq("id", (therapist as any).user_id)
+            .eq("id", tuid)
             .maybeSingle<DbUserRow>();
 
           if (!cancelled) {
@@ -342,10 +337,10 @@ const TherapistProfilePage: React.FC = () => {
         const displayName =
           (therapist as any).display_name?.trim().length
             ? (therapist as any).display_name
-            : "";
+            : "セラピスト";
 
-        const handle =
-          user?.name && user.name.trim().length ? `@${user.name.trim()}` : "";
+        // ★ handle統一：users.id(uuid) → @xxxxxx（先頭6桁）
+        const handle = toPublicHandleFromUserId(tuid) ?? "";
 
         // ★ 自由入力エリア（string）
         const area =
@@ -378,12 +373,11 @@ const TherapistProfilePage: React.FC = () => {
         setLoadingProfile(false);
 
         // 3) posts（このページの投稿は「users.id（uuid）」で author_id を持つ前提）
-        if ((therapist as any).user_id) {
-          // ★ 投稿の area を使わないので select から削除
+        if (tuid) {
           const { data: postRows, error: pError } = await supabase
             .from("posts")
             .select("id, author_id, body, created_at")
-            .eq("author_id", (therapist as any).user_id)
+            .eq("author_id", tuid)
             .order("created_at", { ascending: false })
             .limit(50);
 
@@ -495,12 +489,17 @@ const TherapistProfilePage: React.FC = () => {
     };
   }, [linkedStoreId]);
 
-  // ★自分のページなら relation UI は出さない
-  const canShowRelationUi = !isOwner;
+  // ★ Relation UI は uuid会員同士 + 自分以外 のときだけ
+  const canShowRelationUi =
+    !isOwner && isUuid(authUserId) && isUuid(therapistUserId);
 
-  // DMボタンは「店舗に紐づいていて」「自分ではなく」「ブロックしていない」場合のみ
+  // DMボタンは「店舗に紐づいていて」「会員ログイン済み」「相手uuid」「自分ではなく」「ブロックしていない」場合のみ
   const canShowDmButton =
-    !!threadId && isStoreLinked && !relations.blocked && !isOwner;
+    isStoreLinked &&
+    !relations.blocked &&
+    !isOwner &&
+    isUuid(authUserId) &&
+    isUuid(therapistUserId);
 
   // 関連リンク（SNS）が空ならブロック自体を出さない
   const showSnsBlock = !!(profile.snsX || profile.snsLine || profile.snsOther);
@@ -534,9 +533,9 @@ const TherapistProfilePage: React.FC = () => {
                   <span className="profile-handle">
                     {profile.handle || ""}
 
-                    {canShowDmButton && (
+                    {canShowDmButton && therapistUserId && (
                       <Link
-                        href={`/messages/new?to=${therapistUserId}`} // targetUserId = 相手の users.id(uuid)
+                        href={`/messages/new?to=${therapistUserId}`}
                         className="dm-inline-btn no-link-style"
                       >
                         ✉
@@ -664,11 +663,7 @@ const TherapistProfilePage: React.FC = () => {
                 {loadingStore && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle
-                        size={40}
-                        fallbackText="…"
-                        className="store-avatar"
-                      />
+                      <AvatarCircle size={40} fallbackText="…" className="store-avatar" />
                       <div className="linked-store-main">
                         <div className="linked-store-name">読み込み中…</div>
                         <div className="linked-store-meta">
@@ -682,17 +677,10 @@ const TherapistProfilePage: React.FC = () => {
                 {!loadingStore && storeError && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle
-                        size={40}
-                        fallbackText="!"
-                        className="store-avatar"
-                      />
+                      <AvatarCircle size={40} fallbackText="!" className="store-avatar" />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
-                        <div
-                          className="linked-store-meta"
-                          style={{ color: "#b00020" }}
-                        >
+                        <div className="linked-store-meta" style={{ color: "#b00020" }}>
                           {storeError}
                         </div>
                       </div>
@@ -725,11 +713,7 @@ const TherapistProfilePage: React.FC = () => {
                 {!loadingStore && !storeError && !linkedStore && (
                   <div className="linked-store-card">
                     <div className="linked-store-row">
-                      <AvatarCircle
-                        size={40}
-                        fallbackText="S"
-                        className="store-avatar"
-                      />
+                      <AvatarCircle size={40} fallbackText="S" className="store-avatar" />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
                         <div className="linked-store-meta">

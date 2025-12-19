@@ -104,6 +104,8 @@ async function authedFetch(input: RequestInfo | URL, init?: RequestInit) {
   return fetch(input, { ...init, headers });
 }
 
+const hasUnread = true;
+
 const StoreConsolePage: React.FC = () => {
   const params = useParams<{ id: string }>();
   const storeId = params?.id || "";
@@ -301,7 +303,6 @@ const StoreConsolePage: React.FC = () => {
 
         // 401 の場合：セッションが無い / 失効
         if (res.status === 401) {
-          // ここで強制遷移したいなら、StoreConsoleにrouter導入でOK（今回は副作用最小）
           // alert("ログインが必要です。再度ログインしてください。");
         }
 
@@ -343,18 +344,6 @@ const StoreConsolePage: React.FC = () => {
       cancelled = true;
     };
   }, [storeId, loadPendingRequests]);
-
-  if (!loaded) {
-    return (
-      <div className="app-root">
-        <AppHeader />
-        <main className="app-main">
-          <p>読み込み中...</p>
-        </main>
-        <BottomNav />
-      </div>
-    );
-  }
 
   const canSave = state.storeName.trim().length > 0;
 
@@ -564,16 +553,17 @@ const StoreConsolePage: React.FC = () => {
 
   return (
     <div className="app-root">
-      <AppHeader />
+      <AppHeader
+        title="店舗コンソール"
+        subtitle="LRoom 内での店舗情報を設定します。後からいつでも変更できます。"
+      />
 
-      <main className="app-main store-main">
-        <h1 className="app-title">店舗コンソール</h1>
-        <p className="app-header-sub">
-          LRoom 内での店舗情報を設定します。後からいつでも変更できます。
-        </p>
+      <main className="app-main store-console-main">
+        {/* プロフィール（共通：surface-card + field） */}
+        <section className="surface-card sc-card">
+          <h2 className="sc-title">表示情報</h2>
 
-        <section className="store-card">
-          <div className="store-profile-row">
+          <div className="sc-profile-row">
             <AvatarUploader
               avatarUrl={avatarDisplay}
               displayName={state.storeName || "S"}
@@ -588,24 +578,28 @@ const StoreConsolePage: React.FC = () => {
               }}
             />
 
-            <div className="store-profile-main">
-              <label className="field-label">店舗名</label>
-              <input
-                type="text"
-                className="field-input"
-                value={state.storeName}
-                onChange={(e) => updateField("storeName", e.target.value)}
-                placeholder="例）LuX nagoya"
-              />
+            <div className="sc-profile-main">
+              <div className="sc-id-pill">Store ID：{storeId || "-"}</div>
 
-              <div className="store-sub-row">
-                <div className="store-sub-pill store-sub-pill--soft">
+              <div className="field">
+                <label className="field-label">店舗名</label>
+                <input
+                  type="text"
+                  className="field-input"
+                  value={state.storeName}
+                  onChange={(e) => updateField("storeName", e.target.value)}
+                  placeholder="例）LuX nagoya"
+                />
+              </div>
+
+              <div className="sc-sub-row">
+                <div className="sc-sub-pill sc-sub-pill--soft">
                   種別: 女性向けリラクゼーション
                 </div>
               </div>
 
               {avatarUploading && (
-                <div className="store-sub-pill store-sub-pill--soft">
+                <div className="sc-sub-pill sc-sub-pill--soft">
                   アイコン画像を保存しています…
                 </div>
               )}
@@ -613,10 +607,11 @@ const StoreConsolePage: React.FC = () => {
           </div>
         </section>
 
-        <section className="store-card">
-          <div className="store-section-title">基本情報</div>
+        {/* 基本情報（共通：surface-card + field） */}
+        <section className="surface-card sc-card">
+          <h2 className="sc-title">基本情報</h2>
 
-          <div className="field-row">
+          <div className="field">
             <label className="field-label">エリア</label>
             <input
               type="text"
@@ -627,7 +622,7 @@ const StoreConsolePage: React.FC = () => {
             />
           </div>
 
-          <div className="field-row">
+          <div className="field">
             <label className="field-label">公式サイトURL</label>
             <input
               type="url"
@@ -638,7 +633,7 @@ const StoreConsolePage: React.FC = () => {
             />
           </div>
 
-          <div className="field-row">
+          <div className="field">
             <label className="field-label">公式LINE / 予約リンク</label>
             <input
               type="url"
@@ -649,7 +644,7 @@ const StoreConsolePage: React.FC = () => {
             />
           </div>
 
-          <div className="field-row">
+          <div className="field">
             <label className="field-label">X（旧Twitter）URL</label>
             <input
               type="url"
@@ -660,7 +655,7 @@ const StoreConsolePage: React.FC = () => {
             />
           </div>
 
-          <div className="field-row">
+          <div className="field">
             <label className="field-label">ツイキャスURL</label>
             <input
               type="url"
@@ -671,10 +666,10 @@ const StoreConsolePage: React.FC = () => {
             />
           </div>
 
-          <div className="field-row">
+          <div className="field">
             <label className="field-label">プロフィール</label>
             <textarea
-              className="field-textarea"
+              className="field-input sc-textarea"
               value={state.description}
               onChange={(e) => updateField("description", e.target.value)}
               placeholder="お店の雰囲気や大切にしていることなど"
@@ -682,58 +677,61 @@ const StoreConsolePage: React.FC = () => {
           </div>
         </section>
 
-        <section className="store-card">
-          <div className="store-section-title">通知設定</div>
+        {/* 通知（共通：toggle-row/toggle-switch） */}
+        <section className="surface-card sc-card">
+          <h2 className="sc-title">通知設定</h2>
 
-          <div className="toggle-row" onClick={handleToggleDmNotice}>
-            <div className="toggle-main">
+          <div className="toggle-row">
+            <div className="toggle-text">
               <div className="toggle-title">DMの通知</div>
-              <div className="toggle-caption">
+              <div className="sc-caption">
                 セラピスト / ユーザーからのDMに関する通知を受け取ります
               </div>
             </div>
 
-            <div className={"toggle-switch" + (state.dmNotice ? " is-on" : "")}>
-              <div className="toggle-knob" />
-            </div>
+            <button
+              type="button"
+              className={"toggle-switch" + (state.dmNotice ? " is-on" : "")}
+              onClick={handleToggleDmNotice}
+              aria-pressed={state.dmNotice}
+            >
+              <span className="toggle-knob" />
+            </button>
           </div>
         </section>
 
-        <section className="store-card therapist-card">
-          <div className="store-section-title">セラピスト管理</div>
-          <p className="therapist-helper">
+        {/* セラピスト管理（固有機能：見た目だけ surface-card に寄せる） */}
+        <section className="surface-card sc-card">
+          <h2 className="sc-title">セラピスト管理</h2>
+          <p className="sc-caption">
             在籍申請が届いたセラピストを承認すると、この店舗に紐づきます。
           </p>
 
-          <div className="therapist-block">
-            <h3 className="therapist-block-title">
-              現在いっしょに活動しているセラピスト
-            </h3>
+          <div className="sc-block">
+            <h3 className="sc-block-title">現在いっしょに活動しているセラピスト</h3>
 
             {loadingTherapists && therapists.length === 0 ? (
-              <p className="therapist-helper">読み込み中です…</p>
+              <p className="sc-caption">読み込み中です…</p>
             ) : therapists.length === 0 ? (
-              <p className="therapist-helper">
+              <p className="sc-caption">
                 まだこの店舗に紐づいているセラピストはいません。
               </p>
             ) : (
-              <ul className="therapist-list">
+              <ul className="sc-list">
                 {therapists.map((t) => (
-                  <li key={t.id} className="therapist-row">
-                    <div className="therapist-row-main">
-                      <span className="therapist-name">
+                  <li key={t.id} className="sc-row">
+                    <div className="sc-row-main">
+                      <span className="sc-name">
                         {t.display_name || "名前未設定"}
                       </span>
-                      <span className="therapist-meta">
-                        {t.area || "エリア未設定"}
-                      </span>
+                      <span className="sc-meta">{t.area || "エリア未設定"}</span>
                     </div>
 
-                    <div className="therapist-actions">
-                      <span className="therapist-tag">店舗に参加中</span>
+                    <div className="sc-actions">
+                      <span className="sc-tag">店舗に参加中</span>
                       <button
                         type="button"
-                        className="therapist-detach-btn"
+                        className="sc-btn-danger-outline"
                         onClick={() => openDetachModal(t)}
                       >
                         在籍解除
@@ -745,18 +743,18 @@ const StoreConsolePage: React.FC = () => {
             )}
           </div>
 
-          <div className="therapist-block">
-            <h3 className="therapist-block-title">在籍申請（承認待ち）</h3>
-            <p className="therapist-helper">
+          <div className="sc-block sc-block--split">
+            <h3 className="sc-block-title">在籍申請（承認待ち）</h3>
+            <p className="sc-caption">
               セラピスト側から「在籍申請」が届いた一覧です。承認/却下できます。
             </p>
 
             {loadingRequests && requests.length === 0 ? (
-              <p className="therapist-helper">読み込み中です…</p>
+              <p className="sc-caption">読み込み中です…</p>
             ) : requests.length === 0 ? (
-              <p className="therapist-helper">現在、承認待ちの申請はありません。</p>
+              <p className="sc-caption">現在、承認待ちの申請はありません。</p>
             ) : (
-              <ul className="therapist-list">
+              <ul className="sc-list">
                 {requests.map((r) => {
                   const t = pickTherapistOne(r.therapist);
                   const labelName = t?.display_name || "名前未設定";
@@ -764,16 +762,16 @@ const StoreConsolePage: React.FC = () => {
                   const busy = reviewingRequestId === r.id;
 
                   return (
-                    <li key={r.id} className="therapist-row">
-                      <div className="therapist-row-main">
-                        <span className="therapist-name">{labelName}</span>
-                        <span className="therapist-meta">{labelArea}</span>
+                    <li key={r.id} className="sc-row">
+                      <div className="sc-row-main">
+                        <span className="sc-name">{labelName}</span>
+                        <span className="sc-meta">{labelArea}</span>
                       </div>
 
-                      <div className="therapist-actions">
+                      <div className="sc-actions">
                         <button
                           type="button"
-                          className="therapist-approve-btn"
+                          className="sc-btn-primary"
                           onClick={() => handleReviewRequest(r.id, "approved")}
                           disabled={busy}
                         >
@@ -782,7 +780,7 @@ const StoreConsolePage: React.FC = () => {
 
                         <button
                           type="button"
-                          className="therapist-reject-btn"
+                          className="sc-btn-outline"
                           onClick={() => handleReviewRequest(r.id, "rejected")}
                           disabled={busy}
                         >
@@ -796,19 +794,21 @@ const StoreConsolePage: React.FC = () => {
             )}
           </div>
         </section>
-
-        <div className="store-save-wrap">
-          <button
-            type="button"
-            className="store-save-btn"
-            disabled={!canSave || saving}
-            onClick={handleSave}
-          >
-            {saving ? "保存中..." : "この内容で保存する"}
-          </button>
-        </div>
       </main>
 
+      {/* 保存バー（共通：footer固定） */}
+      <footer className="sc-footer-bar">
+        <button
+          type="button"
+          className="btn-primary btn-primary--full"
+          disabled={!canSave || saving}
+          onClick={handleSave}
+        >
+          {saving ? "保存中..." : "この内容で保存する"}
+        </button>
+      </footer>
+
+      {/* モーダル（固有：維持。見た目は既存に寄せつつ共通トーン） */}
       {detachOpen && detachTarget && (
         <div
           className="modal-backdrop"
@@ -859,204 +859,158 @@ const StoreConsolePage: React.FC = () => {
         </div>
       )}
 
-      <BottomNav />
+      <BottomNav active="mypage" hasUnread={hasUnread} />
 
       <style jsx>{`
-        .store-main {
+        .store-console-main {
           padding: 12px 16px 140px;
         }
 
-        .store-card {
-          border-radius: 16px;
-          border: 1px solid var(--border);
-          background: var(--surface);
-          padding: 12px;
-          box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+        .sc-card {
           margin-top: 12px;
         }
 
-        .store-profile-row {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-        }
-
-        .store-profile-main {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .store-sub-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-          margin-top: 10px;
-        }
-
-        .store-sub-pill {
-          font-size: 11px;
-        }
-
-        .store-sub-pill--soft {
-          background: var(--surface-soft);
-          color: var(--text-sub);
-          padding: 4px 8px;
-          border-radius: 999px;
-        }
-
-        .store-section-title {
+        .sc-title {
           font-size: 13px;
           font-weight: 600;
           margin-bottom: 8px;
           color: var(--text-sub);
         }
 
-        .field-row {
+        .sc-profile-row {
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+        }
+
+        .sc-profile-main {
+          flex: 1;
           display: flex;
           flex-direction: column;
-          gap: 4px;
-          margin-top: 10px;
+          gap: 8px;
         }
 
-        .field-label {
+        .sc-id-pill {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 8px;
+          border-radius: 999px;
+          background: var(--surface-soft);
           font-size: 11px;
           color: var(--text-sub);
+          width: fit-content;
         }
 
-        .field-input {
-          width: 100%;
+        .sc-sub-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: 2px;
+        }
+
+        .sc-sub-pill {
+          font-size: 11px;
+        }
+
+        .sc-sub-pill--soft {
+          background: var(--surface-soft);
+          color: var(--text-sub);
+          padding: 4px 8px;
           border-radius: 999px;
-          border: 1px solid var(--border);
-          padding: 6px 10px;
-          font-size: 13px;
-          background: #fff;
+          border: 1px solid rgba(0, 0, 0, 0.06);
         }
 
-        .field-textarea {
-          width: 100%;
-          border-radius: 16px;
-          border: 1px solid var(--border);
-          padding: 10px 12px;
-          font-size: 13px;
-          background: #fff;
-          line-height: 1.7;
+        .sc-textarea {
           min-height: 120px;
+          line-height: 1.7;
           resize: vertical;
-        }
-
-        .store-save-wrap {
-          margin-top: 16px;
-          padding-bottom: 24px;
-        }
-
-        .store-save-btn {
-          width: 100%;
-          border-radius: 999px;
+          border-radius: 16px; /* MyPageConsole寄り */
           padding: 10px 12px;
-          font-size: 14px;
-          font-weight: 600;
-          border: none;
-          cursor: pointer;
-          background: var(--accent);
-          color: #fff;
-          box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
         }
 
-        .store-save-btn[disabled] {
-          opacity: 0.6;
-          cursor: default;
+        .sc-caption {
+          font-size: 11px;
+          color: var(--text-sub);
+          line-height: 1.6;
+          margin-top: 4px;
         }
 
+        .sc-footer-bar {
+          position: fixed;
+          bottom: 58px;
+          left: 50%;
+          transform: translateX(-50%);
+          width: 100%;
+          max-width: 430px;
+          padding: 8px 16px;
+          background: linear-gradient(
+            to top,
+            rgba(247, 247, 250, 0.98),
+            rgba(247, 247, 250, 0.88)
+          );
+          border-top: 1px solid var(--border);
+          display: flex;
+          justify-content: center;
+          z-index: 25;
+        }
+
+        /* ===== MyPageConsole基準のトグル ===== */
         .toggle-row {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          gap: 10px;
-          padding: 10px 10px;
-          border-radius: 12px;
-          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
-          border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.04));
-          cursor: pointer;
+          gap: 12px;
         }
-
-        .toggle-main {
+        .toggle-text {
           flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
+          min-width: 0;
         }
-
         .toggle-title {
-          font-size: 12px;
+          font-size: 13px;
           font-weight: 600;
+          margin-bottom: 2px;
         }
-
-        .toggle-caption {
-          font-size: 11px;
-          color: var(--text-sub);
-          line-height: 1.5;
-        }
-
         .toggle-switch {
-          width: 44px;
-          height: 24px;
+          width: 48px;
+          height: 28px;
           border-radius: 999px;
-          background: #e5e5e5;
+          border: 1px solid rgba(0, 0, 0, 0.08);
           position: relative;
-          transition: background 0.2s ease;
-          flex-shrink: 0;
+          padding: 0;
+          background: #d1d5db; /* OFF */
         }
-
         .toggle-switch.is-on {
-          background: linear-gradient(135deg, #e6c87a, #d7b976);
+          background: linear-gradient(135deg, #d9b07c, #b4895a); /* ON=ゴールド */
         }
-
         .toggle-knob {
-          width: 20px;
-          height: 20px;
-          border-radius: 999px;
-          background: #9ca3af;
           position: absolute;
-          top: 2px;
-          left: 2px;
-          transition: transform 0.2s ease, background 0.2s ease;
+          top: 3px;
+          left: 3px;
+          width: 22px;
+          height: 22px;
+          border-radius: 999px;
+          background: #fff;
+          transition: transform 0.15s ease;
         }
-
         .toggle-switch.is-on .toggle-knob {
           transform: translateX(20px);
-          background: #ffffff;
         }
 
-        .therapist-card {
-          margin-top: 16px;
-        }
-
-        .therapist-helper {
-          font-size: 11px;
-          line-height: 1.6;
-          color: var(--text-sub);
-          margin-bottom: 6px;
-        }
-
-        .therapist-block {
+        /* ===== セラピスト管理：固有（見た目だけ統一トーン） ===== */
+        .sc-block {
           margin-top: 10px;
         }
-
-        .therapist-block + .therapist-block {
+        .sc-block--split {
           margin-top: 16px;
           padding-top: 12px;
           border-top: 1px solid var(--border-soft, rgba(0, 0, 0, 0.06));
         }
-
-        .therapist-block-title {
+        .sc-block-title {
           font-size: 12px;
           font-weight: 600;
           margin-bottom: 4px;
         }
-
-        .therapist-list {
+        .sc-list {
           margin-top: 6px;
           display: flex;
           flex-direction: column;
@@ -1064,8 +1018,7 @@ const StoreConsolePage: React.FC = () => {
           padding-left: 0;
           list-style: none;
         }
-
-        .therapist-row {
+        .sc-row {
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -1074,39 +1027,40 @@ const StoreConsolePage: React.FC = () => {
           background: var(--surface-soft, rgba(255, 255, 255, 0.9));
           border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.04));
         }
-
-        .therapist-row-main {
+        .sc-row-main {
           display: flex;
           flex-direction: column;
           gap: 2px;
+          min-width: 0;
         }
-
-        .therapist-name {
+        .sc-name {
           font-size: 13px;
           font-weight: 600;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
-
-        .therapist-meta {
+        .sc-meta {
           font-size: 11px;
           opacity: 0.7;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
-
-        .therapist-tag {
+        .sc-actions {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+          flex-shrink: 0;
+        }
+        .sc-tag {
           font-size: 11px;
           padding: 3px 8px;
           border-radius: 999px;
           border: 1px solid rgba(0, 0, 0, 0.08);
           white-space: nowrap;
         }
-
-        .therapist-actions {
-          display: flex;
-          gap: 6px;
-          align-items: center;
-          flex-shrink: 0;
-        }
-
-        .therapist-approve-btn {
+        .sc-btn-primary {
           font-size: 12px;
           padding: 6px 10px;
           border-radius: 999px;
@@ -1116,8 +1070,7 @@ const StoreConsolePage: React.FC = () => {
           color: #fff;
           box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
         }
-
-        .therapist-reject-btn {
+        .sc-btn-outline {
           font-size: 12px;
           padding: 6px 10px;
           border-radius: 999px;
@@ -1126,14 +1079,7 @@ const StoreConsolePage: React.FC = () => {
           background: #fff;
           color: var(--text-sub, #666);
         }
-
-        .therapist-approve-btn[disabled],
-        .therapist-reject-btn[disabled] {
-          opacity: 0.6;
-          cursor: default;
-        }
-
-        .therapist-detach-btn {
+        .sc-btn-danger-outline {
           font-size: 12px;
           padding: 6px 10px;
           border-radius: 999px;
@@ -1143,11 +1089,16 @@ const StoreConsolePage: React.FC = () => {
           color: #b91c1c;
           white-space: nowrap;
         }
-
-        .therapist-detach-btn:hover {
+        .sc-btn-danger-outline:hover {
           background: rgba(239, 68, 68, 0.06);
         }
+        .sc-btn-primary[disabled],
+        .sc-btn-outline[disabled] {
+          opacity: 0.6;
+          cursor: default;
+        }
 
+        /* ===== モーダル（既存踏襲） ===== */
         .modal-backdrop {
           position: fixed;
           inset: 0;
@@ -1158,7 +1109,6 @@ const StoreConsolePage: React.FC = () => {
           padding: 16px;
           z-index: 9999;
         }
-
         .modal-card {
           width: 100%;
           max-width: 420px;
@@ -1168,20 +1118,17 @@ const StoreConsolePage: React.FC = () => {
           box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
           padding: 12px;
         }
-
         .modal-title {
           font-size: 13px;
           font-weight: 700;
           margin-bottom: 8px;
         }
-
         .modal-text {
           font-size: 12px;
           line-height: 1.7;
           color: var(--text-sub);
           margin: 0 0 10px;
         }
-
         .modal-input {
           width: 100%;
           border-radius: 999px;
@@ -1190,20 +1137,17 @@ const StoreConsolePage: React.FC = () => {
           font-size: 13px;
           background: #fff;
         }
-
         .modal-error {
           margin-top: 8px;
           font-size: 12px;
           color: #b91c1c;
         }
-
         .modal-actions {
           margin-top: 12px;
           display: flex;
           gap: 8px;
           justify-content: flex-end;
         }
-
         .modal-cancel {
           font-size: 12px;
           padding: 8px 12px;
@@ -1212,7 +1156,6 @@ const StoreConsolePage: React.FC = () => {
           background: #fff;
           cursor: pointer;
         }
-
         .modal-danger {
           font-size: 12px;
           padding: 8px 12px;
@@ -1223,7 +1166,6 @@ const StoreConsolePage: React.FC = () => {
           cursor: pointer;
           box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25);
         }
-
         .modal-cancel[disabled],
         .modal-danger[disabled] {
           opacity: 0.6;

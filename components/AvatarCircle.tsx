@@ -38,7 +38,7 @@ export type AvatarCircleProps = {
 const AvatarCircle: React.FC<AvatarCircleProps> = ({
   avatarUrl,
   src,
-  size = 48,
+  size = 40,
   displayName,
   fallbackText,
   defaultFallback = "",

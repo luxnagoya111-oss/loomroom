@@ -12,6 +12,7 @@ import { getRelationsForUser } from "@/lib/repositories/relationRepository";
 import type { UserId } from "@/types/user";
 import type { DbRelationRow } from "@/types/db";
 import { getCurrentUserId, ensureViewerId } from "@/lib/auth";
+import { toPublicHandleFromUserId } from "@/lib/handle";
 
 type AuthorKind = "therapist" | "store" | "user";
 
@@ -93,16 +94,13 @@ const renderGoldBadge = (kind: AuthorKind) => {
 };
 
 /**
- * handle生成：never推論回避のため string を確定させてから slice
+ * handle生成：canonical users.id(uuid) から一律 @xxxxxx（先頭6桁）
+ * - role prefix（store_/therapist_/user_）は廃止
+ * - role はバッジで判別
  */
-function getHandle(kind: AuthorKind, authorId: unknown): string | null {
+function getHandle(_kind: AuthorKind, authorId: unknown): string | null {
   const s = typeof authorId === "string" ? authorId.trim() : "";
-  if (!s) return null;
-  if (!UUID_REGEX.test(s)) return null;
-
-  if (kind === "therapist") return `@therapist_${s.slice(0, 4)}`;
-  if (kind === "store") return `@store_${s.slice(0, 4)}`;
-  return `@user_${s.slice(0, 4)}`;
+  return toPublicHandleFromUserId(s);
 }
 
 const goToProfile = (post: Post) => {
@@ -239,7 +237,9 @@ export default function LoomRoomHome() {
       try {
         const { data: postData, error: postError } = await supabase
           .from("posts")
-          .select("id, author_id, author_kind, body, created_at, like_count, reply_count")
+          .select(
+            "id, author_id, author_kind, body, created_at, like_count, reply_count"
+          )
           .order("created_at", { ascending: false })
           .limit(100);
 
@@ -286,7 +286,10 @@ export default function LoomRoomHome() {
             .in("user_id", authorIds);
 
           if (therByUserError) {
-            console.error("Supabase therapists(user_id) error:", therByUserError);
+            console.error(
+              "Supabase therapists(user_id) error:",
+              therByUserError
+            );
           } else {
             (therByUserData ?? []).forEach((t: any) => {
               const r = t as DbTherapistLite;
@@ -310,13 +313,17 @@ export default function LoomRoomHome() {
             });
           }
 
-          const { data: storeByOwnerData, error: storeByOwnerError } = await supabase
-            .from("stores")
-            .select("id, owner_user_id, name, avatar_url")
-            .in("owner_user_id", authorIds);
+          const { data: storeByOwnerData, error: storeByOwnerError } =
+            await supabase
+              .from("stores")
+              .select("id, owner_user_id, name, avatar_url")
+              .in("owner_user_id", authorIds);
 
           if (storeByOwnerError) {
-            console.error("Supabase stores(owner_user_id) error:", storeByOwnerError);
+            console.error(
+              "Supabase stores(owner_user_id) error:",
+              storeByOwnerError
+            );
           } else {
             (storeByOwnerData ?? []).forEach((s: any) => {
               const r = s as DbStoreLite;
@@ -408,7 +415,9 @@ export default function LoomRoomHome() {
 
           const store =
             inferredKind === "store"
-              ? storeById.get(rawAuthorId) ?? storeByOwnerId.get(rawAuthorId) ?? null
+              ? storeById.get(rawAuthorId) ??
+                storeByOwnerId.get(rawAuthorId) ??
+                null
               : null;
 
           // canonical user id（mute/block判定に使う）
@@ -469,8 +478,12 @@ export default function LoomRoomHome() {
 
           const userRaw = user?.avatar_url ?? null;
 
-          const roleAvatar = looksValidAvatarUrl(roleRaw) ? resolveAvatarUrl(roleRaw) : null;
-          const userAvatar = looksValidAvatarUrl(userRaw) ? resolveAvatarUrl(userRaw) : null;
+          const roleAvatar = looksValidAvatarUrl(roleRaw)
+            ? resolveAvatarUrl(roleRaw)
+            : null;
+          const userAvatar = looksValidAvatarUrl(userRaw)
+            ? resolveAvatarUrl(userRaw)
+            : null;
 
           return {
             id: row.id,
@@ -555,7 +568,9 @@ export default function LoomRoomHome() {
 
       setPosts((prev) =>
         prev.map((p) =>
-          p.id === post.id ? { ...p, liked: previousLiked, likeCount: previousCount } : p
+          p.id === post.id
+            ? { ...p, liked: previousLiked, likeCount: previousCount }
+            : p
         )
       );
 
@@ -631,7 +646,11 @@ export default function LoomRoomHome() {
               className="filter-select"
               value={kindFilter}
               onChange={(e) =>
-                setKindFilter(e.target.value === "all" ? "all" : (e.target.value as AuthorKind))
+                setKindFilter(
+                  e.target.value === "all"
+                    ? "all"
+                    : (e.target.value as AuthorKind)
+                )
               }
             >
               <option value="all">すべて</option>
@@ -650,7 +669,9 @@ export default function LoomRoomHome() {
           )}
 
           {loading && !error && (
-            <div className="feed-message feed-loading">タイムラインを読み込んでいます…</div>
+            <div className="feed-message feed-loading">
+              タイムラインを読み込んでいます…
+            </div>
           )}
 
           {!loading && !error && filteredPosts.length === 0 && (
@@ -688,7 +709,7 @@ export default function LoomRoomHome() {
                     aria-label={profileClickable ? "プロフィールを見る" : undefined}
                   >
                     <AvatarCircle
-                      size={36}
+                      size={40}
                       avatarUrl={post.avatarUrl}
                       displayName={post.authorName}
                       alt={post.authorName}
@@ -717,7 +738,9 @@ export default function LoomRoomHome() {
 
                     <div className="post-body">
                       {post.body.split("\n").map((line, idx) => (
-                        <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
+                        <p key={idx}>
+                          {line || <span style={{ opacity: 0.3 }}>　</span>}
+                        </p>
                       ))}
                     </div>
 
@@ -740,7 +763,9 @@ export default function LoomRoomHome() {
                         className="post-reply-btn"
                         onClick={(e) => {
                           e.stopPropagation();
-                          alert("返信機能はこれから実装予定です（現在はテスト用です）。");
+                          alert(
+                            "返信機能はこれから実装予定です（現在はテスト用です）。"
+                          );
                         }}
                       >
                         <span className="post-reply-icon">💬</span>
@@ -753,7 +778,9 @@ export default function LoomRoomHome() {
                           className="post-more-btn"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setOpenPostMenuId(openPostMenuId === post.id ? null : post.id);
+                            setOpenPostMenuId(
+                              openPostMenuId === post.id ? null : post.id
+                            );
                           }}
                         >
                           ⋯
@@ -778,7 +805,10 @@ export default function LoomRoomHome() {
                     </div>
 
                     {!viewerReady && (
-                      <div className="feed-message" style={{ padding: "6px 0 0", fontSize: 11 }}>
+                      <div
+                        className="feed-message"
+                        style={{ padding: "6px 0 0", fontSize: 11 }}
+                      >
                         いいね・通報はログイン後に利用できます。
                       </div>
                     )}
