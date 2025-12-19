@@ -156,6 +156,13 @@ function normalizeFreeText(v: any): string {
   return s;
 }
 
+// ★ 表示用：users.role を正としてラベル化
+function roleLabel(role?: "user" | "therapist" | "store") {
+  if (role === "store") return "店舗";
+  if (role === "therapist") return "セラピスト";
+  return "ユーザー";
+}
+
 const PublicMyPage: React.FC = () => {
   const router = useRouter();
 
@@ -454,6 +461,9 @@ const PublicMyPage: React.FC = () => {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    // ★ uuid会員ページでは旧localStorage互換を切る（role表示の正を守る）
+    if (isUuid(userId)) return;
+
     try {
       const raw = window.localStorage.getItem(storageKey);
       if (!raw) return;
@@ -630,9 +640,9 @@ const PublicMyPage: React.FC = () => {
                   </span>
                 </div>
 
-                {/* ★ 修正：表示を「アカウント種別：会員 / エリア：〇〇」形式に（グレー・太字なし） */}
+                {/* ★ 修正：アカウント種別は users.role を正として表示 */}
                 <div className="therapist-meta-row">
-                  <span>アカウント種別：{profile.accountType}</span>
+                  <span>アカウント種別：{roleLabel(profile.role)}</span>
                   <span>エリア：{profile.area || "未設定"}</span>
                 </div>
 
