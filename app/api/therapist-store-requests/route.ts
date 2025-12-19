@@ -1,3 +1,4 @@
+// app/api/therapist-store-requests/route.ts
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 
@@ -69,7 +70,18 @@ export async function POST(req: Request) {
 
     const supabase = await supabaseServer();
 
-    // RPC が "rpc_create_therapist_store_request" である前提（あなたの現状に合わせて）
+    // ★ここで “今サーバー側が誰として見えてるか” を確定させる
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    const authUserId = userData?.user?.id ?? null;
+
+    if (userErr || !authUserId) {
+      // セッションが復元できてない（= supabaseServer cookie設定問題）
+      return NextResponse.json(
+        { ok: false, error: "unauthorized" },
+        { status: 401 }
+      );
+    }
+
     const { error } = await supabase.rpc("rpc_create_therapist_store_request", {
       p_store_id: storeId,
     });

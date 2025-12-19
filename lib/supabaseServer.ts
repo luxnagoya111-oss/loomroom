@@ -9,10 +9,11 @@ export async function supabaseServer() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
-      // ★ここが最重要：クライアントと同じ storageKey を指定
-      auth: {
-        storageKey: "loomroom-auth",
+      // ★最重要：ブラウザ側 Cookie のベース名に合わせる（loomroom-auth.0/.1 を読む）
+      cookieOptions: {
+        name: "loomroom-auth",
       },
+
       cookies: {
         getAll() {
           return cookieStore.getAll();
@@ -23,7 +24,7 @@ export async function supabaseServer() {
               cookieStore.set(name, value, options);
             });
           } catch {
-            // Server Component 等で set できないケースは握りつぶしでOK
+            // Route Handler 以外で set できないケースは握りつぶしでOK
           }
         },
       },
