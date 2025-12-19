@@ -12,16 +12,6 @@ import { uploadAvatar } from "@/lib/avatarStorage";
 import type { DbStoreRow, DbTherapistRow } from "@/types/db";
 import { listTherapistsForStore } from "@/lib/repositories/therapistRepository";
 
-async function safeReadJson(res: Response) {
-  const text = await res.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { _raw: text };
-  }
-}
-
 function toPlainError(error: any) {
   return {
     name: error?.name,
@@ -59,7 +49,7 @@ type FormState = {
 
 /**
  * therapist_store_requests の pending を表示するための最小型
- * - therapist は JOIN して表示する
+ * - therapist は JOIN して表示する（UIでは単体に正規化して扱う）
  */
 type DbTherapistStoreRequestRow = {
   id: string;
@@ -72,6 +62,23 @@ type DbTherapistStoreRequestRow = {
     display_name: string | null;
     area: string | null;
   } | null;
+};
+
+/**
+ * ★ Supabase/PostgREST の JOIN 埋め込みは「配列で返る」ことがあるため raw 型を用意
+ * therapist: therapists(...) が {..}[] になる想定で受け、UI用に単体へ変換する。
+ */
+type DbTherapistStoreRequestRowRaw = Omit<
+  DbTherapistStoreRequestRow,
+  "therapist"
+> & {
+  therapist?:
+    | {
+        id: string;
+        display_name: string | null;
+        area: string | null;
+      }[]
+    | null;
 };
 
 function normalizeUrl(v: string): string {
@@ -127,13 +134,13 @@ const StoreConsolePage: React.FC = () => {
   const [detachOpen, setDetachOpen] = useState(false);
   const [detachTarget, setDetachTarget] = useState<{
     therapistId: string;
-   displayName: string;
+    displayName: string;
   } | null>(null);
   const [detachPassword, setDetachPassword] = useState("");
   const [detaching, setDetaching] = useState(false);
   const [detachError, setDetachError] = useState<string | null>(null);
 
-  // ★ closeDetachModal を useCallback で先に定義（Hookより前に関数参照が必要なため）
+  // ★ closeDetachModal を useCallback で先に定義
   const closeDetachModal = useCallback(() => {
     setDetachOpen(false);
     setDetachTarget(null);
@@ -142,17 +149,17 @@ const StoreConsolePage: React.FC = () => {
     setDetaching(false);
   }, []);
 
-// ★ Escで閉じる（必ず loaded return より前）
-useEffect(() => {
-  if (!detachOpen) return;
+  // ★ Escで閉じる
+  useEffect(() => {
+    if (!detachOpen) return;
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") closeDetachModal();
-  };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeDetachModal();
+    };
 
-  window.addEventListener("keydown", onKeyDown);
-  return () => window.removeEventListener("keydown", onKeyDown);
-}, [detachOpen, closeDetachModal]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [detachOpen, closeDetachModal]);
 
   // ========= ① localStorage から復元（軽量ステートだけ） =========
   useEffect(() => {
@@ -266,40 +273,59 @@ useEffect(() => {
     }
   }, [loaded, state, storageKey]);
 
-  // ========= ★ pending 申請取得 =========
-  const loadPendingRequests = async (sid: string) => {
+  // ========= ★ pending 申請取得（Supabase直読み + 型安全に正規化） =========
+  const loadPendingRequests = useCallback(async (sid: string) => {
     setLoadingRequests(true);
     try {
-      const res = await fetch(
-        `/api/therapist-store-requests?storeId=${encodeURIComponent(sid)}`,
-        { method: "GET", cache: "no-store" }
-      );
+      const { data, error } = await supabase
+        .from("therapist_store_requests")
+        .select(
+          `
+          id,
+          store_id,
+          therapist_id,
+          status,
+          created_at,
+          therapist:therapists (
+            id,
+            display_name,
+            area
+          )
+        `
+        )
+        .eq("store_id", sid)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
 
-      const json = await safeReadJson(res);
-
-      if (!res.ok || !json || (json as any).ok !== true) {
-        const contentType = res.headers.get("content-type");
+      if (error) {
         console.error(
-          "[StoreConsole] loadPendingRequests failed",
-          "status=",
-          res.status,
-          "content-type=",
-          contentType,
-          "json=",
-          JSON.stringify(json)
+          "[StoreConsole] loadPendingRequests error:",
+          toPlainError(error)
         );
         setRequests([]);
         return;
       }
 
-      setRequests(((json as any).data ?? []) as DbTherapistStoreRequestRow[]);
+      // ★ JOINの therapist が配列で返る前提で受け、UI用に単体へ正規化
+      const raw = (data ?? []) as unknown as DbTherapistStoreRequestRowRaw[];
+
+      const normalized: DbTherapistStoreRequestRow[] = raw.map((r) => ({
+        id: String(r.id),
+        store_id: String(r.store_id),
+        therapist_id: String(r.therapist_id),
+        status: String(r.status),
+        created_at: String(r.created_at),
+        therapist: Array.isArray(r.therapist) ? r.therapist[0] ?? null : null,
+      }));
+
+      setRequests(normalized);
     } catch (e) {
       console.error("[StoreConsole] loadPendingRequests exception:", e);
       setRequests([]);
     } finally {
       setLoadingRequests(false);
     }
-  };
+  }, []);
 
   // ========= ④ セラピスト一覧 / 申請一覧の読み込み =========
   useEffect(() => {
@@ -310,7 +336,7 @@ useEffect(() => {
     const load = async () => {
       setLoadingTherapists(true);
       try {
-        const [joined] = await Promise.all([listTherapistsForStore(storeId)]);
+        const joined = await listTherapistsForStore(storeId);
         if (cancelled) return;
         setTherapists(joined);
 
@@ -326,7 +352,7 @@ useEffect(() => {
     return () => {
       cancelled = true;
     };
-  }, [storeId]);
+  }, [storeId, loadPendingRequests]);
 
   // ========= UI前提 =========
   if (!loaded) {
@@ -343,8 +369,10 @@ useEffect(() => {
 
   const canSave = state.storeName.trim().length > 0;
 
-  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setState((prev) => ({ ...prev, [key]: value }));
+  const updateField = <K extends keyof FormState>(
+    key: K,
+    value: FormState[K]
+  ) => setState((prev) => ({ ...prev, [key]: value }));
 
   const handleToggleDmNotice = () => {
     setState((prev) => ({ ...prev, dmNotice: !prev.dmNotice }));
@@ -392,7 +420,10 @@ useEffect(() => {
     if (!ownerUserId) return;
 
     try {
-      const { error } = await supabase.from("users").update({ name }).eq("id", ownerUserId);
+      const { error } = await supabase
+        .from("users")
+        .update({ name })
+        .eq("id", ownerUserId);
       if (error) console.error("[StoreConsole] users.name sync failed:", error);
     } catch (e) {
       console.error("[StoreConsole] users.name sync exception:", e);
@@ -413,16 +444,23 @@ useEffect(() => {
       const payload: Partial<DbStoreRow> = {
         name: state.storeName.trim() || null,
         area: state.area.trim() || null,
-        website_url: state.websiteUrl.trim() ? normalizeUrl(state.websiteUrl) : null,
+        website_url: state.websiteUrl.trim()
+          ? normalizeUrl(state.websiteUrl)
+          : null,
         line_url: state.lineUrl.trim() ? normalizeUrl(state.lineUrl) : null,
         avatar_url: state.avatarUrl?.trim() ? state.avatarUrl.trim() : null,
         x_url: state.xUrl.trim() ? normalizeUrl(state.xUrl) : null,
-        twicas_url: state.twicasUrl.trim() ? normalizeUrl(state.twicasUrl) : null,
+        twicas_url: state.twicasUrl.trim()
+          ? normalizeUrl(state.twicasUrl)
+          : null,
         description: state.description.trim() || null,
         dm_notice: !!state.dmNotice,
       } as any;
 
-      const { error } = await supabase.from("stores").update(payload as any).eq("id", storeId);
+      const { error } = await supabase
+        .from("stores")
+        .update(payload as any)
+        .eq("id", storeId);
 
       if (error) {
         console.error("[StoreConsole] failed to update stores:", error);
@@ -471,7 +509,9 @@ useEffect(() => {
 
       const email = userRes.user?.email;
       if (!email) {
-        throw new Error("メール情報が取得できませんでした。再ログインしてからお試しください。");
+        throw new Error(
+          "メール情報が取得できませんでした。再ログインしてからお試しください。"
+        );
       }
 
       const { error: signInErr } = await supabase.auth.signInWithPassword({
@@ -480,13 +520,19 @@ useEffect(() => {
       });
       if (signInErr) throw new Error("パスワードが正しくありません。");
 
-      const { error: rpcErr } = await supabase.rpc("rpc_detach_therapist_from_store", {
-        p_therapist_id: detachTarget.therapistId,
-      });
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_detach_therapist_from_store",
+        {
+          p_therapist_id: detachTarget.therapistId,
+        }
+      );
       if (rpcErr) throw rpcErr;
 
       const joined = await listTherapistsForStore(storeId);
       setTherapists(joined);
+
+      // ★ pending一覧も再読込
+      await loadPendingRequests(storeId);
 
       closeDetachModal();
     } catch (e: any) {
@@ -496,7 +542,7 @@ useEffect(() => {
     }
   };
 
-  // ========= ★ 申請の承認/却下 =========
+  // ========= ★ 申請の承認/却下（既存APIのまま） =========
   const handleReviewRequest = async (
     requestId: string,
     decision: "approved" | "rejected"
@@ -535,6 +581,8 @@ useEffect(() => {
 
       const joined = await listTherapistsForStore(storeId);
       setTherapists(joined);
+
+      // ★ pending一覧も再読込
       await loadPendingRequests(storeId);
     } catch (e) {
       console.error(e);
@@ -565,12 +613,10 @@ useEffect(() => {
               displayName={state.storeName || "S"}
               onPreview={(dataUrl) => setAvatarPreview(dataUrl)} // UIだけ
               onFileSelect={async (file) => {
-                // Storage upload + stores update をここで実施してURL返す
                 const url = await uploadAndUpdateAvatar(file);
                 return url;
               }}
               onUploaded={(url) => {
-                // 確定URLに置き換え（プレビュー解除）
                 setAvatarPreview("");
                 setState((prev) => ({ ...prev, avatarUrl: url }));
               }}
@@ -715,7 +761,9 @@ useEffect(() => {
                       <span className="therapist-name">
                         {t.display_name || "名前未設定"}
                       </span>
-                      <span className="therapist-meta">{t.area || "エリア未設定"}</span>
+                      <span className="therapist-meta">
+                        {t.area || "エリア未設定"}
+                      </span>
                     </div>
 
                     <div className="therapist-actions">
@@ -745,7 +793,9 @@ useEffect(() => {
             {loadingRequests && requests.length === 0 ? (
               <p className="therapist-helper">読み込み中です…</p>
             ) : requests.length === 0 ? (
-              <p className="therapist-helper">現在、承認待ちの申請はありません。</p>
+              <p className="therapist-helper">
+                現在、承認待ちの申請はありません。
+              </p>
             ) : (
               <ul className="therapist-list">
                 {requests.map((r) => {
