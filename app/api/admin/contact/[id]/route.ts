@@ -14,20 +14,26 @@ function toText(v: any): string {
   return String(v);
 }
 
-export async function GET(req: NextRequest, ctx: { params: { id?: string } }) {
+type RouteContext = {
+  params: Promise<{ id: string }>;
+};
+
+export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const guard = requireAdminKey(req);
     if (!guard.ok) return guard.res;
 
-    const id = toText(ctx?.params?.id).trim();
-    if (!id) {
+    const { id } = await context.params;
+    const safeId = toText(id).trim();
+
+    if (!safeId) {
       return NextResponse.json({ ok: false, error: "id is required" }, { status: 400 });
     }
 
     const { data, error } = await supabaseAdmin
       .from("contact_tickets")
       .select("*")
-      .eq("id", id)
+      .eq("id", safeId)
       .maybeSingle();
 
     if (error) {
@@ -42,17 +48,22 @@ export async function GET(req: NextRequest, ctx: { params: { id?: string } }) {
     return NextResponse.json({ ok: true, data });
   } catch (e: any) {
     console.error("[api/admin/contact/:id] exception:", e);
-    return NextResponse.json({ ok: false, error: e?.message ?? "unknown error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? "unknown error" },
+      { status: 500 }
+    );
   }
 }
 
-export async function PATCH(req: NextRequest, ctx: { params: { id?: string } }) {
+export async function PATCH(req: NextRequest, context: RouteContext) {
   try {
     const guard = requireAdminKey(req);
     if (!guard.ok) return guard.res;
 
-    const id = toText(ctx?.params?.id).trim();
-    if (!id) {
+    const { id } = await context.params;
+    const safeId = toText(id).trim();
+
+    if (!safeId) {
       return NextResponse.json({ ok: false, error: "id is required" }, { status: 400 });
     }
 
@@ -77,7 +88,7 @@ export async function PATCH(req: NextRequest, ctx: { params: { id?: string } }) 
     const { data, error } = await supabaseAdmin
       .from("contact_tickets")
       .update(update)
-      .eq("id", id)
+      .eq("id", safeId)
       .select("*")
       .maybeSingle();
 
@@ -93,6 +104,9 @@ export async function PATCH(req: NextRequest, ctx: { params: { id?: string } }) 
     return NextResponse.json({ ok: true, data });
   } catch (e: any) {
     console.error("[api/admin/contact/:id] patch exception:", e);
-    return NextResponse.json({ ok: false, error: e?.message ?? "unknown error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? "unknown error" },
+      { status: 500 }
+    );
   }
 }
