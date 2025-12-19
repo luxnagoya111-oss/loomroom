@@ -31,25 +31,27 @@ import { RelationActions } from "@/components/RelationActions";
 
 const hasUnread = true;
 
-// ★ IDごとにキーを分ける（旧localStorageデータ用）
+// 旧localStorageデータ（ゲスト互換用）
 const STORAGE_PREFIX = "loomroom_profile_v1_";
 
-// ★ 修正：自由入力に合わせて Area を string に
+// 自由入力
 type Area = string;
-
 type AccountType = "ゲスト" | "会員";
 
 type UserProfile = {
   displayName: string;
   handle: string;
-  area: Area; // ★ string
+  area: Area;
   intro: string;
   messagePolicy: string;
   accountType: AccountType;
+
+  // 現状DB未保存（ゲスト互換用としてのみ利用）
   snsX?: string;
   snsLine?: string;
   snsOther?: string;
-  avatarUrl?: string | null; // ★表示用（http or public URL）
+
+  avatarUrl?: string | null; // 表示用（http or public URL）
   role?: "user" | "therapist" | "store";
 };
 
@@ -68,15 +70,19 @@ const DEFAULT_PROFILE: UserProfile = {
   role: "user",
 };
 
-// Supabase users
+// users（正）
 type DbUserRow = {
   id: string;
   name: string | null;
   role: "user" | "therapist" | "store" | null;
   avatar_url: string | null;
+
+  // ★ consoleで保存済み
+  area: string | null;
+  description: string | null;
 };
 
-// therapists
+// therapists（補完用）
 type DbTherapistRow = {
   id: string;
   display_name: string | null;
@@ -84,7 +90,7 @@ type DbTherapistRow = {
   profile: string | null;
 };
 
-// stores
+// stores（補完用）
 type DbStoreRow = {
   id: string;
   name: string | null;
@@ -104,11 +110,11 @@ type DbPostRow = {
 type UserPost = {
   id: string;
   body: string;
-  area: string; // ★ 修正：自由入力なので string
+  area: string;
   timeAgo: string;
 };
 
-// ===== uuid 判定（relations は users.id = uuid で運用する）=====
+// ===== uuid 判定（relations は users.id = uuid で運用）=====
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -116,7 +122,7 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
-// ===== Avatar URL 正規化（他ページと同一思想）=====
+// ===== Avatar URL 正規化 =====
 const AVATAR_BUCKET = "avatars";
 
 function normalizeAvatarUrl(v: any): string | null {
@@ -131,7 +137,6 @@ function isProbablyHttpUrl(url: string): boolean {
 function looksValidAvatarUrl(v: string | null | undefined): boolean {
   const s = (v ?? "").trim();
   if (!s) return false;
-
   if (s.includes("/storage/v1/object/public/avatars")) {
     if (/\/public\/avatars\/?$/i.test(s)) return false;
   }
@@ -156,7 +161,7 @@ function normalizeFreeText(v: any): string {
   return s;
 }
 
-// ★ 表示用：users.role を正としてラベル化
+// 表示用：users.role を正としてラベル化
 function roleLabel(role?: "user" | "therapist" | "store") {
   if (role === "store") return "店舗";
   if (role === "therapist") return "セラピスト";
@@ -183,7 +188,7 @@ const PublicMyPage: React.FC = () => {
   }));
   const [loading, setLoading] = useState<boolean>(true);
 
-  // ★ role別の実体ID（stores.id / therapists.id）を保持
+  // role別の実体ID（stores.id / therapists.id）を保持（編集導線用）
   const [storeId, setStoreId] = useState<string | null>(null);
   const [therapistId, setTherapistId] = useState<string | null>(null);
 
@@ -191,7 +196,7 @@ const PublicMyPage: React.FC = () => {
   const [postError, setPostError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
 
-  // ▼ relations 状態（フォロー / ミュート / ブロック）
+  // relations 状態
   const [relations, setRelations] = useState<RelationFlags>({
     following: false,
     muted: false,
@@ -220,7 +225,12 @@ const PublicMyPage: React.FC = () => {
       ? makeThreadId(viewerIdForThread, userId)
       : null;
 
-  // ▼ Supabase からプロフィール取得（users.role を正）
+  /**
+   * プロフィール取得方針（要件通り）
+   * - 公開 /mypage/[id] は users を正として表示
+   * - therapist/store の補助テーブルは「不足時のみ補完」
+   * - localStorage はゲストIDの互換用途に限定（uuid会員ページでは使用しない）
+   */
   useEffect(() => {
     let cancelled = false;
 
@@ -228,14 +238,59 @@ const PublicMyPage: React.FC = () => {
       try {
         setLoading(true);
 
-        // ★ role 切替時に古いIDが残らないようリセット
+        // role 切替時に古いIDが残らないようリセット
         setTherapistId(null);
         setStoreId(null);
 
-        // 1) users を取得
+        // --- 1) ゲストID（uuid以外）は互換として localStorage から読む ---
+        if (!isUuid(userId)) {
+          // デフォルト
+          let p: UserProfile = {
+            ...DEFAULT_PROFILE,
+            handle: `@${userId}`,
+            accountType: "ゲスト",
+            role: "user",
+          };
+
+          if (typeof window !== "undefined") {
+            try {
+              const raw = window.localStorage.getItem(storageKey);
+              if (raw) {
+                const data = JSON.parse(raw) || {};
+                p = {
+                  ...p,
+                  displayName: data.nickname || p.displayName,
+                  area: typeof data.area === "string" ? data.area : p.area,
+                  intro:
+                    typeof data.intro === "string" && data.intro.trim().length > 0
+                      ? data.intro
+                      : p.intro,
+                  messagePolicy:
+                    typeof data.messagePolicy === "string" &&
+                    data.messagePolicy.trim().length > 0
+                      ? data.messagePolicy
+                      : p.messagePolicy,
+                  snsX: data.snsX ?? p.snsX,
+                  snsLine: data.snsLine ?? p.snsLine,
+                  snsOther: data.snsOther ?? p.snsOther,
+                  avatarUrl: data.avatarDataUrl || data.avatarUrl || p.avatarUrl,
+                  accountType: "ゲスト",
+                  role: "user",
+                };
+              }
+            } catch (e) {
+              console.warn("[PublicMyPage] localStorage profile load failed:", e);
+            }
+          }
+
+          if (!cancelled) setProfile(p);
+          return;
+        }
+
+        // --- 2) uuid会員ページ：users を正として取得 ---
         const { data: user, error: userError } = await supabase
           .from("users")
-          .select("id, name, role, avatar_url")
+          .select("id, name, role, avatar_url, area, description")
           .eq("id", userId)
           .maybeSingle<DbUserRow>();
 
@@ -245,32 +300,43 @@ const PublicMyPage: React.FC = () => {
           console.error("[PublicMyPage] users fetch error:", userError);
           return;
         }
+        if (!user) return;
 
-        const u = user as DbUserRow | null;
-        if (!u) return;
-
-        const userAvatarResolved = looksValidAvatarUrl(u.avatar_url)
-          ? resolveAvatarUrl(u.avatar_url)
+        const userAvatarResolved = looksValidAvatarUrl(user.avatar_url)
+          ? resolveAvatarUrl(user.avatar_url)
           : null;
 
+        const uRole = (user.role as UserProfile["role"]) ?? "user";
+
+        // users正：ここで完成形を作る（不足は後で補完）
         let baseProfile: UserProfile = {
           ...DEFAULT_PROFILE,
           handle: `@${userId}`,
           displayName:
-            u.name ??
-            (u.role === "store"
+            (user.name && user.name.trim().length > 0
+              ? user.name
+              : uRole === "store"
               ? "店舗アカウント"
-              : u.role === "therapist"
+              : uRole === "therapist"
               ? "セラピスト"
-              : "ユーザー"),
+              : "ユーザー") ?? "ユーザー",
           accountType: "会員",
-          role: (u.role as UserProfile["role"]) ?? "user",
+          role: uRole,
           avatarUrl: userAvatarResolved,
-          area: "",
+          area: normalizeFreeText(user.area),
+          intro:
+            user.description && user.description.trim().length > 0
+              ? user.description
+              : DEFAULT_PROFILE.intro,
         };
 
-        // 2) role に応じて therapists / stores も見る（表示名/エリア/紹介文を上書き）
-        if (u.role === "therapist") {
+        // --- 3) 補助：therapists / stores は不足時のみ補完 ---
+        // 補完対象：displayName / area / intro（= description 相当）
+        const needsName = !normalizeFreeText(baseProfile.displayName);
+        const needsArea = !normalizeFreeText(baseProfile.area);
+        const introIsDefault = baseProfile.intro === DEFAULT_PROFILE.intro;
+
+        if (uRole === "therapist" && (needsName || needsArea || introIsDefault)) {
           const { data: t, error: tError } = await supabase
             .from("therapists")
             .select("id, display_name, area, profile")
@@ -282,16 +348,21 @@ const PublicMyPage: React.FC = () => {
 
             baseProfile = {
               ...baseProfile,
-              displayName: t.display_name ?? baseProfile.displayName,
-              // ★ 修正：自由入力としてそのまま
-              area: normalizeFreeText(t.area),
+              displayName:
+                needsName && t.display_name && t.display_name.trim().length > 0
+                  ? t.display_name
+                  : baseProfile.displayName,
+              area:
+                needsArea && t.area && t.area.trim().length > 0
+                  ? t.area
+                  : baseProfile.area,
               intro:
-                t.profile && t.profile.trim().length > 0
+                introIsDefault && t.profile && t.profile.trim().length > 0
                   ? t.profile
                   : baseProfile.intro,
             };
           }
-        } else if (u.role === "store") {
+        } else if (uRole === "store" && (needsName || needsArea || introIsDefault)) {
           const { data: s, error: sError } = await supabase
             .from("stores")
             .select("id, name, area, description")
@@ -303,11 +374,16 @@ const PublicMyPage: React.FC = () => {
 
             baseProfile = {
               ...baseProfile,
-              displayName: s.name ?? baseProfile.displayName,
-              // ★ 修正：自由入力としてそのまま
-              area: normalizeFreeText(s.area),
+              displayName:
+                needsName && s.name && s.name.trim().length > 0
+                  ? s.name
+                  : baseProfile.displayName,
+              area:
+                needsArea && s.area && s.area.trim().length > 0
+                  ? s.area
+                  : baseProfile.area,
               intro:
-                s.description && s.description.trim().length > 0
+                introIsDefault && s.description && s.description.trim().length > 0
                   ? s.description
                   : baseProfile.intro,
             };
@@ -315,11 +391,7 @@ const PublicMyPage: React.FC = () => {
         }
 
         if (cancelled) return;
-
-        setProfile((prev) => ({
-          ...prev,
-          ...baseProfile,
-        }));
+        setProfile(baseProfile);
       } catch (e) {
         console.error("[PublicMyPage] unexpected error:", e);
       } finally {
@@ -331,9 +403,9 @@ const PublicMyPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, storageKey]);
 
-  // ▼ relations 復元（uuid同士はサーバー / それ以外はlocalStorage）
+  // relations 復元（uuid同士はサーバー / それ以外はlocalStorage）
   useEffect(() => {
     const viewerId = authUserId ?? currentUserId;
     if (!viewerId) return;
@@ -365,7 +437,7 @@ const PublicMyPage: React.FC = () => {
     setRelations(flags);
   }, [currentUserId, authUserId, userId, isOwner]);
 
-  // ▼ relations 操作用ハンドラ（uuid同士はサーバー / それ以外はlocalStorage）
+  // relations 操作用ハンドラ（uuid同士はサーバー / それ以外はlocalStorage）
   const handleToggleFollow = async () => {
     const viewerId = authUserId ?? currentUserId;
     if (!viewerId) return;
@@ -457,52 +529,7 @@ const PublicMyPage: React.FC = () => {
     setRelations(updated);
   };
 
-  // ▼ 旧 localStorage プロフィールで “上書き” する（過渡期の互換用）
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    // ★ uuid会員ページでは旧localStorage互換を切る（role表示の正を守る）
-    if (isUuid(userId)) return;
-
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return;
-
-      const data = JSON.parse(raw) || {};
-      setProfile((prev) => ({
-        ...prev,
-        handle: `@${userId}`,
-        displayName: data.nickname || prev.displayName,
-        // ★ 修正：自由入力（string）をそのまま
-        area: typeof data.area === "string" ? data.area : prev.area,
-        intro:
-          typeof data.intro === "string" && data.intro.trim().length > 0
-            ? data.intro
-            : prev.intro,
-        messagePolicy:
-          typeof data.messagePolicy === "string" &&
-          data.messagePolicy.trim().length > 0
-            ? data.messagePolicy
-            : prev.messagePolicy,
-        snsX: data.snsX ?? prev.snsX,
-        snsLine: data.snsLine ?? prev.snsLine,
-        snsOther: data.snsOther ?? prev.snsOther,
-        // 旧データの avatarDataUrl / avatarUrl は「http想定」。壊れにくいようそのまま採用。
-        avatarUrl: prev.avatarUrl || data.avatarDataUrl || data.avatarUrl || null,
-        accountType: data.accountType
-          ? data.accountType
-          : typeof data.isMember === "boolean"
-          ? data.isMember
-            ? "会員"
-            : "ゲスト"
-          : prev.accountType,
-      }));
-    } catch (e) {
-      console.warn("[PublicMyPage] localStorage profile load failed:", e);
-    }
-  }, [userId, storageKey]);
-
-  // ▼ 投稿一覧を Supabase から取得
+  // 投稿一覧を Supabase から取得（author_id = users.id）
   useEffect(() => {
     let cancelled = false;
 
@@ -535,7 +562,6 @@ const PublicMyPage: React.FC = () => {
           return {
             id: row.id,
             body: row.body ?? "",
-            // ★ 修正：自由入力としてそのまま
             area: normalizeFreeText(row.area),
             timeAgo: timeAgo(row.created_at),
           };
@@ -565,7 +591,7 @@ const PublicMyPage: React.FC = () => {
   const avatarInitial =
     profile.displayName?.trim()?.charAt(0)?.toUpperCase() || "U";
 
-  // DMリンクは「相手がuuid」かつ「自分がAuth uuid」かつ「非ブロック」のときだけ出す（/messages/new がuuid前提のため）
+  // DMリンクは「相手がuuid」かつ「自分がAuth uuid」かつ「非ブロック」のときだけ出す
   const canShowDm =
     !isOwner && !relations.blocked && isUuid(authUserId) && isUuid(userId);
 
@@ -577,11 +603,7 @@ const PublicMyPage: React.FC = () => {
   return (
     <>
       <div className="app-shell">
-        <AppHeader
-          title={profile.displayName}
-          subtitle={profile.handle}
-          showBack={true}
-        />
+        <AppHeader title={profile.displayName} subtitle={profile.handle} showBack={true} />
 
         <main className="app-main">
           <section className="therapist-hero">
@@ -604,7 +626,7 @@ const PublicMyPage: React.FC = () => {
 
                     {canShowDm && threadId && (
                       <Link
-                        href={`/messages/new?to=${userId}`} // targetUserId = 相手の users.id(uuid)
+                        href={`/messages/new?to=${userId}`}
                         className="dm-inline-btn no-link-style"
                       >
                         ✉
@@ -640,7 +662,6 @@ const PublicMyPage: React.FC = () => {
                   </span>
                 </div>
 
-                {/* ★ 修正：アカウント種別は users.role を正として表示 */}
                 <div className="therapist-meta-row">
                   <span>アカウント種別：{roleLabel(profile.role)}</span>
                   <span>エリア：{profile.area || "未設定"}</span>
@@ -665,9 +686,7 @@ const PublicMyPage: React.FC = () => {
                     onToggleMute={handleToggleMute}
                     onToggleBlock={handleToggleBlock}
                     onReport={() => {
-                      alert(
-                        "このアカウントの通報を受け付けました（現在はテスト用です）。"
-                      );
+                      alert("このアカウントの通報を受け付けました（現在はテスト用です）。");
                     }}
                   />
                 )}
@@ -680,9 +699,7 @@ const PublicMyPage: React.FC = () => {
               </p>
             )}
 
-            {!loading && profile.intro && (
-              <p className="therapist-intro">{profile.intro}</p>
-            )}
+            {!loading && profile.intro && <p className="therapist-intro">{profile.intro}</p>}
 
             {(profile.snsX || profile.snsLine || profile.snsOther) && (
               <div className="therapist-sns-block">
@@ -730,13 +747,10 @@ const PublicMyPage: React.FC = () => {
             </div>
           </section>
 
-          {/* ▼ 投稿一覧（カードクリックで /posts/[id] に遷移） */}
           <section className="therapist-posts-section">
             <h2 className="therapist-section-title">投稿</h2>
 
-            {loadingPosts && (
-              <div className="empty-hint">投稿を読み込んでいます…</div>
-            )}
+            {loadingPosts && <div className="empty-hint">投稿を読み込んでいます…</div>}
 
             {postError && !loadingPosts && (
               <div className="empty-hint" style={{ color: "#b00020" }}>
@@ -792,9 +806,7 @@ const PublicMyPage: React.FC = () => {
 
                         <div className="post-body">
                           {p.body.split("\n").map((line, idx) => (
-                            <p key={idx}>
-                              {line || <span style={{ opacity: 0.3 }}>　</span>}
-                            </p>
+                            <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
                           ))}
                         </div>
                       </div>
@@ -850,7 +862,6 @@ const PublicMyPage: React.FC = () => {
           gap: 6px;
         }
 
-        /* ★ meta はグレー（太字なし） */
         .therapist-meta-row {
           font-size: 11px;
           color: var(--text-sub);

@@ -11,8 +11,43 @@ import { uploadAvatar } from "@/lib/avatarStorage";
 
 type AccountType = "ゲスト" | "会員";
 
-const STORAGE_KEY = "loomroom_profile_v1";
+/**
+ * 旧仕様：STORAGE_KEY 固定（端末内で1人分しか持てない）
+ * 新仕様：ユーザーIDごとに分離
+ * - 旧キーがあれば読み込み時に取り込み、以後は新キーで保存する（互換維持）
+ */
+const STORAGE_PREFIX = "loomroom_profile_v1_";
+const LEGACY_STORAGE_KEY = "loomroom_profile_v1";
+
 const hasUnread = true;
+
+type LocalProfilePayload = {
+  nickname?: string;
+  area?: string;
+  intro?: string;
+
+  notifyFavPosts?: boolean;
+  notifyDm?: boolean;
+  notifyNews?: boolean;
+
+  avatarDataUrl?: string;
+
+  snsX?: string;
+  snsLine?: string;
+  snsOther?: string;
+
+  isMember?: boolean;
+};
+
+type DbUserRow = {
+  id: string;
+  name: string | null;
+  avatar_url: string | null;
+
+  // ★ 追加カラム
+  area: string | null;
+  description: string | null;
+};
 
 const MyPageConsole: React.FC = () => {
   const params = useParams();
@@ -20,12 +55,16 @@ const MyPageConsole: React.FC = () => {
 
   // ID からゲスト or 会員を自動判定（guest- ならゲスト、それ以外は会員）
   const accountType: AccountType = userId.startsWith("guest-") ? "ゲスト" : "会員";
+  const isMember = accountType === "会員";
+
+  const STORAGE_KEY = `${STORAGE_PREFIX}${userId}`;
 
   const [nickname, setNickname] = useState<string>("あなた");
 
-  // ★ 修正：Area型 + select をやめて自由入力（文字列）
+  // ★ 自由入力（文字列）
   const [area, setArea] = useState<string>("");
 
+  // ★ UI上の intro は users.description に保存する
   const [intro, setIntro] = useState<string>("");
 
   // SNS系リンク
@@ -38,62 +77,53 @@ const MyPageConsole: React.FC = () => {
   const [notifyDm, setNotifyDm] = useState<boolean>(true);
   const [notifyNews, setNotifyNews] = useState<boolean>(false);
 
-  // ★ 会員: URL / ゲスト: base64 のどちらも入る（ただし localStorage ルールはあなたの運用に合わせる）
+  // 会員: URL / ゲスト: base64
   const [avatarDataUrl, setAvatarDataUrl] = useState<string | undefined>();
   const [loaded, setLoaded] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // 初回読み込み：localStorage から復元
+  // 初回読み込み：localStorage から復元（新キー → 旧キーの順でフォールバック）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
+      const rawNew = window.localStorage.getItem(STORAGE_KEY);
+      const rawLegacy = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+      const raw = rawNew ?? rawLegacy;
+
       if (!raw) {
         setLoaded(true);
         return;
       }
 
-      const data = JSON.parse(raw) as {
-        nickname?: string;
-        area?: string; // ★ 修正：string
-        intro?: string;
-        notifyFavPosts?: boolean;
-        notifyDm?: boolean;
-        notifyNews?: boolean;
-        avatarDataUrl?: string;
-        messagePolicy?: string;
-        snsX?: string;
-        snsLine?: string;
-        snsOther?: string;
-        isMember?: boolean;
-      };
+      const data = JSON.parse(raw) as LocalProfilePayload;
 
-      if (data.nickname) setNickname(data.nickname);
+      if (typeof data.nickname === "string" && data.nickname.trim().length > 0) {
+        setNickname(data.nickname);
+      }
       if (typeof data.area === "string") setArea(data.area);
       if (typeof data.intro === "string") setIntro(data.intro);
+
       if (typeof data.notifyFavPosts === "boolean") setNotifyFavPosts(data.notifyFavPosts);
       if (typeof data.notifyDm === "boolean") setNotifyDm(data.notifyDm);
       if (typeof data.notifyNews === "boolean") setNotifyNews(data.notifyNews);
 
-      if (typeof data.avatarDataUrl === "string") {
-        setAvatarDataUrl(data.avatarDataUrl);
-      }
+      if (typeof data.avatarDataUrl === "string") setAvatarDataUrl(data.avatarDataUrl);
 
       if (typeof data.snsX === "string") setSnsX(data.snsX);
       if (typeof data.snsLine === "string") setSnsLine(data.snsLine);
       if (typeof data.snsOther === "string") setSnsOther(data.snsOther);
     } catch (e) {
-      console.warn("Failed to load LRoom profile", e);
+      console.warn("[MyPageConsole] Failed to load profile from localStorage", e);
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [STORAGE_KEY]);
 
-  // Supabase の users から name / avatar_url を取得（会員のみ）
+  // Supabase の users から name / avatar_url / area / description を取得（会員のみ）
   useEffect(() => {
-    if (accountType === "ゲスト") return;
+    if (!isMember) return;
     if (!userId || typeof userId !== "string") return;
 
     let cancelled = false;
@@ -102,9 +132,9 @@ const MyPageConsole: React.FC = () => {
       try {
         const { data, error } = await supabase
           .from("users")
-          .select("name, avatar_url")
+          .select("id, name, avatar_url, area, description")
           .eq("id", userId)
-          .maybeSingle<{ name: string | null; avatar_url: string | null }>();
+          .maybeSingle<DbUserRow>();
 
         if (cancelled) return;
 
@@ -114,8 +144,14 @@ const MyPageConsole: React.FC = () => {
         }
         if (!data) return;
 
-        if (data.name) setNickname(data.name);
-        if (data.avatar_url) setAvatarDataUrl(data.avatar_url);
+        if (typeof data.name === "string" && data.name.trim().length > 0) setNickname(data.name);
+        if (typeof data.avatar_url === "string" && data.avatar_url.trim().length > 0) {
+          setAvatarDataUrl(data.avatar_url);
+        }
+
+        // ★ 追加：DB優先で反映（空文字も許容）
+        if (typeof data.area === "string") setArea(data.area);
+        if (typeof data.description === "string") setIntro(data.description);
       } catch (e) {
         if (!cancelled) console.error("[MyPageConsole] loadUser exception:", e);
       }
@@ -125,7 +161,7 @@ const MyPageConsole: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [userId, accountType]);
+  }, [userId, isMember]);
 
   // ===== Avatar 選択時の処理 =====
   // AvatarUploader が Promise<string> を期待する前提で「URL（またはdataURL）を返す」
@@ -133,7 +169,7 @@ const MyPageConsole: React.FC = () => {
     if (!file) return "";
 
     // ゲスト：Supabase に書き込めないのでローカルプレビューだけ
-    if (accountType === "ゲスト") {
+    if (!isMember) {
       return await new Promise<string>((resolve) => {
         const reader = new FileReader();
         reader.onload = () => {
@@ -154,7 +190,7 @@ const MyPageConsole: React.FC = () => {
     try {
       setAvatarUploading(true);
 
-      // ★ セッション必須。auth.uid() を保存パスに使う
+      // セッション必須。auth.uid() を保存パスに使う
       const { data: userRes, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
 
@@ -184,15 +220,13 @@ const MyPageConsole: React.FC = () => {
     }
   };
 
-  // 保存処理：localStorage ＋ 会員なら users.name をサーバー側にも保存
+  // 保存処理：localStorage ＋ 会員なら users（name/area/description）を保存
   const handleSave = async () => {
     if (typeof window === "undefined") return;
 
-    const isMember = accountType === "会員";
-
-    const payload = {
+    const payload: LocalProfilePayload = {
       nickname,
-      area, // ★ string
+      area,
       intro,
       notifyFavPosts,
       notifyDm,
@@ -204,25 +238,33 @@ const MyPageConsole: React.FC = () => {
       isMember,
     };
 
+    // localStorage 保存（新キー）
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+
+      // 旧キーにも上書き（互換：古いページが参照しても破綻しない）
+      // ※不要なら削除OK
+      window.localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(payload));
     } catch (e) {
-      console.error("Failed to save LRoom profile (localStorage)", e);
+      console.error("[MyPageConsole] Failed to save profile (localStorage)", e);
     }
 
-    // 会員のときは users.name を更新（avatar_url はファイル選択時に更新済み）
+    // 会員のときは users を更新（avatar_url はファイル選択時に更新済み）
     if (isMember) {
       try {
         setSaving(true);
+
         const { error } = await supabase
           .from("users")
           .update({
-            name: nickname || null,
+            name: nickname?.trim() ? nickname.trim() : null,
+            area: area?.trim() ? area.trim() : null,
+            description: intro?.trim() ? intro.trim() : null,
           })
           .eq("id", userId);
 
         if (error) {
-          console.error("[MyPageConsole] failed to update users.name:", error);
+          console.error("[MyPageConsole] failed to update users:", error);
           alert("サーバー側のプロフィール保存に失敗しました。時間をおいて再度お試しください。");
         }
       } catch (e) {
@@ -272,8 +314,8 @@ const MyPageConsole: React.FC = () => {
               <AvatarUploader
                 avatarUrl={avatarDataUrl}
                 displayName={nickname || "U"}
-                onPreview={accountType === "ゲスト" ? (dataUrl: string) => setAvatarDataUrl(dataUrl) : undefined}
-                onUploaded={accountType === "会員" ? (url: string) => setAvatarDataUrl(url) : undefined}
+                onPreview={!isMember ? (dataUrl: string) => setAvatarDataUrl(dataUrl) : undefined}
+                onUploaded={isMember ? (url: string) => setAvatarDataUrl(url) : undefined}
                 onFileSelect={handleAvatarFileSelect}
               />
 
@@ -292,7 +334,9 @@ const MyPageConsole: React.FC = () => {
             <div className="profile-sub-row">
               <div className="pill pill--accent profile-sub-pill">アカウント種別：{accountType}</div>
               <div className="pill profile-sub-pill profile-sub-pill--soft">
-                この端末の中だけで、静かに情報を管理します
+                {isMember
+                  ? "この端末とアカウントの両方に保存します"
+                  : "この端末の中だけで、静かに情報を管理します"}
               </div>
             </div>
           </section>
@@ -312,7 +356,6 @@ const MyPageConsole: React.FC = () => {
 
             <div className="field">
               <label className="field-label">エリア</label>
-              {/* ★ 修正：select → input（自由入力） */}
               <input
                 className="field-input"
                 value={area}
@@ -329,6 +372,9 @@ const MyPageConsole: React.FC = () => {
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setIntro(e.target.value)}
                 placeholder="例）人見知りですが、ゆっくり会話できる時間が好きです。"
               />
+              <div className="field-note">
+                {isMember ? "会員の場合、この内容は users.description に保存されます。" : "ゲストの場合、この端末内にのみ保存されます。"}
+              </div>
             </div>
           </section>
 
@@ -534,6 +580,7 @@ const MyPageConsole: React.FC = () => {
           font-size: 11px;
           color: var(--text-sub);
           margin-top: 4px;
+          line-height: 1.5;
         }
         .toggle-row {
           margin-top: 8px;
