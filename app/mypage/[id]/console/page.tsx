@@ -287,7 +287,7 @@ const MyPageConsole: React.FC = () => {
     return (
       <div className="app-root">
         <AppHeader title="マイページ設定" subtitle="読み込み中…" />
-        <main className="app-main mypage-main">
+        <main className="app-main">
           <div className="loading-text">プロフィールを読み込んでいます…</div>
         </main>
         <BottomNav active="mypage" hasUnread={hasUnread} />
@@ -296,211 +296,193 @@ const MyPageConsole: React.FC = () => {
   }
 
   return (
-    <>
-      <div className="app-root">
-        <AppHeader title="マイページ設定" subtitle={`ID: ${userId}`} />
+    <div className="app-root">
+      <AppHeader title="マイページ設定"/>
 
-        <main className="app-main mypage-main">
-          {/* 表示情報（共通：surface-card + field） */}
-          <section className="surface-card mp-card">
-            <h2 className="mp-title">表示情報</h2>
+      <main className="app-main">
+        {/* 表示情報 */}
+        <section className="surface-card">
+          <h2>表示情報</h2>
 
-            <div className="mp-profile-row">
-              <AvatarUploader
-                avatarUrl={avatarDataUrl}
-                displayName={nickname || "U"}
-                onPreview={!isMember ? (dataUrl: string) => setAvatarDataUrl(dataUrl) : undefined}
-                onUploaded={isMember ? (url: string) => setAvatarDataUrl(url) : undefined}
-                onFileSelect={handleAvatarFileSelect}
-              />
+          <div className="mp-profile-row">
+            <AvatarUploader
+              avatarUrl={avatarDataUrl}
+              displayName={nickname || "U"}
+              onPreview={!isMember ? (dataUrl: string) => setAvatarDataUrl(dataUrl) : undefined}
+              onUploaded={isMember ? (url: string) => setAvatarDataUrl(url) : undefined}
+              onFileSelect={handleAvatarFileSelect}
+            />
 
-              <div className="mp-profile-main">
-                <div className="mp-id-pill">User ID：{userId}</div>
+            <div className="mp-profile-main">
+              <div className="mp-id-pill">User ID：{userId}</div>
 
-                <div className="field">
-                  <label className="field-label">ニックネーム</label>
-                  <input
-                    className="field-input"
-                    value={nickname}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setNickname(e.target.value)}
-                    placeholder="自由入力"
-                  />
-                </div>
+              <div className="field">
+                <label className="field-label">ニックネーム</label>
+                <input
+                  className="field-input"
+                  value={nickname}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setNickname(e.target.value)}
+                  placeholder="自由入力"
+                />
+              </div>
+              <div className="mp-caption">
+                LRoomの中で表示される名前です
+                {avatarUploading && <span>（アイコン画像を保存しています…）</span>}
+              </div>
+            </div>
+          </div>
 
-                <div className="mp-caption">
-                  LRoomの中で表示される名前です
-                  {avatarUploading && <span>（アイコン画像を保存しています…）</span>}
-                </div>
+          <div className="mp-sub-row">
+            <div className="mp-pill mp-pill--accent">アカウント種別：{accountType}</div>
+            <div className="mp-pill mp-pill--soft">
+              {isMember
+                ? "この端末とアカウントの両方に保存します"
+                : "この端末の中だけで、静かに情報を管理します"}
+            </div>
+          </div>
+        </section>
+
+        {/* 基本情報 */}
+        <section className="surface-card">
+          <h2>基本情報</h2>
+
+          <div className="field">
+            <label className="field-label">エリア</label>
+            <input
+              className="field-input"
+              value={area}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setArea(e.target.value)}
+              placeholder="例）名古屋 / 東海エリア など"
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label">プロフィール</label>
+            <textarea
+              className="field-input mp-textarea"
+              value={intro}
+              onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setIntro(e.target.value)}
+              placeholder="例）人見知りですが、ゆっくり会話できる時間が好きです。"
+            />
+            <div className="field-note">
+              {isMember
+                ? "会員の場合、この内容は users.description に保存されます。"
+                : "ゲストの場合、この端末内にのみ保存されます。"}
+            </div>
+          </div>
+        </section>
+
+        {/* SNSリンク */}
+        <section className="surface-card">
+          <h2>SNSリンク</h2>
+
+          <div className="field">
+            <label className="field-label">X（任意）</label>
+            <input
+              className="field-input"
+              value={snsX}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsX(e.target.value)}
+              placeholder="https://x.com/..."
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label">LINE（任意）</label>
+            <input
+              className="field-input"
+              value={snsLine}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsLine(e.target.value)}
+              placeholder="https://lin.ee/..."
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label">その他（任意）</label>
+            <input
+              className="field-input"
+              value={snsOther}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsOther(e.target.value)}
+              placeholder="Instagram / Misskey などのURL"
+            />
+          </div>
+        </section>
+
+        {/* 通知設定 */}
+        <section className="surface-card">
+          <h2>通知設定</h2>
+
+          <div className="toggle-row">
+            <div className="toggle-text">
+              <div className="toggle-title">お気に入りの更新</div>
+              <div className="mp-caption">
+                お気に入りにした人の新しい投稿などを、アプリ内でさりげなくお知らせします。
               </div>
             </div>
 
-            <div className="mp-sub-row">
-              <div className="mp-pill mp-pill--accent">アカウント種別：{accountType}</div>
-              <div className="mp-pill mp-pill--soft">
-                {isMember ? "この端末とアカウントの両方に保存します" : "この端末の中だけで、静かに情報を管理します"}
-              </div>
-            </div>
-          </section>
+            <button
+              type="button"
+              className={"toggle-switch" + (notifyFavPosts ? " is-on" : "")}
+              onClick={() => setNotifyFavPosts((v) => !v)}
+              aria-pressed={notifyFavPosts}
+            >
+              <span className="toggle-knob" />
+            </button>
+          </div>
 
-          {/* 基本情報 */}
-          <section className="surface-card mp-card">
-            <h2 className="mp-title">基本情報</h2>
+          <div className="mp-divider" />
 
-            <div className="field">
-              <label className="field-label">エリア</label>
-              <input
-                className="field-input"
-                value={area}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setArea(e.target.value)}
-                placeholder="例）名古屋 / 東海エリア など"
-              />
+          <div className="toggle-row">
+            <div className="toggle-text">
+              <div className="toggle-title">DMの通知</div>
+              <div className="mp-caption">大事なメッセージを見逃さないようにしたいときに。</div>
             </div>
 
-            <div className="field">
-              <label className="field-label">プロフィール</label>
-              <textarea
-                className="field-input mp-textarea"
-                value={intro}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setIntro(e.target.value)}
-                placeholder="例）人見知りですが、ゆっくり会話できる時間が好きです。"
-              />
-              <div className="field-note">
-                {isMember ? "会員の場合、この内容は users.description に保存されます。" : "ゲストの場合、この端末内にのみ保存されます。"}
-              </div>
-            </div>
-          </section>
+            <button
+              type="button"
+              className={"toggle-switch" + (notifyDm ? " is-on" : "")}
+              onClick={() => setNotifyDm((v) => !v)}
+              aria-pressed={notifyDm}
+            >
+              <span className="toggle-knob" />
+            </button>
+          </div>
 
-          {/* SNSリンク */}
-          <section className="surface-card mp-card">
-            <h2 className="mp-title">SNSリンク</h2>
+          <div className="mp-divider" />
 
-            <div className="field">
-              <label className="field-label">X（任意）</label>
-              <input
-                className="field-input"
-                value={snsX}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsX(e.target.value)}
-                placeholder="https://x.com/..."
-              />
+          <div className="toggle-row">
+            <div className="toggle-text">
+              <div className="toggle-title">LRoom からのお知らせ</div>
+              <div className="mp-caption">リリース情報など、大切なことだけに使う予定です。</div>
             </div>
 
-            <div className="field">
-              <label className="field-label">LINE（任意）</label>
-              <input
-                className="field-input"
-                value={snsLine}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsLine(e.target.value)}
-                placeholder="https://lin.ee/..."
-              />
-            </div>
+            <button
+              type="button"
+              className={"toggle-switch" + (notifyNews ? " is-on" : "")}
+              onClick={() => setNotifyNews((v) => !v)}
+              aria-pressed={notifyNews}
+            >
+              <span className="toggle-knob" />
+            </button>
+          </div>
+        </section>
+      </main>
 
-            <div className="field">
-              <label className="field-label">その他（任意）</label>
-              <input
-                className="field-input"
-                value={snsOther}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsOther(e.target.value)}
-                placeholder="Instagram / Misskey などのURL"
-              />
-            </div>
-          </section>
+      {/* 保存バー（globals の console-footer-bar に統一） */}
+      <footer className="console-footer-bar">
+        <button
+          type="button"
+          className="btn-primary btn-primary--full"
+          onClick={handleSave}
+          disabled={saving}
+        >
+          {saving ? "保存中..." : "この内容で保存する"}
+        </button>
+      </footer>
 
-          {/* 通知設定（共通：toggle-row / toggle-switch） */}
-          <section className="surface-card mp-card">
-            <h2 className="mp-title">通知設定</h2>
+      <BottomNav active="mypage" hasUnread={hasUnread} />
 
-            <div className="toggle-row">
-              <div className="toggle-text">
-                <div className="toggle-title">お気に入りの更新</div>
-                <div className="mp-caption">
-                  お気に入りにした人の新しい投稿などを、アプリ内でさりげなくお知らせします。
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className={"toggle-switch" + (notifyFavPosts ? " is-on" : "")}
-                onClick={() => setNotifyFavPosts((v) => !v)}
-                aria-pressed={notifyFavPosts}
-              >
-                <span className="toggle-knob" />
-              </button>
-            </div>
-
-            <div className="mp-divider" />
-
-            <div className="toggle-row">
-              <div className="toggle-text">
-                <div className="toggle-title">DMの通知</div>
-                <div className="mp-caption">大事なメッセージを見逃さないようにしたいときに。</div>
-              </div>
-
-              <button
-                type="button"
-                className={"toggle-switch" + (notifyDm ? " is-on" : "")}
-                onClick={() => setNotifyDm((v) => !v)}
-                aria-pressed={notifyDm}
-              >
-                <span className="toggle-knob" />
-              </button>
-            </div>
-
-            <div className="mp-divider" />
-
-            <div className="toggle-row">
-              <div className="toggle-text">
-                <div className="toggle-title">LRoom からのお知らせ</div>
-                <div className="mp-caption">リリース情報など、大切なことだけに使う予定です。</div>
-              </div>
-
-              <button
-                type="button"
-                className={"toggle-switch" + (notifyNews ? " is-on" : "")}
-                onClick={() => setNotifyNews((v) => !v)}
-                aria-pressed={notifyNews}
-              >
-                <span className="toggle-knob" />
-              </button>
-            </div>
-          </section>
-        </main>
-
-        {/* 保存バー（共通：footer固定） */}
-        <footer className="mp-footer-bar">
-          <button
-            type="button"
-            className="btn-primary btn-primary--full"
-            onClick={handleSave}
-            disabled={saving}
-          >
-            {saving ? "保存中..." : "この内容で保存する"}
-          </button>
-        </footer>
-
-        <BottomNav active="mypage" hasUnread={hasUnread} />
-      </div>
-
+      {/* MyPage固有の見た目だけ残す */}
       <style jsx>{`
-        .mypage-main {
-          padding: 12px 16px 140px;
-        }
-
-        .mp-card {
-          margin-top: 12px;
-          padding: 12px;
-          border-radius: 16px;
-          border: 1px solid var(--border);
-          background: var(--surface);
-          box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
-        }
-
-        .mp-title {
-          font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 8px;
-          color: var(--text-sub);
-        }
-
         .mp-profile-row {
           display: flex;
           gap: 12px;
@@ -571,98 +553,13 @@ const MyPageConsole: React.FC = () => {
           margin: 10px 0;
         }
 
-        /* 保存バー（store/therapist と同形） */
-        .mp-footer-bar {
-          position: fixed;
-          bottom: 58px;
-          left: 50%;
-          transform: translateX(-50%);
-          width: 100%;
-          max-width: 430px;
-          padding: 8px 16px;
-          background: linear-gradient(
-            to top,
-            rgba(247, 247, 250, 0.98),
-            rgba(247, 247, 250, 0.88)
-          );
-          border-top: 1px solid var(--border);
-          display: flex;
-          justify-content: center;
-          z-index: 25;
-        }
-
-        /* btn-primary が globals に無い場合の保険 */
-        :global(.btn-primary) {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          border-radius: 999px;
-          border: none;
-          padding: 10px 18px;
-          font-size: 14px;
-          font-weight: 600;
-          cursor: pointer;
-          background: var(--accent);
-          color: #fff;
-          box-shadow: 0 6px 16px rgba(180, 137, 90, 0.35);
-        }
-        :global(.btn-primary--full) {
-          width: 100%;
-        }
-        :global(.btn-primary[disabled]) {
-          opacity: 0.6;
-          cursor: default;
-        }
-
-        /* ===== 共通トグル（store/therapist と同形） ===== */
-        .toggle-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-        }
-        .toggle-text {
-          flex: 1;
-          min-width: 0;
-        }
-        .toggle-title {
-          font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 2px;
-        }
-        .toggle-switch {
-          width: 48px;
-          height: 28px;
-          border-radius: 999px;
-          border: 1px solid rgba(0, 0, 0, 0.08);
-          position: relative;
-          padding: 0;
-          background: #d1d5db; /* OFF */
-        }
-        .toggle-switch.is-on {
-          background: linear-gradient(135deg, #d9b07c, #b4895a); /* ON=ゴールド */
-        }
-        .toggle-knob {
-          position: absolute;
-          top: 3px;
-          left: 3px;
-          width: 22px;
-          height: 22px;
-          border-radius: 999px;
-          background: #fff;
-          transition: transform 0.15s ease;
-        }
-        .toggle-switch.is-on .toggle-knob {
-          transform: translateX(20px);
-        }
-
         .loading-text {
           padding: 24px 16px;
           font-size: 13px;
           color: var(--text-sub);
         }
       `}</style>
-    </>
+    </div>
   );
 };
 

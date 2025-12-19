@@ -347,10 +347,8 @@ const StoreConsolePage: React.FC = () => {
 
   const canSave = state.storeName.trim().length > 0;
 
-  const updateField = <K extends keyof FormState>(
-    key: K,
-    value: FormState[K]
-  ) => setState((prev) => ({ ...prev, [key]: value }));
+  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setState((prev) => ({ ...prev, [key]: value }));
 
   const handleToggleDmNotice = () => {
     setState((prev) => ({ ...prev, dmNotice: !prev.dmNotice }));
@@ -392,10 +390,7 @@ const StoreConsolePage: React.FC = () => {
     if (!ownerUserId) return;
 
     try {
-      const { error } = await supabase
-        .from("users")
-        .update({ name })
-        .eq("id", ownerUserId);
+      const { error } = await supabase.from("users").update({ name }).eq("id", ownerUserId);
       if (error) console.error("[StoreConsole] users.name sync failed:", error);
     } catch (e) {
       console.error("[StoreConsole] users.name sync exception:", e);
@@ -415,9 +410,7 @@ const StoreConsolePage: React.FC = () => {
       const payload: Partial<DbStoreRow> = {
         name: state.storeName.trim() || null,
         area: state.area.trim() || null,
-        website_url: state.websiteUrl.trim()
-          ? normalizeUrl(state.websiteUrl)
-          : null,
+        website_url: state.websiteUrl.trim() ? normalizeUrl(state.websiteUrl) : null,
         line_url: state.lineUrl.trim() ? normalizeUrl(state.lineUrl) : null,
         avatar_url: state.avatarUrl?.trim() ? state.avatarUrl.trim() : null,
         x_url: state.xUrl.trim() ? normalizeUrl(state.xUrl) : null,
@@ -426,10 +419,7 @@ const StoreConsolePage: React.FC = () => {
         dm_notice: !!state.dmNotice,
       } as any;
 
-      const { error } = await supabase
-        .from("stores")
-        .update(payload as any)
-        .eq("id", storeId);
+      const { error } = await supabase.from("stores").update(payload as any).eq("id", storeId);
 
       if (error) {
         console.error("[StoreConsole] failed to update stores:", error);
@@ -476,9 +466,7 @@ const StoreConsolePage: React.FC = () => {
 
       const email = userRes.user?.email;
       if (!email) {
-        throw new Error(
-          "メール情報が取得できませんでした。再ログインしてからお試しください。"
-        );
+        throw new Error("メール情報が取得できませんでした。再ログインしてからお試しください。");
       }
 
       const { error: signInErr } = await supabase.auth.signInWithPassword({
@@ -487,12 +475,9 @@ const StoreConsolePage: React.FC = () => {
       });
       if (signInErr) throw new Error("パスワードが正しくありません。");
 
-      const { error: rpcErr } = await supabase.rpc(
-        "rpc_detach_therapist_from_store",
-        {
-          p_therapist_id: detachTarget.therapistId,
-        }
-      );
+      const { error: rpcErr } = await supabase.rpc("rpc_detach_therapist_from_store", {
+        p_therapist_id: detachTarget.therapistId,
+      });
       if (rpcErr) throw rpcErr;
 
       const joined = await listTherapistsForStore(storeId);
@@ -508,10 +493,7 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  const handleReviewRequest = async (
-    requestId: string,
-    decision: "approved" | "rejected"
-  ) => {
+  const handleReviewRequest = async (requestId: string, decision: "approved" | "rejected") => {
     if (!storeId) return;
 
     try {
@@ -531,9 +513,7 @@ const StoreConsolePage: React.FC = () => {
 
       if (!res.ok || !json || (json as any).ok !== true) {
         console.error("[review] failed", { status: res.status, json });
-        const msg =
-          (json as any)?.error ||
-          `failed to review request (status ${res.status})`;
+        const msg = (json as any)?.error || `failed to review request (status ${res.status})`;
         throw new Error(msg);
       }
 
@@ -555,7 +535,6 @@ const StoreConsolePage: React.FC = () => {
     <div className="app-root">
       <AppHeader
         title="店舗コンソール"
-        subtitle="LRoom 内での店舗情報を設定します。後からいつでも変更できます。"
       />
 
       <main className="app-main store-console-main">
@@ -593,15 +572,11 @@ const StoreConsolePage: React.FC = () => {
               </div>
 
               <div className="sc-sub-row">
-                <div className="sc-sub-pill sc-sub-pill--soft">
-                  種別: 女性向けリラクゼーション
-                </div>
+                <div className="sc-sub-pill sc-sub-pill--soft">種別: 女性向けリラクゼーション</div>
               </div>
 
               {avatarUploading && (
-                <div className="sc-sub-pill sc-sub-pill--soft">
-                  アイコン画像を保存しています…
-                </div>
+                <div className="sc-sub-pill sc-sub-pill--soft">アイコン画像を保存しています…</div>
               )}
             </div>
           </div>
@@ -713,17 +688,13 @@ const StoreConsolePage: React.FC = () => {
             {loadingTherapists && therapists.length === 0 ? (
               <p className="sc-caption">読み込み中です…</p>
             ) : therapists.length === 0 ? (
-              <p className="sc-caption">
-                まだこの店舗に紐づいているセラピストはいません。
-              </p>
+              <p className="sc-caption">まだこの店舗に紐づいているセラピストはいません。</p>
             ) : (
               <ul className="sc-list">
                 {therapists.map((t) => (
                   <li key={t.id} className="sc-row">
                     <div className="sc-row-main">
-                      <span className="sc-name">
-                        {t.display_name || "名前未設定"}
-                      </span>
+                      <span className="sc-name">{t.display_name || "名前未設定"}</span>
                       <span className="sc-meta">{t.area || "エリア未設定"}</span>
                     </div>
 
@@ -796,8 +767,8 @@ const StoreConsolePage: React.FC = () => {
         </section>
       </main>
 
-      {/* 保存バー（共通：footer固定） */}
-      <footer className="sc-footer-bar">
+      {/* 保存バー（共通：btn-primary を使用。footer固定バーはグローバルCSS側に寄せるため className を統一） */}
+      <footer className="console-footer-bar">
         <button
           type="button"
           className="btn-primary btn-primary--full"
@@ -808,7 +779,7 @@ const StoreConsolePage: React.FC = () => {
         </button>
       </footer>
 
-      {/* モーダル（固有：維持。見た目は既存に寄せつつ共通トーン） */}
+      {/* モーダル（固有：維持） */}
       {detachOpen && detachTarget && (
         <div
           className="modal-backdrop"
@@ -862,10 +833,12 @@ const StoreConsolePage: React.FC = () => {
       <BottomNav active="mypage" hasUnread={hasUnread} />
 
       <style jsx>{`
-        .store-console-main {
-          padding: 12px 16px 140px;
-        }
+        /* ★ グローバルCSSに移した「共通UI」部分はここから削除済み
+           - .store-console-main の padding は app-main で担保されるため不要
+           - .sc-footer-bar / toggle / btn-primary 等は削除
+        */
 
+        /* ===== Store Console 固有 ===== */
         .sc-card {
           margin-top: 12px;
         }
@@ -924,8 +897,6 @@ const StoreConsolePage: React.FC = () => {
           min-height: 120px;
           line-height: 1.7;
           resize: vertical;
-          border-radius: 16px; /* MyPageConsole寄り */
-          padding: 10px 12px;
         }
 
         .sc-caption {
@@ -935,68 +906,7 @@ const StoreConsolePage: React.FC = () => {
           margin-top: 4px;
         }
 
-        .sc-footer-bar {
-          position: fixed;
-          bottom: 58px;
-          left: 50%;
-          transform: translateX(-50%);
-          width: 100%;
-          max-width: 430px;
-          padding: 8px 16px;
-          background: linear-gradient(
-            to top,
-            rgba(247, 247, 250, 0.98),
-            rgba(247, 247, 250, 0.88)
-          );
-          border-top: 1px solid var(--border);
-          display: flex;
-          justify-content: center;
-          z-index: 25;
-        }
-
-        /* ===== MyPageConsole基準のトグル ===== */
-        .toggle-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-        }
-        .toggle-text {
-          flex: 1;
-          min-width: 0;
-        }
-        .toggle-title {
-          font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 2px;
-        }
-        .toggle-switch {
-          width: 48px;
-          height: 28px;
-          border-radius: 999px;
-          border: 1px solid rgba(0, 0, 0, 0.08);
-          position: relative;
-          padding: 0;
-          background: #d1d5db; /* OFF */
-        }
-        .toggle-switch.is-on {
-          background: linear-gradient(135deg, #d9b07c, #b4895a); /* ON=ゴールド */
-        }
-        .toggle-knob {
-          position: absolute;
-          top: 3px;
-          left: 3px;
-          width: 22px;
-          height: 22px;
-          border-radius: 999px;
-          background: #fff;
-          transition: transform 0.15s ease;
-        }
-        .toggle-switch.is-on .toggle-knob {
-          transform: translateX(20px);
-        }
-
-        /* ===== セラピスト管理：固有（見た目だけ統一トーン） ===== */
+        /* ===== セラピスト管理：固有 ===== */
         .sc-block {
           margin-top: 10px;
         }
@@ -1098,7 +1008,7 @@ const StoreConsolePage: React.FC = () => {
           cursor: default;
         }
 
-        /* ===== モーダル（既存踏襲） ===== */
+        /* ===== モーダル（固有：維持） ===== */
         .modal-backdrop {
           position: fixed;
           inset: 0;

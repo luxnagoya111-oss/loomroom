@@ -152,7 +152,9 @@ const TherapistConsolePage: React.FC = () => {
           area: typeof parsed.area === "string" ? parsed.area : prev.area,
           avatarUrl: safeAvatar ?? prev.avatarUrl ?? null,
           dmNotice:
-            typeof parsed.dmNotice === "boolean" ? parsed.dmNotice : prev.dmNotice,
+            typeof parsed.dmNotice === "boolean"
+              ? parsed.dmNotice
+              : prev.dmNotice,
         }));
       }
     } catch (e) {
@@ -196,7 +198,9 @@ const TherapistConsolePage: React.FC = () => {
 
         // ★ avatar_url が dataURL の場合は “異常値” なので UI/保存対象から除外
         const safeAvatarUrl =
-          dbRow.avatar_url && !isDataUrl(dbRow.avatar_url) ? dbRow.avatar_url : null;
+          dbRow.avatar_url && !isDataUrl(dbRow.avatar_url)
+            ? dbRow.avatar_url
+            : null;
 
         setData((prev) => ({
           ...prev,
@@ -208,12 +212,15 @@ const TherapistConsolePage: React.FC = () => {
           snsOther: dbRow.sns_other ?? prev.snsOther,
           avatarUrl: safeAvatarUrl ?? prev.avatarUrl ?? null,
           dmNotice:
-            typeof dbRow.dm_notice === "boolean" ? dbRow.dm_notice : prev.dmNotice,
+            typeof dbRow.dm_notice === "boolean"
+              ? dbRow.dm_notice
+              : prev.dmNotice,
         }));
 
         setLinkedStoreId((dbRow as any).store_id ?? null);
       } catch (e) {
-        if (!cancelled) console.error("[TherapistConsole] loadTherapist exception:", e);
+        if (!cancelled)
+          console.error("[TherapistConsole] loadTherapist exception:", e);
       }
     };
 
@@ -367,7 +374,8 @@ const TherapistConsolePage: React.FC = () => {
       const payloadForLocal: TherapistProfile = {
         ...data,
         // ★ dataURL が入っていたら消す（念のため）
-        avatarUrl: data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null,
+        avatarUrl:
+          data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null,
         // ★ area は自由入力のまま
         area: (data.area ?? "").toString(),
       };
@@ -446,7 +454,9 @@ const TherapistConsolePage: React.FC = () => {
 
     const email = userRes.user?.email;
     if (!email) {
-      throw new Error("メール情報が取得できませんでした。再ログインしてからお試しください。");
+      throw new Error(
+        "メール情報が取得できませんでした。再ログインしてからお試しください。"
+      );
     }
 
     const { error: signInErr } = await supabase.auth.signInWithPassword({
@@ -541,10 +551,10 @@ const TherapistConsolePage: React.FC = () => {
       <div className="app-root">
         <AppHeader
           title="セラピスト用コンソール"
-          subtitle={therapistId ? `Therapist ID：${therapistId}` : undefined}
         />
 
-        <main className="app-main therapist-console-main">
+        {/* ★ app-main は global.css が担当するので、固有classは不要 */}
+        <main className="app-main">
           {/* 店舗とのつながり */}
           <section className="surface-card tc-card">
             <div className="tc-head-row">
@@ -572,16 +582,23 @@ const TherapistConsolePage: React.FC = () => {
                   >
                     {!linkedStore.avatar_url && (
                       <span className="tc-link-avatar-text">
-                        {(linkedStore.name || "S").trim().charAt(0).toUpperCase()}
+                        {(linkedStore.name || "S")
+                          .trim()
+                          .charAt(0)
+                          .toUpperCase()}
                       </span>
                     )}
                   </div>
 
                   <div className="tc-link-meta">
-                    <div className="tc-link-name">{linkedStore.name || "店舗名未設定"}</div>
+                    <div className="tc-link-name">
+                      {linkedStore.name || "店舗名未設定"}
+                    </div>
                     <div className="tc-link-sub">
                       <span className="tc-pill is-approved">在籍中</span>
-                      <span className="tc-link-hint">タップで店舗プロフィールへ</span>
+                      <span className="tc-link-hint">
+                        タップで店舗プロフィールへ
+                      </span>
                     </div>
                   </div>
                 </Link>
@@ -617,16 +634,23 @@ const TherapistConsolePage: React.FC = () => {
                   >
                     {!pendingStore.avatar_url && (
                       <span className="tc-link-avatar-text">
-                        {(pendingStore.name || "S").trim().charAt(0).toUpperCase()}
+                        {(pendingStore.name || "S")
+                          .trim()
+                          .charAt(0)
+                          .toUpperCase()}
                       </span>
                     )}
                   </div>
 
                   <div className="tc-link-meta">
-                    <div className="tc-link-name">{pendingStore.name || "店舗名未設定"}</div>
+                    <div className="tc-link-name">
+                      {pendingStore.name || "店舗名未設定"}
+                    </div>
                     <div className="tc-link-sub">
                       <span className="tc-pill is-pending">申請中</span>
-                      <span className="tc-link-hint">承認されると在籍になります</span>
+                      <span className="tc-link-hint">
+                        承認されると在籍になります
+                      </span>
                     </div>
                   </div>
                 </Link>
@@ -645,7 +669,9 @@ const TherapistConsolePage: React.FC = () => {
             )}
 
             {!linkedStoreId && !pendingRequest && !loadingLink && (
-              <p className="tc-caption">現在、新しい在籍リクエストは届いていません。</p>
+              <p className="tc-caption">
+                現在、新しい在籍リクエストは届いていません。
+              </p>
             )}
 
             {!!linkedStoreId && !linkedStore && !loadingLink && (
@@ -783,7 +809,8 @@ const TherapistConsolePage: React.FC = () => {
           </section>
         </main>
 
-        <footer className="tc-footer-bar">
+        {/* ★ footer は global の console-footer-bar を使う */}
+        <footer className="console-footer-bar">
           <button
             type="button"
             className="btn-primary btn-primary--full"
@@ -802,7 +829,9 @@ const TherapistConsolePage: React.FC = () => {
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal-card">
             <div className="modal-title">
-              {modalMode === "cancel_request" ? "申請キャンセルの確認" : "在籍解除の確認"}
+              {modalMode === "cancel_request"
+                ? "申請キャンセルの確認"
+                : "在籍解除の確認"}
             </div>
 
             <p className="modal-text">
@@ -854,32 +883,34 @@ const TherapistConsolePage: React.FC = () => {
         </div>
       )}
 
-      {/* styles は既存のまま（ヘッダーだけAppHeader側へ統一） */}
+      {/* ★ global にある共通UIは削除し、固有UIだけ残す */}
       <style jsx>{`
-        .therapist-console-main {
-          padding: 12px 16px 140px;
-        }
+        /* === このページ固有（tc-*）だけ === */
         .tc-card {
           margin-top: 12px;
         }
+
         .tc-title {
           font-size: 13px;
           font-weight: 600;
           margin-bottom: 8px;
           color: var(--text-sub);
         }
+
         .tc-profile-row {
           display: flex;
           gap: 12px;
           align-items: flex-start;
           margin-bottom: 8px;
         }
+
         .tc-profile-main {
           flex: 1;
           display: flex;
           flex-direction: column;
           gap: 8px;
         }
+
         .tc-id-pill {
           display: inline-flex;
           align-items: center;
@@ -888,79 +919,23 @@ const TherapistConsolePage: React.FC = () => {
           background: var(--surface-soft);
           font-size: 11px;
           color: var(--text-sub);
+          width: fit-content;
         }
+
         .tc-textarea {
           min-height: 80px;
           line-height: 1.7;
           resize: vertical;
         }
+
         .tc-caption {
           font-size: 11px;
           color: var(--text-sub);
           margin-top: 4px;
           line-height: 1.6;
         }
-        .tc-footer-bar {
-          position: fixed;
-          bottom: 58px;
-          left: 50%;
-          transform: translateX(-50%);
-          width: 100%;
-          max-width: 430px;
-          padding: 8px 16px;
-          background: linear-gradient(
-            to top,
-            rgba(247, 247, 250, 0.98),
-            rgba(247, 247, 250, 0.88)
-          );
-          border-top: 1px solid var(--border);
-          display: flex;
-          justify-content: center;
-          z-index: 25;
-        }
 
-        /* ===== MyPageConsole基準のトグル見た目（toggle-row / toggle-switch） ===== */
-        .toggle-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-        }
-        .toggle-text {
-          flex: 1;
-          min-width: 0;
-        }
-        .toggle-title {
-          font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 2px;
-        }
-        .toggle-switch {
-          width: 48px;
-          height: 28px;
-          border-radius: 999px;
-          border: 1px solid rgba(0, 0, 0, 0.08);
-          position: relative;
-          padding: 0;
-          background: #d1d5db; /* OFF */
-        }
-        .toggle-switch.is-on {
-          background: linear-gradient(135deg, #d9b07c, #b4895a); /* ON=ゴールド */
-        }
-        .toggle-knob {
-          position: absolute;
-          top: 3px;
-          left: 3px;
-          width: 22px;
-          height: 22px;
-          border-radius: 999px;
-          background: #fff;
-          transition: transform 0.15s ease;
-        }
-        .toggle-switch.is-on .toggle-knob {
-          transform: translateX(20px);
-        }
-
+        /* ====== モーダル（このページ固有のまま） ====== */
         .modal-backdrop {
           position: fixed;
           inset: 0;
@@ -1034,11 +1009,7 @@ const TherapistConsolePage: React.FC = () => {
           cursor: default;
         }
 
-        :global(.no-link-style) {
-          color: inherit;
-          text-decoration: none;
-        }
-
+        /* ====== 店舗リンクUI（ページ固有） ====== */
         .tc-head-row {
           display: flex;
           align-items: center;
@@ -1159,6 +1130,11 @@ const TherapistConsolePage: React.FC = () => {
         .tc-btn-outline:active,
         .tc-btn-danger-outline:active {
           transform: translateY(1px);
+        }
+
+        :global(.no-link-style) {
+          color: inherit;
+          text-decoration: none;
         }
       `}</style>
     </>
