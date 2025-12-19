@@ -15,9 +15,6 @@ const APP_SHELL = [
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
-  // ↓存在しないなら入れない（install失敗の原因になる）
-  // "/icons/maskable-192.png",
-  // "/icons/maskable-512.png",
 ];
 
 self.addEventListener("install", (event) => {
@@ -35,7 +32,11 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.map((k) => (k !== CACHE_NAME ? caches.delete(k) : Promise.resolve(true))))
+        Promise.all(
+          keys.map((k) =>
+            k !== CACHE_NAME ? caches.delete(k) : Promise.resolve(true)
+          )
+        )
       )
       .then(() => self.clients.claim())
   );
@@ -46,6 +47,12 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
 
   if (url.origin !== self.location.origin) return;
+
+  // ★GET以外はキャッシュしない（POST 等で cache.put が落ちるのを防ぐ）
+  if (req.method !== "GET") {
+    event.respondWith(fetch(req));
+    return;
+  }
 
   // OAuth/認証・ログイン関連は常にネットワーク直通
   if (isAuthPath(url.pathname)) {
