@@ -20,6 +20,9 @@ function pickNameFromUser(user: any): string {
   );
 }
 
+/**
+ * PKCE/コード交換系の失敗は、状態リセット → やり直しで直ることが多い
+ */
 function isRecoverableOAuthErrorMessage(msg: string): boolean {
   const s = (msg || "").toLowerCase();
   return (
@@ -27,8 +30,16 @@ function isRecoverableOAuthErrorMessage(msg: string): boolean {
     s.includes("code_verifier") ||
     s.includes("invalid request") ||
     s.includes("invalid_grant") ||
-    s.includes("400")
+    s.includes("pkce") ||
+    s.includes("validation_failed")
   );
+}
+
+function stripOAuthParamsFromUrl(url: URL) {
+  url.searchParams.delete("code");
+  url.searchParams.delete("error");
+  url.searchParams.delete("error_description");
+  url.searchParams.delete("state");
 }
 
 export default function CallbackClient() {
@@ -39,7 +50,7 @@ export default function CallbackClient() {
   const [canRecover, setCanRecover] = useState(false);
   const [recovering, setRecovering] = useState(false);
 
-  // ★ 二重実行ガード（StrictMode / 復帰 / SWでの再実行対策）
+  // StrictMode / リロード / 戻る等でも二重実行しない
   const ranRef = useRef(false);
 
   useEffect(() => {
@@ -65,39 +76,49 @@ export default function CallbackClient() {
 
     const run = async () => {
       try {
-        // ★ URLは searchParams ではなく URL(window.location.href) から読む（取り逃し防止）
         const url = new URL(window.location.href);
+
         const code = url.searchParams.get("code");
         const error = url.searchParams.get("error");
         const errorDesc = url.searchParams.get("error_description");
 
         if (error || errorDesc) {
-          fail(`認証に失敗しました：${errorDesc ?? error ?? "unknown error"}`);
+          // ここは交換処理をしない（純粋に失敗表示）
+          const text = errorDesc ?? error ?? "unknown error";
+          fail(`認証に失敗しました：${text}`);
           return;
         }
 
-        // code が無いなら「既にログイン済み」を疑って getSession
+        // code が無い場合：
+        // - callbackに何らかの理由でパラメータ無しで来た
+        // - 既に交換済みでURLだけ消えている
+        // のどちらか。セッション確認してダメならリセット導線へ。
         if (!code) {
           const { data: sessionData, error: sessionErr } =
             await supabase.auth.getSession();
+
           if (sessionErr) {
             fail(`セッション確認に失敗しました：${sessionErr.message}`);
             return;
           }
+
           const uid = sessionData?.session?.user?.id ?? null;
           if (!uid) {
             fail(
-              "認証コードが見つかりませんでした。\n「ログイン状態をリセットしてやり直す」を押して、/login から再度 Google ログインしてください。"
+              "認証情報が見つかりませんでした。\n「ログイン状態をリセットしてやり直す」から /login に戻り、再度 Google ログインしてください。"
             );
             return;
           }
+
+          // 既にログイン済み
           succeedAndGo(uid);
           return;
         }
 
-        // 本丸：code -> session
+        // ★本丸：code → session（このページでのみ実施）
         const { data, error: exErr } =
           await supabase.auth.exchangeCodeForSession(code);
+
         if (exErr) {
           fail(`セッション確立に失敗しました：${exErr.message}`);
           return;
@@ -105,22 +126,21 @@ export default function CallbackClient() {
 
         const user = (data as any)?.user ?? (data as any)?.session?.user ?? null;
         const uid = user?.id ?? null;
+
         if (!uid) {
           fail("ユーザー情報を取得できませんでした。");
           return;
         }
 
-        // ★ 成功したら code をURLから消す（戻る/再読み込み/SWでの二重交換を防ぐ）
+        // ★二重交換防止：成功したら code 等をURLから消す
         try {
-          url.searchParams.delete("code");
-          url.searchParams.delete("error");
-          url.searchParams.delete("error_description");
+          stripOAuthParamsFromUrl(url);
           window.history.replaceState({}, "", url.toString());
-        } catch {}
+        } catch {
+          // noop
+        }
 
-        persistCurrentUserId(uid);
-
-        // users upsert（失敗してもログインは継続）
+        // users upsert（失敗してもログイン自体は成立しているので続行）
         try {
           const name = pickNameFromUser(user);
 
@@ -131,10 +151,15 @@ export default function CallbackClient() {
             .maybeSingle();
 
           const roleToSave = (existing as any)?.role ?? "user";
-          const nameToSave = String((existing as any)?.name ?? name).trim() || "LRoom";
+          const nameToSave =
+            String((existing as any)?.name ?? name).trim() || "LRoom";
 
           if ((existing as any)?.id) {
-            await supabase.from("users").update({ name: nameToSave }).eq("id", uid);
+            // ここでは name 更新のみ（roleは勝手に変えない）
+            await supabase
+              .from("users")
+              .update({ name: nameToSave })
+              .eq("id", uid);
           } else {
             await supabase
               .from("users")
@@ -144,10 +169,7 @@ export default function CallbackClient() {
           console.warn("[auth/callback] users upsert skipped:", e);
         }
 
-        if (cancelled) return;
-        setStep("success");
-        setMessage("ログインしました。移動します…");
-        router.replace(`/mypage/${uid}`);
+        succeedAndGo(uid);
       } catch (e: any) {
         console.error("[auth/callback] unexpected error:", e);
         fail(e?.message ?? "不明なエラーが発生しました。");

@@ -5,11 +5,13 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { supabase } from "@/lib/supabaseClient";
-import { persistCurrentUserId, resetAuthFlow } from "@/lib/auth";
+import {
+  persistCurrentUserId,
+  resetAuthFlow,
+  resendSignupConfirmation,
+  isEmailNotConfirmedError,
+} from "@/lib/auth";
 import { getAuthRedirectTo } from "@/lib/authRedirect";
-
-// 既存：確認メール再送
-import { resendSignupConfirmation, isEmailNotConfirmedError } from "@/lib/auth";
 
 type Mode = "login" | "signup";
 
@@ -47,19 +49,15 @@ export default function LoginPage() {
 
   /**
    * 画面を開いた時点でセッションがあるなら、そのまま /mypage へ
-   * （「ログイン画面にいるのに実はログイン済み」を吸収）
    *
-   * ★修正：
-   * OAuth の戻り（code 等が付いたURL）でここが走ると
-   * PKCEが壊れたり、途中で /mypage に飛んで不安定になることがあるため、
-   * code/error が付いている場合はこの自動遷移をスキップする。
+   * OAuth の戻り口（code/error 付きURL）でこれが走ると不安定化しやすいので
+   * その場合は自動遷移をスキップする。
    */
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        // OAuth の戻り口っぽいなら、自動遷移しない
         if (hasOAuthParamsInUrl()) return;
 
         const { data, error } = await supabase.auth.getSession();
@@ -84,7 +82,7 @@ export default function LoginPage() {
   /**
    * Google（OAuth）
    * - “新規登録”/“ログイン”の区別はない（初回なら自動でUserが作られる）
-   * - 壊れた状態を引きずるので、開始前に必ず resetAuthFlow() を呼ぶ
+   * - 開始前に resetAuthFlow() で壊れたPKCE状態を掃除
    */
   const handleGoogle = async () => {
     if (loading || resending) return;
@@ -94,20 +92,20 @@ export default function LoginPage() {
     try {
       setLoading(true);
 
-      // ★重要：壊れたOAuth/PKCE状態を掃除してから開始
-      // （ここは必ず await。並走すると verifier が壊れやすい）
+      // ★重要：壊れたOAuth/PKCE状態を掃除してから開始（必ず await）
       await resetAuthFlow();
 
+      // ★運用方針：OAuth交換処理は /auth/callback のみ
       const redirectTo =
         typeof window === "undefined"
-          ? "https://lroom.jp/auth/callback"
+          ? getAuthRedirectTo("/auth/callback")
           : new URL("/auth/callback", window.location.origin).toString();
 
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
           redirectTo,
-          // ★追加：毎回アカウント選択を出す（テストと運用が安定）
+          // テスト/運用安定のため、毎回アカウント選択を出す
           queryParams: {
             prompt: "select_account",
           },
@@ -174,7 +172,7 @@ export default function LoginPage() {
       }
 
       // 新規登録（メール確認あり）
-      const { data, error } = await supabase.auth.signUp({
+      const { error } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -189,7 +187,7 @@ export default function LoginPage() {
         return;
       }
 
-      // 確認前に /mypage へは飛ばさない（混乱と不整合を避ける）
+      // 確認前に /mypage へは飛ばさない
       setInfoMsg(
         "仮登録が完了しました。確認メールを送信しました。メール内のリンクを開いて登録を完了してください。"
       );
