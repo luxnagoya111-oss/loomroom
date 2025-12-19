@@ -96,9 +96,7 @@ export default function NewMessageClient() {
 
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  // =========================
   // 1) 宛先(to)チェック
-  // =========================
   useEffect(() => {
     if (!targetUserId) {
       setPageError("宛先がありません。");
@@ -111,9 +109,7 @@ export default function NewMessageClient() {
     setPageError(null);
   }, [targetUserId]);
 
-  // =========================
-  // 2) ログイン判定（Auth user を正）
-  // =========================
+  // 2) ログイン判定（Auth user を正） + viewerRole を DB から解決
   useEffect(() => {
     let cancelled = false;
 
@@ -133,7 +129,21 @@ export default function NewMessageClient() {
         }
 
         setViewerId(uid as UserId);
-        setViewerRole(getCurrentUserRole());
+
+        // role は DB(users.role) を正にする（取れなければ local fallback）
+        let role: Role = getCurrentUserRole();
+        const { data: u, error: uErr } = await supabase
+          .from("users")
+          .select("role")
+          .eq("id", uid)
+          .maybeSingle<{ role: string | null }>();
+
+        if (!uErr) {
+          const dbRole = normalizeRole(u?.role);
+          if (dbRole !== "guest") role = dbRole;
+        }
+
+        setViewerRole(role);
       } catch {
         if (!isUuid(targetUserId)) return;
         const next = `/messages/new?to=${encodeURIComponent(targetUserId)}`;
@@ -148,9 +158,7 @@ export default function NewMessageClient() {
     };
   }, [router, targetUserId]);
 
-  // =========================
   // 3) 相手表示情報を DB から解決（users.role を正）
-  // =========================
   useEffect(() => {
     if (!isUuid(targetUserId)) return;
 
@@ -237,9 +245,7 @@ export default function NewMessageClient() {
     };
   }, [targetUserId]);
 
-  // =========================
   // 4) 無所属セラピスト判定（viewer が therapist の場合）
-  // =========================
   useEffect(() => {
     if (!viewerId || viewerRole !== "therapist" || !isUuid(viewerId)) {
       setIsUnaffiliatedTherapist(false);
@@ -279,9 +285,7 @@ export default function NewMessageClient() {
     };
   }, [viewerId, viewerRole]);
 
-  // =========================
   // 5) ブロック判定（uuid会員のみ）
-  // =========================
   useEffect(() => {
     if (!viewerId || !isUuid(viewerId) || !isUuid(targetUserId)) {
       setIsBlocked(false);
@@ -321,16 +325,12 @@ export default function NewMessageClient() {
     };
   }, [viewerId, targetUserId]);
 
-  // =========================
-  // 6) 初回スクロール（見た目合わせ）
-  // =========================
+  // 6) 初回スクロール
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, []);
 
-  // =========================
   // 送信（ここで初回 thread が作成される）
-  // =========================
   const handleSend = async () => {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
@@ -376,8 +376,7 @@ export default function NewMessageClient() {
     }
   };
 
-  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) =>
-    setText(e.target.value);
+  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => setText(e.target.value);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {

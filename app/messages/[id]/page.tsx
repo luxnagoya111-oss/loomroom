@@ -110,7 +110,7 @@ const MessageDetailPage: React.FC = () => {
 
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  // viewerId / role（Auth uuid 正）
+  // viewerId（Auth uuid 正）
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -125,15 +125,44 @@ const MessageDetailPage: React.FC = () => {
       } catch {
         if (!cancelled) setCurrentUserId((getCurrentUserId() ?? "") as UserId);
       }
-
-      if (!cancelled) setCurrentRole(getCurrentUserRole());
     })();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // threadId バリデーション
+  // viewerRole（DB users.role を優先して解決）
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    let cancelled = false;
+    (async () => {
+      // まず local fallback
+      let role: Role = getCurrentUserRole();
+
+      // uuid会員なら DB を正にする
+      if (isUuid(currentUserId)) {
+        const { data, error } = await supabase
+          .from("users")
+          .select("role")
+          .eq("id", currentUserId)
+          .maybeSingle<{ role: string | null }>();
+
+        if (!cancelled && !error) {
+          const dbRole = normalizeRole(data?.role);
+          if (dbRole !== "guest") role = dbRole;
+        }
+      }
+
+      if (!cancelled) setCurrentRole(role);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
+  // threadId バリデーション（uuid前提）
   useEffect(() => {
     if (!threadId) return;
     if (!isUuid(threadId)) {
@@ -142,7 +171,7 @@ const MessageDetailPage: React.FC = () => {
     }
   }, [threadId]);
 
-  // 自分の name / avatar（※今回は表示に使わないが、他用途があれば残してOK）
+  // 自分の name / avatar（表示用）
   useEffect(() => {
     if (!currentUserId || !isUuid(currentUserId)) return;
 
@@ -441,6 +470,10 @@ const MessageDetailPage: React.FC = () => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
+  // ★ 重要：既存スレッド/メッセージがあるなら「返信」扱いにする
+  const isReplyForPolicy = !!thread || messages.length > 0;
+  const allowedByRole = canSendDm(currentRole, partnerRole, isReplyForPolicy);
+
   const handleSend = async () => {
     const trimmed = text.trim();
     if (!trimmed || sending || !threadId || !currentUserId) return;
@@ -453,10 +486,10 @@ const MessageDetailPage: React.FC = () => {
       return;
     }
 
-    const isReply = messages.some((m) => m.from === "partner");
-    const allowedByRole = canSendDm(currentRole, partnerRole, isReply);
-    if (!allowedByRole) {
-      alert("この組み合わせでは新しくDMを送ることができません。");
+    // ★ 修正：isReplyForPolicy を使う（相手未返信でも送れる）
+    const allowed = canSendDm(currentRole, partnerRole, isReplyForPolicy);
+    if (!allowed) {
+      alert("この組み合わせではDMを送ることができません。");
       return;
     }
 
@@ -494,9 +527,6 @@ const MessageDetailPage: React.FC = () => {
       handleSend();
     }
   };
-
-  const isReply = messages.some((m) => m.from === "partner");
-  const allowedByRole = canSendDm(currentRole, partnerRole, isReply);
 
   const inputDisabled =
     isBlocked ||
@@ -574,13 +604,6 @@ const MessageDetailPage: React.FC = () => {
                         <div className="chat-bubble">{m.text}</div>
                         <div className="chat-meta">{m.time}</div>
                       </div>
-
-                      {/* ★ 自分アイコンは不要：ここを削除 */}
-                      {/* {m.from === "me" && (
-                        <div className="avatar-wrap avatar-wrap--sm">
-                          <AvatarCircle displayName={myName} src={myAvatarUrl} />
-                        </div>
-                      )} */}
                     </div>
                   </React.Fragment>
                 );
