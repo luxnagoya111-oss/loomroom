@@ -17,6 +17,10 @@ export async function GET(req: Request) {
 
     const supabase = await supabaseServer();
 
+    // （任意）ログイン必須にしたいならここで auth.getUser() してもOK
+    // const { data: userData } = await supabase.auth.getUser();
+    // if (!userData?.user?.id) return NextResponse.json({ ok:false, error:"unauthorized" }, { status: 401 });
+
     const { data, error } = await supabase
       .from("therapist_store_requests")
       .select(
@@ -38,7 +42,6 @@ export async function GET(req: Request) {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("[API] load requests error:", error);
       return NextResponse.json(
         { ok: false, error: error.message },
         { status: 500 }
@@ -47,7 +50,6 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ ok: true, data });
   } catch (e: any) {
-    console.error("[API] load requests exception:", e);
     return NextResponse.json(
       { ok: false, error: e?.message ?? "Unknown error" },
       { status: 500 }
@@ -70,24 +72,24 @@ export async function POST(req: Request) {
 
     const supabase = await supabaseServer();
 
-    // ★ここで “今サーバー側が誰として見えてるか” を確定させる
+    // ★ここが最重要：ここで user が取れない＝Cookie復元できてない＝401
     const { data: userData, error: userErr } = await supabase.auth.getUser();
     const authUserId = userData?.user?.id ?? null;
 
     if (userErr || !authUserId) {
-      // セッションが復元できてない（= supabaseServer cookie設定問題）
       return NextResponse.json(
         { ok: false, error: "unauthorized" },
         { status: 401 }
       );
     }
 
+    // RPC 呼び出し
     const { error } = await supabase.rpc("rpc_create_therapist_store_request", {
       p_store_id: storeId,
     });
 
     if (error) {
-      console.error("[API] create request rpc error:", error);
+      // ここで P0001 unauthorized が出るなら「RPCの中のチェック」で落ちてる
       return NextResponse.json(
         { ok: false, error: error.message },
         { status: 400 }
@@ -96,7 +98,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    console.error("[API] create request exception:", e);
     return NextResponse.json(
       { ok: false, error: e?.message ?? "Unknown error" },
       { status: 500 }

@@ -10,6 +10,11 @@ function isAuthPath(pathname) {
   );
 }
 
+// ★ API はキャッシュしない（POSTや認可絡みで事故りやすい）
+function isApiPath(pathname) {
+  return pathname.startsWith("/api/");
+}
+
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
@@ -48,14 +53,14 @@ self.addEventListener("fetch", (event) => {
 
   if (url.origin !== self.location.origin) return;
 
-  // ★GET以外はキャッシュしない（POST 等で cache.put が落ちるのを防ぐ）
+  // ★ POST/PUT/DELETE 等は cache.put できないので必ず直通
   if (req.method !== "GET") {
     event.respondWith(fetch(req));
     return;
   }
 
   // OAuth/認証・ログイン関連は常にネットワーク直通
-  if (isAuthPath(url.pathname)) {
+  if (isAuthPath(url.pathname) || isApiPath(url.pathname)) {
     event.respondWith(fetch(req));
     return;
   }
@@ -69,7 +74,9 @@ self.addEventListener("fetch", (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
           return res;
         })
-        .catch(() => caches.match(req).then((cached) => cached || caches.match("/")))
+        .catch(() =>
+          caches.match(req).then((cached) => cached || caches.match("/"))
+        )
     );
     return;
   }

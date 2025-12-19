@@ -1,19 +1,14 @@
-// lib/supabaseServer.ts
+// lib/supabaseServerComponentClient.ts
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
-export async function supabaseServer() {
-  const cookieStore = await cookies(); // Next.js は await が必要な環境あり
+export async function supabaseServerComponentClient() {
+  const cookieStore = await cookies();
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
-      // ★最重要：ブラウザ側 Cookie のベース名に合わせる（loomroom-auth.0/.1）
-      cookieOptions: {
-        name: "loomroom-auth",
-      },
-
       cookies: {
         getAll() {
           return cookieStore.getAll();
@@ -24,7 +19,7 @@ export async function supabaseServer() {
               cookieStore.set(name, value, options);
             });
           } catch {
-            // setできないケースは握りつぶしでOK
+            // Server Component などで set できないケースは握りつぶし
           }
         },
       },
