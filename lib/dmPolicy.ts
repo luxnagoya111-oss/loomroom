@@ -48,9 +48,9 @@ export function canSendDm(
     return true;
   }
 
-  // セラピスト → 一般ユーザー：新規はNG（返信のみ）
+  // セラピスト → 一般ユーザー：OK（※無所属セラピストは UI 側で弾く）
   if (fromRole === "therapist" && toRole === "user") {
-    return false;
+    return true;
   }
 
   // セラピスト → 店舗：業務連絡としてOK
