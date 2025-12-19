@@ -521,7 +521,7 @@ const TherapistProfilePage: React.FC = () => {
             <div className="profile-hero-row">
               <AvatarCircle
                 avatarUrl={profile.avatarUrl}
-                size={60}
+                size={48}
                 displayName={profile.displayName || profile.handle || "T"}
               />
 
@@ -665,7 +665,7 @@ const TherapistProfilePage: React.FC = () => {
                   <div className="linked-store-card">
                     <div className="linked-store-row">
                       <AvatarCircle
-                        size={46}
+                        size={40}
                         fallbackText="…"
                         className="store-avatar"
                       />
@@ -683,7 +683,7 @@ const TherapistProfilePage: React.FC = () => {
                   <div className="linked-store-card">
                     <div className="linked-store-row">
                       <AvatarCircle
-                        size={46}
+                        size={40}
                         fallbackText="!"
                         className="store-avatar"
                       />
@@ -708,7 +708,7 @@ const TherapistProfilePage: React.FC = () => {
                     <div className="linked-store-row">
                       <AvatarCircle
                         avatarUrl={linkedStore.avatarUrl}
-                        size={46}
+                        size={40}
                         displayName={linkedStore.name || "S"}
                         className="store-avatar"
                       />
@@ -726,7 +726,7 @@ const TherapistProfilePage: React.FC = () => {
                   <div className="linked-store-card">
                     <div className="linked-store-row">
                       <AvatarCircle
-                        size={46}
+                        size={40}
                         fallbackText="S"
                         className="store-avatar"
                       />
@@ -777,7 +777,7 @@ const TherapistProfilePage: React.FC = () => {
                     <div className="feed-item-inner">
                       <AvatarCircle
                         avatarUrl={profile.avatarUrl}
-                        size={38}
+                        size={40}
                         displayName={profile.displayName || profile.handle || "T"}
                       />
 

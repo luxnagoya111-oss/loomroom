@@ -883,7 +883,7 @@ const StoreProfilePage: React.FC = () => {
                   >
                     <div className="feed-item-inner">
                       <AvatarCircle
-                        size={38}
+                        size={40}
                         avatarUrl={effectiveStoreAvatarUrl}
                         displayName={storeName}
                         className="feed-avatar"

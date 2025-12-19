@@ -793,7 +793,7 @@ const PublicMyPage: React.FC = () => {
                     <div className="feed-item-inner">
                       <AvatarCircle
                         className="avatar-small"
-                        size={32}
+                        size={40}
                         avatarUrl={profile.avatarUrl ?? null}
                         displayName={profile.displayName}
                         fallbackText={avatarInitial}
