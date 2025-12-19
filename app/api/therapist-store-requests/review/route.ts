@@ -1,3 +1,4 @@
+// app/api/therapist-store-requests/review/route.ts
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 
@@ -17,8 +18,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // ★ RPC が期待する値に揃える（ここが本質）
-    // あなたのRPCは多分 "approved"/"rejected" 期待
     const normalized: "approved" | "rejected" | null =
       action === "approve" || action === "approved"
         ? "approved"
@@ -35,17 +34,20 @@ export async function POST(req: Request) {
 
     const supabase = await supabaseServer();
 
+    // ★ まずサーバー側でログイン確認（cookie復元が効いているか）
+    const { data: userRes, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userRes?.user) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    }
+
     const { error } = await supabase.rpc("rpc_review_therapist_store_request", {
       p_request_id: requestId,
-      p_action: normalized, // ★ "approved" | "rejected"
+      p_action: normalized, // "approved" | "rejected"
     });
 
     if (error) {
       console.error("[API] review request rpc error:", error);
-      return NextResponse.json(
-        { ok: false, error: error.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
     return NextResponse.json({ ok: true });

@@ -12,6 +12,16 @@ import { uploadAvatar } from "@/lib/avatarStorage";
 import type { DbStoreRow, DbTherapistRow } from "@/types/db";
 import { listTherapistsForStore } from "@/lib/repositories/therapistRepository";
 
+async function safeReadJson(res: Response) {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { _raw: text };
+  }
+}
+
 function toPlainError(error: any) {
   return {
     name: error?.name,
@@ -23,62 +33,35 @@ function toPlainError(error: any) {
   };
 }
 
-/**
- * localStorage に保存する “軽い” 状態だけ保持する
- * - avatar は URL だけ保存（Base64プレビューは絶対に保存しない）
- */
 const STORAGE_KEY_PREFIX = "loomroom_store_console_";
 
 type FormState = {
   storeName: string;
-
   area: string;
   websiteUrl: string;
   lineUrl: string;
-
   xUrl: string;
   twicasUrl: string;
-
   description: string;
-
   dmNotice: boolean;
-
-  /** ★ 保存用（public URL） */
   avatarUrl?: string;
 };
 
-/**
- * therapist_store_requests の pending を表示するための最小型
- * - therapist は JOIN して表示する（UIでは単体に正規化して扱う）
- */
+type TherapistMini = {
+  id: string;
+  display_name: string | null;
+  area: string | null;
+};
+
 type DbTherapistStoreRequestRow = {
   id: string;
   store_id: string;
   therapist_id: string;
   status: "pending" | "approved" | "rejected" | string;
   created_at: string;
-  therapist?: {
-    id: string;
-    display_name: string | null;
-    area: string | null;
-  } | null;
-};
 
-/**
- * ★ Supabase/PostgREST の JOIN 埋め込みは「配列で返る」ことがあるため raw 型を用意
- * therapist: therapists(...) が {..}[] になる想定で受け、UI用に単体へ変換する。
- */
-type DbTherapistStoreRequestRowRaw = Omit<
-  DbTherapistStoreRequestRow,
-  "therapist"
-> & {
-  therapist?:
-    | {
-        id: string;
-        display_name: string | null;
-        area: string | null;
-      }[]
-    | null;
+  // API側では単体に正規化して返すが、防御的に両方許容
+  therapist?: TherapistMini | TherapistMini[] | null;
 };
 
 function normalizeUrl(v: string): string {
@@ -86,6 +69,11 @@ function normalizeUrl(v: string): string {
   if (!s) return "";
   if (!/^https?:\/\//i.test(s)) return `https://${s}`;
   return s;
+}
+
+function pickTherapistOne(t: DbTherapistStoreRequestRow["therapist"]): TherapistMini | null {
+  if (!t) return null;
+  return Array.isArray(t) ? (t[0] ?? null) : t;
 }
 
 const StoreConsolePage: React.FC = () => {
@@ -109,38 +97,27 @@ const StoreConsolePage: React.FC = () => {
     avatarUrl: "",
   });
 
-  /** ★ UIプレビュー専用（localStorageに保存しない） */
   const [avatarPreview, setAvatarPreview] = useState<string>("");
 
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
-  /** ★ stores.owner_user_id を保持（users.name 同期用） */
   const [ownerUserId, setOwnerUserId] = useState<string | null>(null);
 
-  /** セラピスト管理用 */
   const [therapists, setTherapists] = useState<DbTherapistRow[]>([]);
   const [loadingTherapists, setLoadingTherapists] = useState(false);
 
-  /** ★ 申請一覧（pending） */
   const [requests, setRequests] = useState<DbTherapistStoreRequestRow[]>([]);
   const [loadingRequests, setLoadingRequests] = useState(false);
-  const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(
-    null
-  );
+  const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(null);
 
-  /** ★ 在籍解除（モーダル + パスワード再入力） */
   const [detachOpen, setDetachOpen] = useState(false);
-  const [detachTarget, setDetachTarget] = useState<{
-    therapistId: string;
-    displayName: string;
-  } | null>(null);
+  const [detachTarget, setDetachTarget] = useState<{ therapistId: string; displayName: string } | null>(null);
   const [detachPassword, setDetachPassword] = useState("");
   const [detaching, setDetaching] = useState(false);
   const [detachError, setDetachError] = useState<string | null>(null);
 
-  // ★ closeDetachModal を useCallback で先に定義
   const closeDetachModal = useCallback(() => {
     setDetachOpen(false);
     setDetachTarget(null);
@@ -149,19 +126,16 @@ const StoreConsolePage: React.FC = () => {
     setDetaching(false);
   }, []);
 
-  // ★ Escで閉じる
   useEffect(() => {
     if (!detachOpen) return;
-
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeDetachModal();
     };
-
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [detachOpen, closeDetachModal]);
 
-  // ========= ① localStorage から復元（軽量ステートだけ） =========
+  // ========= ① localStorage から復元 =========
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -255,12 +229,11 @@ const StoreConsolePage: React.FC = () => {
     };
   }, [storeId]);
 
-  // ========= ③ localStorage への自動保存（loaded後のみ） =========
+  // ========= ③ localStorage への自動保存 =========
   useEffect(() => {
     if (!loaded) return;
     if (typeof window === "undefined") return;
 
-    // Base64プレビューは絶対に保存しない
     const payload: FormState = {
       ...state,
       avatarUrl: state.avatarUrl || "",
@@ -273,52 +246,27 @@ const StoreConsolePage: React.FC = () => {
     }
   }, [loaded, state, storageKey]);
 
-  // ========= ★ pending 申請取得（Supabase直読み + 型安全に正規化） =========
+  // ========= ★ pending 申請取得（API経由） =========
   const loadPendingRequests = useCallback(async (sid: string) => {
     setLoadingRequests(true);
     try {
-      const { data, error } = await supabase
-        .from("therapist_store_requests")
-        .select(
-          `
-          id,
-          store_id,
-          therapist_id,
-          status,
-          created_at,
-          therapist:therapists (
-            id,
-            display_name,
-            area
-          )
-        `
-        )
-        .eq("store_id", sid)
-        .eq("status", "pending")
-        .order("created_at", { ascending: false });
+      const res = await fetch(`/api/therapist-store-requests?storeId=${encodeURIComponent(sid)}`, {
+        method: "GET",
+        cache: "no-store",
+      });
 
-      if (error) {
-        console.error(
-          "[StoreConsole] loadPendingRequests error:",
-          toPlainError(error)
-        );
+      const json = await safeReadJson(res);
+
+      if (!res.ok || !json || (json as any).ok !== true) {
+        console.error("[StoreConsole] loadPendingRequests failed", {
+          status: res.status,
+          json,
+        });
         setRequests([]);
         return;
       }
 
-      // ★ JOINの therapist が配列で返る前提で受け、UI用に単体へ正規化
-      const raw = (data ?? []) as unknown as DbTherapistStoreRequestRowRaw[];
-
-      const normalized: DbTherapistStoreRequestRow[] = raw.map((r) => ({
-        id: String(r.id),
-        store_id: String(r.store_id),
-        therapist_id: String(r.therapist_id),
-        status: String(r.status),
-        created_at: String(r.created_at),
-        therapist: Array.isArray(r.therapist) ? r.therapist[0] ?? null : null,
-      }));
-
-      setRequests(normalized);
+      setRequests(((json as any).data ?? []) as DbTherapistStoreRequestRow[]);
     } catch (e) {
       console.error("[StoreConsole] loadPendingRequests exception:", e);
       setRequests([]);
@@ -330,7 +278,6 @@ const StoreConsolePage: React.FC = () => {
   // ========= ④ セラピスト一覧 / 申請一覧の読み込み =========
   useEffect(() => {
     if (!storeId) return;
-
     let cancelled = false;
 
     const load = async () => {
@@ -354,7 +301,6 @@ const StoreConsolePage: React.FC = () => {
     };
   }, [storeId, loadPendingRequests]);
 
-  // ========= UI前提 =========
   if (!loaded) {
     return (
       <div className="app-root">
@@ -369,30 +315,24 @@ const StoreConsolePage: React.FC = () => {
 
   const canSave = state.storeName.trim().length > 0;
 
-  const updateField = <K extends keyof FormState>(
-    key: K,
-    value: FormState[K]
-  ) => setState((prev) => ({ ...prev, [key]: value }));
+  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setState((prev) => ({ ...prev, [key]: value }));
 
   const handleToggleDmNotice = () => {
     setState((prev) => ({ ...prev, dmNotice: !prev.dmNotice }));
   };
 
-  // ========= Avatar：Storage upload → stores.avatar_url 更新 → public URL を返す =========
   const uploadAndUpdateAvatar = async (file: File): Promise<string> => {
     if (!storeId) throw new Error("店舗IDが取得できませんでした。");
 
-    // 5MB 制限（任意）
     if (file.size > 5 * 1024 * 1024) {
       throw new Error("画像サイズが大きすぎます（5MB以下推奨）");
     }
 
     setAvatarUploading(true);
     try {
-      // Storageへアップロード（publicUrl返る）
       const publicUrl = await uploadAvatar(file, storeId);
 
-      // stores.avatar_url 更新
       const { error } = await supabase
         .from("stores")
         .update({ avatar_url: publicUrl } as any)
@@ -403,7 +343,6 @@ const StoreConsolePage: React.FC = () => {
         throw new Error("アイコン画像をサーバーに保存できませんでした。");
       }
 
-      // UI state をURL正に更新（Base64は保持しない）
       setState((prev) => ({ ...prev, avatarUrl: publicUrl }));
       setAvatarPreview("");
 
@@ -413,24 +352,19 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  // ========= ★ stores.name → users.name 同期 =========
   const syncOwnerUserNameIfPossible = async (newName: string) => {
     const name = (newName ?? "").trim();
     if (!name) return;
     if (!ownerUserId) return;
 
     try {
-      const { error } = await supabase
-        .from("users")
-        .update({ name })
-        .eq("id", ownerUserId);
+      const { error } = await supabase.from("users").update({ name }).eq("id", ownerUserId);
       if (error) console.error("[StoreConsole] users.name sync failed:", error);
     } catch (e) {
       console.error("[StoreConsole] users.name sync exception:", e);
     }
   };
 
-  // ========= 保存：stores テーブル更新 → 成功後に users.name も同期 =========
   const handleSave = async () => {
     if (!storeId) {
       alert("店舗IDが取得できませんでした。URLをご確認ください。");
@@ -444,23 +378,16 @@ const StoreConsolePage: React.FC = () => {
       const payload: Partial<DbStoreRow> = {
         name: state.storeName.trim() || null,
         area: state.area.trim() || null,
-        website_url: state.websiteUrl.trim()
-          ? normalizeUrl(state.websiteUrl)
-          : null,
+        website_url: state.websiteUrl.trim() ? normalizeUrl(state.websiteUrl) : null,
         line_url: state.lineUrl.trim() ? normalizeUrl(state.lineUrl) : null,
         avatar_url: state.avatarUrl?.trim() ? state.avatarUrl.trim() : null,
         x_url: state.xUrl.trim() ? normalizeUrl(state.xUrl) : null,
-        twicas_url: state.twicasUrl.trim()
-          ? normalizeUrl(state.twicasUrl)
-          : null,
+        twicas_url: state.twicasUrl.trim() ? normalizeUrl(state.twicasUrl) : null,
         description: state.description.trim() || null,
         dm_notice: !!state.dmNotice,
       } as any;
 
-      const { error } = await supabase
-        .from("stores")
-        .update(payload as any)
-        .eq("id", storeId);
+      const { error } = await supabase.from("stores").update(payload as any).eq("id", storeId);
 
       if (error) {
         console.error("[StoreConsole] failed to update stores:", error);
@@ -479,7 +406,6 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  // ========= ★ 在籍解除：モーダル制御 =========
   const openDetachModal = (t: DbTherapistRow) => {
     setDetachError(null);
     setDetachPassword("");
@@ -490,7 +416,6 @@ const StoreConsolePage: React.FC = () => {
     setDetachOpen(true);
   };
 
-  // ========= ★ 在籍解除：パスワード再入力 → RPC =========
   const confirmDetach = async () => {
     if (!storeId) return;
     if (!detachTarget) return;
@@ -509,9 +434,7 @@ const StoreConsolePage: React.FC = () => {
 
       const email = userRes.user?.email;
       if (!email) {
-        throw new Error(
-          "メール情報が取得できませんでした。再ログインしてからお試しください。"
-        );
+        throw new Error("メール情報が取得できませんでした。再ログインしてからお試しください。");
       }
 
       const { error: signInErr } = await supabase.auth.signInWithPassword({
@@ -520,18 +443,14 @@ const StoreConsolePage: React.FC = () => {
       });
       if (signInErr) throw new Error("パスワードが正しくありません。");
 
-      const { error: rpcErr } = await supabase.rpc(
-        "rpc_detach_therapist_from_store",
-        {
-          p_therapist_id: detachTarget.therapistId,
-        }
-      );
+      const { error: rpcErr } = await supabase.rpc("rpc_detach_therapist_from_store", {
+        p_therapist_id: detachTarget.therapistId,
+      });
       if (rpcErr) throw rpcErr;
 
       const joined = await listTherapistsForStore(storeId);
       setTherapists(joined);
 
-      // ★ pending一覧も再読込
       await loadPendingRequests(storeId);
 
       closeDetachModal();
@@ -542,11 +461,7 @@ const StoreConsolePage: React.FC = () => {
     }
   };
 
-  // ========= ★ 申請の承認/却下（既存APIのまま） =========
-  const handleReviewRequest = async (
-    requestId: string,
-    decision: "approved" | "rejected"
-  ) => {
+  const handleReviewRequest = async (requestId: string, decision: "approved" | "rejected") => {
     if (!storeId) return;
 
     try {
@@ -561,38 +476,26 @@ const StoreConsolePage: React.FC = () => {
         }),
       });
 
-      const text = await res.text();
-      const json = text
-        ? (() => {
-            try {
-              return JSON.parse(text);
-            } catch {
-              return null;
-            }
-          })()
-        : null;
+      const json = await safeReadJson(res);
 
-      if (!res.ok) {
-        console.error("[review] status:", res.status, "body:", text);
-        throw new Error(
-          (json as any)?.error || `failed to review request (status ${res.status})`
-        );
+      if (!res.ok || !json || (json as any).ok !== true) {
+        console.error("[review] failed", { status: res.status, json });
+        const msg = (json as any)?.error || `failed to review request (status ${res.status})`;
+        throw new Error(msg);
       }
 
       const joined = await listTherapistsForStore(storeId);
       setTherapists(joined);
 
-      // ★ pending一覧も再読込
       await loadPendingRequests(storeId);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      alert("申請の処理に失敗しました");
+      alert(e?.message ?? "申請の処理に失敗しました");
     } finally {
       setReviewingRequestId(null);
     }
   };
 
-  // 表示は preview優先 → 保存URL
   const avatarDisplay = avatarPreview || state.avatarUrl || "";
 
   return (
@@ -601,17 +504,14 @@ const StoreConsolePage: React.FC = () => {
 
       <main className="app-main store-main">
         <h1 className="app-title">店舗コンソール</h1>
-        <p className="app-header-sub">
-          LRoom 内での店舗情報を設定します。後からいつでも変更できます。
-        </p>
+        <p className="app-header-sub">LRoom 内での店舗情報を設定します。後からいつでも変更できます。</p>
 
-        {/* 店舗プロフィール */}
         <section className="store-card">
           <div className="store-profile-row">
             <AvatarUploader
               avatarUrl={avatarDisplay}
               displayName={state.storeName || "S"}
-              onPreview={(dataUrl) => setAvatarPreview(dataUrl)} // UIだけ
+              onPreview={(dataUrl) => setAvatarPreview(dataUrl)}
               onFileSelect={async (file) => {
                 const url = await uploadAndUpdateAvatar(file);
                 return url;
@@ -621,6 +521,7 @@ const StoreConsolePage: React.FC = () => {
                 setState((prev) => ({ ...prev, avatarUrl: url }));
               }}
             />
+
             <div className="store-profile-main">
               <label className="field-label">店舗名</label>
               <input
@@ -632,21 +533,16 @@ const StoreConsolePage: React.FC = () => {
               />
 
               <div className="store-sub-row">
-                <div className="store-sub-pill store-sub-pill--soft">
-                  種別: 女性向けリラクゼーション
-                </div>
+                <div className="store-sub-pill store-sub-pill--soft">種別: 女性向けリラクゼーション</div>
               </div>
 
               {avatarUploading && (
-                <div className="store-sub-pill store-sub-pill--soft">
-                  アイコン画像を保存しています…
-                </div>
+                <div className="store-sub-pill store-sub-pill--soft">アイコン画像を保存しています…</div>
               )}
             </div>
           </div>
         </section>
 
-        {/* 基本情報 */}
         <section className="store-card">
           <div className="store-section-title">基本情報</div>
 
@@ -716,16 +612,13 @@ const StoreConsolePage: React.FC = () => {
           </div>
         </section>
 
-        {/* 通知設定 */}
         <section className="store-card">
           <div className="store-section-title">通知設定</div>
 
           <div className="toggle-row" onClick={handleToggleDmNotice}>
             <div className="toggle-main">
               <div className="toggle-title">DMの通知</div>
-              <div className="toggle-caption">
-                セラピスト / ユーザーからのDMに関する通知を受け取ります
-              </div>
+              <div className="toggle-caption">セラピスト / ユーザーからのDMに関する通知を受け取ります</div>
             </div>
 
             <div className={"toggle-switch" + (state.dmNotice ? " is-on" : "")}>
@@ -734,46 +627,29 @@ const StoreConsolePage: React.FC = () => {
           </div>
         </section>
 
-        {/* セラピスト管理 */}
         <section className="store-card therapist-card">
           <div className="store-section-title">セラピスト管理</div>
-          <p className="therapist-helper">
-            在籍申請が届いたセラピストを承認すると、この店舗に紐づきます。
-          </p>
+          <p className="therapist-helper">在籍申請が届いたセラピストを承認すると、この店舗に紐づきます。</p>
 
-          {/* 1) 在籍中 */}
           <div className="therapist-block">
-            <h3 className="therapist-block-title">
-              現在いっしょに活動しているセラピスト
-            </h3>
+            <h3 className="therapist-block-title">現在いっしょに活動しているセラピスト</h3>
 
             {loadingTherapists && therapists.length === 0 ? (
               <p className="therapist-helper">読み込み中です…</p>
             ) : therapists.length === 0 ? (
-              <p className="therapist-helper">
-                まだこの店舗に紐づいているセラピストはいません。
-              </p>
+              <p className="therapist-helper">まだこの店舗に紐づいているセラピストはいません。</p>
             ) : (
               <ul className="therapist-list">
                 {therapists.map((t) => (
                   <li key={t.id} className="therapist-row">
                     <div className="therapist-row-main">
-                      <span className="therapist-name">
-                        {t.display_name || "名前未設定"}
-                      </span>
-                      <span className="therapist-meta">
-                        {t.area || "エリア未設定"}
-                      </span>
+                      <span className="therapist-name">{t.display_name || "名前未設定"}</span>
+                      <span className="therapist-meta">{t.area || "エリア未設定"}</span>
                     </div>
 
                     <div className="therapist-actions">
                       <span className="therapist-tag">店舗に参加中</span>
-
-                      <button
-                        type="button"
-                        className="therapist-detach-btn"
-                        onClick={() => openDetachModal(t)}
-                      >
+                      <button type="button" className="therapist-detach-btn" onClick={() => openDetachModal(t)}>
                         在籍解除
                       </button>
                     </div>
@@ -783,23 +659,18 @@ const StoreConsolePage: React.FC = () => {
             )}
           </div>
 
-          {/* 2) 在籍申請（pending） */}
           <div className="therapist-block">
             <h3 className="therapist-block-title">在籍申請（承認待ち）</h3>
-            <p className="therapist-helper">
-              セラピスト側から「在籍申請」が届いた一覧です。承認/却下できます。
-            </p>
+            <p className="therapist-helper">セラピスト側から「在籍申請」が届いた一覧です。承認/却下できます。</p>
 
             {loadingRequests && requests.length === 0 ? (
               <p className="therapist-helper">読み込み中です…</p>
             ) : requests.length === 0 ? (
-              <p className="therapist-helper">
-                現在、承認待ちの申請はありません。
-              </p>
+              <p className="therapist-helper">現在、承認待ちの申請はありません。</p>
             ) : (
               <ul className="therapist-list">
                 {requests.map((r) => {
-                  const t = r.therapist;
+                  const t = pickTherapistOne(r.therapist);
                   const labelName = t?.display_name || "名前未設定";
                   const labelArea = t?.area || "エリア未設定";
                   const busy = reviewingRequestId === r.id;
@@ -839,18 +710,12 @@ const StoreConsolePage: React.FC = () => {
         </section>
 
         <div className="store-save-wrap">
-          <button
-            type="button"
-            className="store-save-btn"
-            disabled={!canSave || saving}
-            onClick={handleSave}
-          >
+          <button type="button" className="store-save-btn" disabled={!canSave || saving} onClick={handleSave}>
             {saving ? "保存中..." : "この内容で保存する"}
           </button>
         </div>
       </main>
 
-      {/* 在籍解除モーダル */}
       {detachOpen && detachTarget && (
         <div
           className="modal-backdrop"
@@ -880,20 +745,10 @@ const StoreConsolePage: React.FC = () => {
             {detachError && <div className="modal-error">{detachError}</div>}
 
             <div className="modal-actions">
-              <button
-                type="button"
-                className="modal-cancel"
-                onClick={closeDetachModal}
-                disabled={detaching}
-              >
+              <button type="button" className="modal-cancel" onClick={closeDetachModal} disabled={detaching}>
                 キャンセル
               </button>
-              <button
-                type="button"
-                className="modal-danger"
-                onClick={confirmDetach}
-                disabled={detaching}
-              >
+              <button type="button" className="modal-danger" onClick={confirmDetach} disabled={detaching}>
                 {detaching ? "解除中…" : "解除する"}
               </button>
             </div>
@@ -1190,7 +1045,6 @@ const StoreConsolePage: React.FC = () => {
           background: rgba(239, 68, 68, 0.06);
         }
 
-        /* --- modal --- */
         .modal-backdrop {
           position: fixed;
           inset: 0;
