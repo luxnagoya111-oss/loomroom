@@ -417,6 +417,43 @@ const StoreProfilePage: React.FC = () => {
     }
   };
 
+  // ==============================
+  // ★ 在籍申請：RPC直呼び（401回避の決定打）
+  // ==============================
+  const handleApplyMembership = async () => {
+    try {
+      setApplyLoading(true);
+
+      // 1) Auth確認（localStorage session のままOK）
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const authId = userData?.user?.id ?? null;
+
+      if (userErr || !authId) {
+        throw new Error("unauthorized");
+      }
+
+      // 2) RPC実行（auth.uid() が取れる）
+      const { error } = await supabase.rpc("rpc_create_therapist_store_request", {
+        p_store_id: storeId,
+      });
+
+      if (error) {
+        // 既に pending 等
+        if (String(error.message || "").includes("already pending")) {
+          setApplyDone(true);
+          return;
+        }
+        throw new Error(error.message || "申請に失敗しました");
+      }
+
+      setApplyDone(true);
+    } catch (e: any) {
+      alert(e?.message ?? "在籍申請に失敗しました");
+    } finally {
+      setApplyLoading(false);
+    }
+  };
+
   // Supabase: 店舗プロフィール + 投稿
   useEffect(() => {
     let cancelled = false;
@@ -560,7 +597,9 @@ const StoreProfilePage: React.FC = () => {
 
         const rows = (data ?? []).map((t: any) => {
           const raw = (t as DbTherapistRow).avatar_url ?? null;
-          const resolved = looksValidAvatarUrl(raw) ? resolveAvatarUrl(raw) : null;
+          const resolved = looksValidAvatarUrl(raw)
+            ? resolveAvatarUrl(raw)
+            : null;
 
           return {
             id: String((t as DbTherapistRow).id),
@@ -676,45 +715,7 @@ const StoreProfilePage: React.FC = () => {
                   <button
                     type="button"
                     disabled={applyLoading || applyDone}
-                    onClick={async () => {
-                      try {
-                        setApplyLoading(true);
-
-                        const res = await fetch("/api/therapist-store-requests", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ store_id: storeId }),
-                        });
-
-                        const text = await res.text();
-                        const json = text
-                          ? (() => {
-                              try {
-                                return JSON.parse(text);
-                              } catch {
-                                return null;
-                              }
-                            })()
-                          : null;
-
-                        if (!res.ok) {
-                          if (
-                            typeof (json as any)?.error === "string" &&
-                            (json as any).error.includes("already pending")
-                          ) {
-                            setApplyDone(true);
-                            return;
-                          }
-                          throw new Error((json as any)?.error || "申請に失敗しました");
-                        }
-
-                        setApplyDone(true);
-                      } catch (e: any) {
-                        alert(e?.message ?? "在籍申請に失敗しました");
-                      } finally {
-                        setApplyLoading(false);
-                      }
-                    }}
+                    onClick={handleApplyMembership}
                     style={{
                       width: "100%",
                       borderRadius: 999,
