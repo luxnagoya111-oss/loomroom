@@ -102,12 +102,6 @@ type TherapistProfile = {
 type TherapistPost = {
   id: string;
   body: string;
-
-  /**
-   * 投稿側の area も string（自由入力/将来の仕様変更に耐える）
-   */
-  area: string;
-
   timeAgo: string;
 };
 
@@ -156,7 +150,7 @@ const TherapistProfilePage: React.FC = () => {
       ? makeThreadId(viewerIdForThread, targetIdForThread)
       : null;
 
-  const [relations, setRelations] = useState<RelationFlags>( {
+  const [relations, setRelations] = useState<RelationFlags>({
     following: false,
     muted: false,
     blocked: false,
@@ -385,9 +379,10 @@ const TherapistProfilePage: React.FC = () => {
 
         // 3) posts（このページの投稿は「users.id（uuid）」で author_id を持つ前提）
         if ((therapist as any).user_id) {
+          // ★ 投稿の area を使わないので select から削除
           const { data: postRows, error: pError } = await supabase
             .from("posts")
-            .select("id, author_id, body, area, created_at")
+            .select("id, author_id, body, created_at")
             .eq("author_id", (therapist as any).user_id)
             .order("created_at", { ascending: false })
             .limit(50);
@@ -403,10 +398,9 @@ const TherapistProfilePage: React.FC = () => {
             setPosts([]);
           } else {
             const rows = (postRows ?? []) as DbPostRow[];
-            const mapped: TherapistPost[] = rows.map((row: DbPostRow) => ({
+            const mapped: TherapistPost[] = rows.map((row: any) => ({
               id: row.id,
               body: row.body ?? "",
-              area: typeof row.area === "string" ? row.area.trim() : "",
               timeAgo: timeAgo(row.created_at),
             }));
             setPosts(mapped);
@@ -795,9 +789,9 @@ const TherapistProfilePage: React.FC = () => {
                             </span>
                             <span className="post-username">{profile.handle || ""}</span>
                           </div>
+
+                          {/* ★ 投稿エリア表示を撤去（時間だけ） */}
                           <div className="post-meta">
-                            {p.area && <span>{p.area}</span>}
-                            {p.area && <span>・</span>}
                             <span>{p.timeAgo}</span>
                           </div>
                         </div>

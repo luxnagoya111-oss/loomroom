@@ -110,7 +110,6 @@ type DbPostRow = {
 type UserPost = {
   id: string;
   body: string;
-  area: string;
   timeAgo: string;
 };
 
@@ -538,9 +537,10 @@ const PublicMyPage: React.FC = () => {
         setLoadingPosts(true);
         setPostError(null);
 
+        // ★ 投稿の area を使わないので select から削除
         const { data, error } = await supabase
           .from("posts")
-          .select("id, author_id, body, area, created_at")
+          .select("id, author_id, body, created_at")
           .eq("author_id", userId)
           .order("created_at", { ascending: false })
           .limit(50);
@@ -557,12 +557,11 @@ const PublicMyPage: React.FC = () => {
           return;
         }
 
-        const rows = (data ?? []) as DbPostRow[];
+        const rows = (data ?? []) as any[];
         const mapped: UserPost[] = rows.map((row) => {
           return {
             id: row.id,
             body: row.body ?? "",
-            area: normalizeFreeText(row.area),
             timeAgo: timeAgo(row.created_at),
           };
         });
@@ -603,7 +602,11 @@ const PublicMyPage: React.FC = () => {
   return (
     <>
       <div className="app-shell">
-        <AppHeader title={profile.displayName} subtitle={profile.handle} showBack={true} />
+        <AppHeader
+          title={profile.displayName}
+          subtitle={profile.handle}
+          showBack={true}
+        />
 
         <main className="app-main">
           <section className="therapist-hero">
@@ -686,7 +689,9 @@ const PublicMyPage: React.FC = () => {
                     onToggleMute={handleToggleMute}
                     onToggleBlock={handleToggleBlock}
                     onReport={() => {
-                      alert("このアカウントの通報を受け付けました（現在はテスト用です）。");
+                      alert(
+                        "このアカウントの通報を受け付けました（現在はテスト用です）。"
+                      );
                     }}
                   />
                 )}
@@ -699,7 +704,9 @@ const PublicMyPage: React.FC = () => {
               </p>
             )}
 
-            {!loading && profile.intro && <p className="therapist-intro">{profile.intro}</p>}
+            {!loading && profile.intro && (
+              <p className="therapist-intro">{profile.intro}</p>
+            )}
 
             {(profile.snsX || profile.snsLine || profile.snsOther) && (
               <div className="therapist-sns-block">
@@ -750,7 +757,9 @@ const PublicMyPage: React.FC = () => {
           <section className="therapist-posts-section">
             <h2 className="therapist-section-title">投稿</h2>
 
-            {loadingPosts && <div className="empty-hint">投稿を読み込んでいます…</div>}
+            {loadingPosts && (
+              <div className="empty-hint">投稿を読み込んでいます…</div>
+            )}
 
             {postError && !loadingPosts && (
               <div className="empty-hint" style={{ color: "#b00020" }}>
@@ -797,16 +806,18 @@ const PublicMyPage: React.FC = () => {
                             <span className="post-name">{profile.displayName}</span>
                             <span className="post-username">{profile.handle}</span>
                           </div>
+
+                          {/* ★ 投稿エリア表示を撤去（時間だけ） */}
                           <div className="post-meta">
-                            {p.area && <span className="post-area">{p.area}</span>}
-                            {p.area && <span className="post-dot">・</span>}
                             <span className="post-time">{p.timeAgo}</span>
                           </div>
                         </div>
 
                         <div className="post-body">
                           {p.body.split("\n").map((line, idx) => (
-                            <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
+                            <p key={idx}>
+                              {line || <span style={{ opacity: 0.3 }}>　</span>}
+                            </p>
                           ))}
                         </div>
                       </div>
@@ -950,6 +961,54 @@ const PublicMyPage: React.FC = () => {
           outline: 2px solid rgba(0, 0, 0, 0.18);
           outline-offset: 2px;
           border-radius: 8px;
+        }
+
+        /* 投稿一覧のレイアウト（このファイル内で完結させる） */
+        .feed-item-inner {
+          display: flex;
+          gap: 10px;
+        }
+
+        .feed-main {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .feed-header {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 2px;
+        }
+
+        .feed-name-row {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+
+        .post-name {
+          font-weight: 600;
+          font-size: 13px;
+        }
+
+        .post-username {
+          font-size: 11px;
+          color: var(--text-sub, #777777);
+        }
+
+        .post-meta {
+          font-size: 11px;
+          color: var(--text-sub, #777777);
+          margin-top: 2px;
+        }
+
+        .post-body {
+          font-size: 13px;
+          line-height: 1.7;
+          margin-top: 4px;
+          margin-bottom: 4px;
         }
 
         :global(.no-link-style) {

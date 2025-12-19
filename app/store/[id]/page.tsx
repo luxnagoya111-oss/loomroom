@@ -51,11 +51,13 @@ type DbUserRow = {
   avatar_url: string | null;
 };
 
+/**
+ * ★ 投稿の area はこのページでは使わない（投稿個別エリア概念を撤去）
+ */
 type DbPostRow = {
   id: string;
   author_id: string | null;
   body: string | null;
-  area: string | null;
   created_at: string;
 };
 
@@ -125,7 +127,6 @@ type StorePost = {
   id: string;
   body: string;
   timeAgo: string;
-  areaLabel: string | null;
 };
 
 // 店舗IDごとのエリアラベル（DBに area が無い場合のフォールバック）
@@ -529,9 +530,10 @@ const StoreProfilePage: React.FC = () => {
           }
 
           // 3) posts (author_id=owner_user_id)
+          // ★ 投稿の area を使わないので select から削除
           const { data: postRows, error: pError } = await supabase
             .from("posts")
-            .select("id, author_id, body, area, created_at")
+            .select("id, author_id, body, created_at")
             .eq("author_id", row.owner_user_id)
             .order("created_at", { ascending: false })
             .limit(50);
@@ -550,7 +552,6 @@ const StoreProfilePage: React.FC = () => {
               id: (r as DbPostRow).id,
               body: (r as DbPostRow).body ?? "",
               timeAgo: timeAgo((r as DbPostRow).created_at),
-              areaLabel: (r as DbPostRow).area ?? null,
             }));
             setPosts(mapped);
           }
@@ -597,9 +598,7 @@ const StoreProfilePage: React.FC = () => {
 
         const rows = (data ?? []).map((t: any) => {
           const raw = (t as DbTherapistRow).avatar_url ?? null;
-          const resolved = looksValidAvatarUrl(raw)
-            ? resolveAvatarUrl(raw)
-            : null;
+          const resolved = looksValidAvatarUrl(raw) ? resolveAvatarUrl(raw) : null;
 
           return {
             id: String((t as DbTherapistRow).id),
@@ -897,9 +896,9 @@ const StoreProfilePage: React.FC = () => {
                             <span className="post-name">{storeName}</span>
                             <span className="post-username">{storeHandle}</span>
                           </div>
+
+                          {/* ★ 投稿エリア表示を撤去（時間だけ） */}
                           <div className="post-meta">
-                            <span>{p.areaLabel ? p.areaLabel : areaLabel}</span>
-                            <span>・</span>
                             <span>{p.timeAgo}</span>
                           </div>
                         </div>
