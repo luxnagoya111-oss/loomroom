@@ -8,36 +8,41 @@ function isBrowser() {
   return typeof window !== "undefined";
 }
 
-/**
- * 18歳以上確認モーダル
- *
- * - localStorage[loomroom_age_confirmed_v1] === "yes" のときは何も表示しない
- * - それ以外のときに全画面オーバーレイで表示
- * - 「はい」で yes を保存し、以後表示しない
- * - 「いいえ」で外部サイトへ退避（とりあえず Google）
- */
 export default function AgeGate() {
   const [isChecking, setIsChecking] = useState(true);
   const [isConfirmed, setIsConfirmed] = useState(false);
 
   useEffect(() => {
     if (!isBrowser()) {
-      // SSR 時は何もしない
       setIsChecking(false);
       return;
     }
 
     const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (stored === "yes") {
-      setIsConfirmed(true);
-    }
+    if (stored === "yes") setIsConfirmed(true);
     setIsChecking(false);
   }, []);
 
-  if (isChecking || isConfirmed) {
-    // 判定中 or すでに確認済み → 何も出さない
-    return null;
-  }
+  // 未同意の間はスクロールも止める（“邪魔でOK”設計）
+  useEffect(() => {
+    if (!isBrowser()) return;
+
+    const shouldLock = !isChecking && !isConfirmed;
+    if (!shouldLock) return;
+
+    const prevOverflow = document.documentElement.style.overflow;
+    const prevBodyOverflow = document.body.style.overflow;
+
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.documentElement.style.overflow = prevOverflow;
+      document.body.style.overflow = prevBodyOverflow;
+    };
+  }, [isChecking, isConfirmed]);
+
+  if (isChecking || isConfirmed) return null;
 
   const handleYes = () => {
     if (!isBrowser()) return;
@@ -47,38 +52,145 @@ export default function AgeGate() {
 
   const handleNo = () => {
     if (!isBrowser()) return;
+    // 「離脱」を明確化（戻るで戻ってもまたゲート）
     window.location.href = "https://www.google.com";
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="max-w-sm w-full mx-4 rounded-2xl bg-white shadow-lg p-6">
-        <h2 className="text-lg font-semibold mb-4 text-center">
-          18歳以上の方のみご利用いただけます
-        </h2>
-        <p className="text-sm text-gray-700 mb-6 text-center leading-relaxed">
-          LRoomは18歳以上の方のみを対象としたサービスです。
-          <br />
-          あなたは18歳以上ですか？
-        </p>
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={handleNo}
-            className="flex-1 border border-gray-300 rounded-full py-2 text-sm"
-          >
-            いいえ
-          </button>
-          <button
-            type="button"
-            onClick={handleYes}
-            className="flex-1 rounded-full py-2 text-sm font-medium
-                       border border-[var(--foreground)]"
-          >
-            はい（18歳以上です）
-          </button>
+    <>
+      {/* 背景クリックで閉じない：onClickは付けない */}
+      <div className="agegate-backdrop" role="dialog" aria-modal="true">
+        <div className="agegate-card" role="document">
+          <div className="agegate-eyebrow">重要</div>
+
+          <h2 className="agegate-title">18歳以上の方のみご利用いただけます</h2>
+
+          <p className="agegate-text">
+            LRoomは18歳以上の方のみを対象としたサービスです。
+            <br />
+            あなたは18歳以上ですか？
+          </p>
+
+          <div className="agegate-actions">
+            <button
+              type="button"
+              onClick={handleNo}
+              className="agegate-btn agegate-btn--ghost"
+            >
+              いいえ（退出）
+            </button>
+
+            <button
+              type="button"
+              onClick={handleYes}
+              className="agegate-btn agegate-btn--primary"
+            >
+              はい（18歳以上です）
+            </button>
+          </div>
+
+          <div className="agegate-note">
+            「はい」を押すと、この確認は次回以降表示されません。
+          </div>
         </div>
       </div>
-    </div>
+
+      <style jsx>{`
+        .agegate-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 9999;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+
+          /* “邪魔でOK” → 暗め＆少しノイズっぽい重さ */
+          background: rgba(2, 6, 23, 0.68);
+          backdrop-filter: blur(6px);
+        }
+
+        .agegate-card {
+          width: 100%;
+          max-width: 420px;
+          border-radius: 18px;
+          padding: 16px;
+
+          background: rgba(255, 255, 255, 0.96);
+          border: 1px solid rgba(0, 0, 0, 0.10);
+          box-shadow: 0 24px 60px rgba(2, 6, 23, 0.28);
+        }
+
+        .agegate-eyebrow {
+          width: fit-content;
+          margin: 0 auto 8px;
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.2px;
+          color: rgba(180, 137, 90, 0.95);
+          background: rgba(217, 176, 124, 0.16);
+          border: 1px solid rgba(180, 137, 90, 0.22);
+          padding: 4px 10px;
+          border-radius: 999px;
+        }
+
+        .agegate-title {
+          margin: 0 0 10px;
+          text-align: center;
+          font-size: 15px;
+          font-weight: 900;
+          letter-spacing: 0.2px;
+          color: rgba(15, 23, 42, 0.95);
+        }
+
+        .agegate-text {
+          margin: 0 0 14px;
+          text-align: center;
+          font-size: 12px;
+          line-height: 1.75;
+          color: var(--text-sub, rgba(15, 23, 42, 0.72));
+        }
+
+        .agegate-actions {
+          display: flex;
+          gap: 10px;
+        }
+
+        .agegate-btn {
+          flex: 1;
+          border-radius: 999px;
+          padding: 10px 12px;
+          font-size: 12px;
+          font-weight: 800;
+          cursor: pointer;
+          border: 1px solid rgba(0, 0, 0, 0.14);
+          background: #fff;
+        }
+
+        .agegate-btn--ghost {
+          background: rgba(255, 255, 255, 0.80);
+          color: var(--text-sub, rgba(15, 23, 42, 0.72));
+        }
+
+        .agegate-btn--primary {
+          border-color: rgba(180, 137, 90, 0.55);
+          background: linear-gradient(135deg, #d9b07c, #b4895a);
+          color: #fff;
+          box-shadow: 0 12px 24px rgba(180, 137, 90, 0.24);
+        }
+
+        .agegate-btn:active {
+          transform: translateY(1px);
+        }
+
+        .agegate-note {
+          margin-top: 10px;
+          text-align: center;
+          font-size: 10.5px;
+          color: var(--text-sub, rgba(15, 23, 42, 0.60));
+          line-height: 1.6;
+        }
+      `}</style>
+    </>
   );
 }

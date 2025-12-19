@@ -817,7 +817,7 @@ const TherapistConsolePage: React.FC = () => {
             disabled={!loaded || saving || !therapistId}
             onClick={handleSave}
           >
-            {saving ? "保存中..." : loaded ? "プロフィールを保存する" : "読み込み中..."}
+            {saving ? "保存中..." : loaded ? "この内容で保存する" : "読み込み中..."}
           </button>
         </footer>
 

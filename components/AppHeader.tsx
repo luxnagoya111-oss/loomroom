@@ -25,9 +25,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   const router = useRouter();
 
   const handleBack = () => {
-    if (typeof window !== "undefined") {
-      window.history.back();
-    }
+    if (typeof window !== "undefined") window.history.back();
   };
 
   // マウント時に「ログイン済みかどうか」をざっくり判定
@@ -40,7 +38,22 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     await logout(); // supabase.signOut + localStorageクリア
     setLoggedIn(false);
     setMenuOpen(false);
-    router.push("/"); // ホームに戻す（必要に応じて変更OK）
+    router.push("/");
+  };
+
+  // ★ 修正：マイページ遷移（/mypage/[id] へ）
+  const handleMyPageClick = () => {
+    const id = getCurrentUserId();
+
+    setMenuOpen(false);
+
+    // ゲストはログインへ（必要なら /signup/user でもOK）
+    if (isGuestId(id)) {
+      router.push("/login");
+      return;
+    }
+
+    router.push(`/mypage/${encodeURIComponent(id)}`);
   };
 
   return (
@@ -90,27 +103,17 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           className="menu-drawer-overlay"
           onClick={() => setMenuOpen(false)}
         >
-          <div
-            className="menu-drawer"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="menu-drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
               <div className="drawer-title">メニュー</div>
-              <button
-                className="drawer-close"
-                onClick={() => setMenuOpen(false)}
-              >
+              <button className="drawer-close" onClick={() => setMenuOpen(false)}>
                 ×
               </button>
             </div>
 
             <nav className="drawer-nav">
               {/* 基本ナビ */}
-              <a
-                href="/"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
-              >
+              <a href="/" className="drawer-item" onClick={() => setMenuOpen(false)}>
                 ホーム
               </a>
               <a
@@ -120,13 +123,16 @@ const AppHeader: React.FC<AppHeaderProps> = ({
               >
                 さがす
               </a>
-              <a
-                href="/mypage"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+
+              {/* ★ 修正：/mypage は存在しないので動的に飛ばす */}
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={handleMyPageClick}
               >
                 マイページ
-              </a>
+              </button>
+
               <a
                 href="/contact"
                 className="drawer-item"
@@ -261,7 +267,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           align-items: center;
           justify-content: center;
           text-align: center;
-          pointer-events: none; /* クリックを左右ボタンに通すため */
+          pointer-events: none;
         }
 
         .app-title {
@@ -329,6 +335,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           font-size: 20px;
           background: none;
           border: none;
+          cursor: pointer;
         }
 
         .drawer-nav {
@@ -341,13 +348,15 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           padding: 8px 4px;
           font-size: 14px;
           border-bottom: 1px solid var(--border-light);
+          color: inherit;
+          text-decoration: none;
+          background: none;
         }
 
         /* button版 drawer-item（見た目は同じ） */
         .drawer-item-button {
           width: 100%;
           text-align: left;
-          background: none;
           border: none;
           cursor: pointer;
         }

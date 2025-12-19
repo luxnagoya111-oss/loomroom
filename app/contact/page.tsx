@@ -1,48 +1,44 @@
-// app/contact/page.tsx
-
 "use client";
 
-import React, {
-  useState,
-  useEffect,
-  FormEvent,
-  ChangeEvent,
-} from "react";
+import React, { useState, useEffect, FormEvent, ChangeEvent } from "react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
-import { getCurrentUserId } from "@/lib/auth"; // ★ 追加
+import { getCurrentUserId } from "@/lib/auth";
 
-// ★ 将来ログインと連動させる。今は localStorage から取得（lib/auth）
+// 将来ログインと連動させる。今は localStorage から取得（lib/auth）
 const CURRENT_USER_ID = getCurrentUserId();
 const HAS_UNREAD = false;
 
 type ContactCategory = "feedback" | "bug" | "signup" | "other";
 
-// ★ 区分を正式に5種類に
+// 区分
 type UserType = "guest" | "member" | "therapist" | "store" | "other";
 
-// ★ ゲスト用のブラウザごとの仮ID保存キー
+// ゲスト用のブラウザごとの仮ID保存キー
 const GUEST_ID_KEY = "loomroom_guest_id_v1";
 
 export default function ContactPage() {
-  // ★ だれが問い合わせたかを識別するためのID（画面からは変更不可）
+  // だれが問い合わせたかを識別するためのID（画面からは変更不可）
   const [userId, setUserId] = useState<string>("");
 
   const [name, setName] = useState("");
-  // ★ 初期値は「ゲスト（未登録）」
   const [userType, setUserType] = useState<UserType>("guest");
   const [email, setEmail] = useState("");
   const [category, setCategory] = useState<ContactCategory>("feedback");
   const [body, setBody] = useState("");
-  const [sent, setSent] = useState(false);
 
-  // ★ ページ表示時にユーザーIDを決定
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [ticketId, setTicketId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // ページ表示時にユーザーIDを決定
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     let id = CURRENT_USER_ID;
 
-    // 今はログイン無し前提なので、guest のときだけブラウザごとの仮IDを発行
+    // guest のときだけブラウザごとの仮IDを発行
     if (id === "guest") {
       const saved = window.localStorage.getItem(GUEST_ID_KEY);
       if (saved) {
@@ -57,23 +53,66 @@ export default function ContactPage() {
     setUserId(id);
   }, []);
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    setErrorMsg(null);
+    setSent(false);
+    setTicketId(null);
 
-    // ★ 将来APIに投げるときのイメージ
-    const payload = {
-      userId, // ← ここで「誰からの問い合わせか」特定できる
-      name,
-      userType,
-      email,
-      category,
-      body,
-    };
+    const trimmedName = name.trim();
+    const trimmedBody = body.trim();
 
-    console.log("CONTACT_FORM_DEBUG:", payload);
+    if (!trimmedName) {
+      setErrorMsg("お名前（ニックネーム可）を入力してください。");
+      return;
+    }
+    if (!trimmedBody) {
+      setErrorMsg("内容を入力してください。");
+      return;
+    }
+    if (!userId) {
+      setErrorMsg("ユーザーIDの取得に失敗しました。ページを再読み込みしてください。");
+      return;
+    }
 
-    // 今はテスト用なのでフロントのみ
-    setSent(true);
+    setSending(true);
+    try {
+      const payload = {
+        userId,
+        name: trimmedName,
+        userType,
+        email: email.trim(),
+        category,
+        body: trimmedBody,
+        pageUrl: typeof window !== "undefined" ? window.location.href : "",
+        ua: typeof navigator !== "undefined" ? navigator.userAgent : "",
+      };
+
+      const res = await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok || !json?.ok) {
+        const msg = json?.error || `送信に失敗しました（status=${res.status}）`;
+        setErrorMsg(msg);
+        return;
+      }
+
+      setSent(true);
+      setTicketId(json.ticketId || null);
+
+      // 送信後は入力を残す/消すは好み。ここでは残しておく（ユーザーが控えを持てる）
+      // setBody("");
+      // setEmail("");
+    } catch (e: any) {
+      setErrorMsg(e?.message ?? "送信に失敗しました。");
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -84,19 +123,15 @@ export default function ContactPage() {
         <section className="page-section">
           <h1 className="page-title">お問い合わせ</h1>
           <p className="page-description">
-            LRoomに関するご意見や不具合のご報告、
-            導入のご相談などがあればこちらからお知らせください。
-            現時点ではテスト運用中のため、返信にお時間をいただく場合があります。
+            LRoomに関するご意見や不具合のご報告、導入のご相談などがあればこちらからお知らせください。
+            返信が必要な場合のみ、メールアドレスをご入力ください。
           </p>
 
           <form className="form-card" onSubmit={handleSubmit}>
-            {/* ★ ユーザーID（固定・表示のみ） */}
             <div className="field">
               <label className="field-label">ユーザーID</label>
               <div className="id-display">
-                <span className="id-display-text">
-                  {userId || "読み込み中…"}
-                </span>
+                <span className="id-display-text">{userId || "読み込み中…"}</span>
               </div>
             </div>
 
@@ -105,9 +140,7 @@ export default function ContactPage() {
               <input
                 className="field-input"
                 value={name}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setName(e.target.value)
-                }
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
                 placeholder="例）momo / TAKI など"
               />
             </div>
@@ -115,7 +148,6 @@ export default function ContactPage() {
             <div className="field">
               <label className="field-label">区分</label>
               <div className="radio-row">
-                {/* ゲスト（未登録） */}
                 <label className="radio-item">
                   <input
                     type="radio"
@@ -126,7 +158,6 @@ export default function ContactPage() {
                   <span>ゲスト（未登録）</span>
                 </label>
 
-                {/* 会員 */}
                 <label className="radio-item">
                   <input
                     type="radio"
@@ -137,7 +168,6 @@ export default function ContactPage() {
                   <span>会員</span>
                 </label>
 
-                {/* セラピスト */}
                 <label className="radio-item">
                   <input
                     type="radio"
@@ -148,7 +178,6 @@ export default function ContactPage() {
                   <span>セラピスト</span>
                 </label>
 
-                {/* 店 */}
                 <label className="radio-item">
                   <input
                     type="radio"
@@ -159,7 +188,6 @@ export default function ContactPage() {
                   <span>店</span>
                 </label>
 
-                {/* その他 */}
                 <label className="radio-item">
                   <input
                     type="radio"
@@ -178,9 +206,7 @@ export default function ContactPage() {
                 className="field-input"
                 type="email"
                 value={email}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setEmail(e.target.value)
-                }
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
                 placeholder="返信が必要な場合のみご入力ください"
               />
             </div>
@@ -207,32 +233,33 @@ export default function ContactPage() {
                 className="field-input field-textarea"
                 rows={6}
                 value={body}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                  setBody(e.target.value)
-                }
+                onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setBody(e.target.value)}
                 placeholder="具体的な状況やご希望などをご記入ください。"
               />
             </div>
 
+            {errorMsg && <p className="error-message">{errorMsg}</p>}
+
             {sent && (
               <p className="sent-message">
-                ありがとうございます。送信内容はブラウザ内で一時的に保持されるだけで、
-                まだ運営には自動送信されません。
-                本格運用前のテスト段階のため、実際の送信処理は後から接続していきます。
+                送信を受け付けました。
+                {ticketId ? (
+                  <>
+                    <br />
+                    受付番号：<span className="ticket-id">{ticketId}</span>
+                  </>
+                ) : null}
               </p>
             )}
 
-            <button type="submit" className="primary-button">
-              この内容で送信（テスト）
+            <button type="submit" className="primary-button" disabled={sending || !userId}>
+              {sending ? "送信中..." : "この内容で送信"}
             </button>
           </form>
         </section>
       </main>
 
-      <BottomNav
-        active="mypage" // 必要なら "home" とかに変更してOK
-        hasUnread={HAS_UNREAD}
-      />
+      <BottomNav active="mypage" hasUnread={HAS_UNREAD} />
 
       <style jsx>{`
         .app-shell {
@@ -321,7 +348,6 @@ export default function ContactPage() {
           color: var(--text-sub);
         }
 
-        /* ユーザーID表示用（入力不可のラベル風） */
         .id-display {
           border-radius: 10px;
           border: 1px dashed var(--border);
@@ -330,16 +356,29 @@ export default function ContactPage() {
         }
 
         .id-display-text {
-          font-family: monospace;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
           font-size: 12px;
           color: var(--text-sub);
         }
 
+        .error-message {
+          margin-top: 10px;
+          font-size: 12px;
+          line-height: 1.6;
+          color: #b91c1c;
+        }
+
         .sent-message {
           margin-top: 10px;
-          font-size: 11px;
+          font-size: 12px;
           line-height: 1.6;
           color: var(--text-sub);
+        }
+
+        .ticket-id {
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-size: 12px;
+          color: var(--text-main);
         }
 
         .primary-button {
@@ -353,6 +392,11 @@ export default function ContactPage() {
           background: var(--accent);
           color: #fff;
           box-shadow: 0 6px 16px rgba(180, 137, 90, 0.35);
+          opacity: ${sending ? 0.8 : 1};
+        }
+
+        .primary-button[disabled] {
+          opacity: 0.6;
         }
       `}</style>
     </div>
