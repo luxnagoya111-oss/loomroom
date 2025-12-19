@@ -1,9 +1,8 @@
+// app/admin/contact/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState, ChangeEvent } from "react";
 import Link from "next/link";
-import AppHeader from "@/components/AppHeader";
-import BottomNav from "@/components/BottomNav";
 
 type Ticket = {
   id: string;
@@ -19,8 +18,20 @@ type Ticket = {
   page_url: string | null;
 };
 
-const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY || "";
-const HAS_UNREAD = false;
+const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY ?? "";
+
+async function adminFetch(input: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+
+  // GET には Content-Type 不要（CORS/プリフライトの癖を減らす）
+  const method = (init?.method || "GET").toUpperCase();
+  if (!headers.get("Content-Type") && method !== "GET") {
+    headers.set("Content-Type", "application/json");
+  }
+
+  if (ADMIN_KEY) headers.set("x-admin-key", ADMIN_KEY);
+  return fetch(input, { ...init, headers, cache: "no-store" });
+}
 
 function timeLabel(iso: string) {
   try {
@@ -59,19 +70,17 @@ export default function AdminContactListPage() {
   const load = async () => {
     setLoading(true);
     setErrorMsg(null);
+
     try {
-      const res = await fetch(`/api/admin/contact?${queryString}`, {
-        headers: {
-          "x-admin-key": ADMIN_KEY,
-        },
-      });
-      const json = await res.json().catch(() => null);
+      const res = await adminFetch(`/api/admin/contact?${queryString}`, { method: "GET" });
+      const text = await res.text();
+      const json = text ? JSON.parse(text) : {};
       if (!res.ok || !json?.ok) {
         setErrorMsg(json?.error || `load failed (status=${res.status})`);
         setItems([]);
         return;
       }
-      setItems(json.data || []);
+      setItems((json.data ?? []) as Ticket[]);
     } catch (e: any) {
       setErrorMsg(e?.message ?? "load failed");
       setItems([]);
@@ -86,166 +95,185 @@ export default function AdminContactListPage() {
   }, [queryString]);
 
   return (
-    <div className="app-root">
-      <AppHeader title="管理：お問い合わせ" subtitle="contact_tickets" />
+    <div className="page-root">
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">問い合わせ</h1>
+          <p className="page-lead">contact_tickets の受信一覧です。クリックで詳細へ移動します。</p>
+        </div>
 
-      <main className="admin-main">
-        <section className="surface-card admin-card">
-          <div className="admin-head">
-            <div className="admin-title">受信一覧</div>
+        <button type="button" className="btn-outline" onClick={load} disabled={loading}>
+          再読み込み
+        </button>
+      </div>
 
-            <button type="button" className="btn-outline" onClick={load} disabled={loading}>
-              再読み込み
-            </button>
-          </div>
+      <div className="toolbar">
+        <div className="filter">
+          <label className="filter-label">ステータス</label>
+          <select className="filter-input" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="">すべて</option>
+            <option value="new">new</option>
+            <option value="triaging">triaging</option>
+            <option value="waiting_user">waiting_user</option>
+            <option value="resolved">resolved</option>
+            <option value="closed">closed</option>
+          </select>
+        </div>
 
-          <div className="filters">
-            <div className="filter">
-              <label className="filter-label">ステータス</label>
-              <select
-                className="filter-input"
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
-              >
-                <option value="">すべて</option>
-                <option value="new">new</option>
-                <option value="triaging">triaging</option>
-                <option value="waiting_user">waiting_user</option>
-                <option value="resolved">resolved</option>
-                <option value="closed">closed</option>
-              </select>
-            </div>
+        <div className="filter grow">
+          <label className="filter-label">検索（user_id / name / email / body）</label>
+          <input
+            className="filter-input"
+            value={q}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setQ(e.target.value)}
+            placeholder="例）guest- / bug / メール / 文面 など"
+          />
+        </div>
 
-            <div className="filter grow">
-              <label className="filter-label">検索（user_id / name / email / body）</label>
-              <input
-                className="filter-input"
-                value={q}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setQ(e.target.value)}
-                placeholder="例）guest- / bug / メール / 文面 など"
-              />
-            </div>
-          </div>
+        <div className="count">{items.length} 件</div>
+      </div>
 
-          {errorMsg && <div className="error">{errorMsg}</div>}
+      {errorMsg && <div className="status-message error">{errorMsg}</div>}
 
-          {loading ? (
-            <div className="hint">読み込み中…</div>
-          ) : items.length === 0 ? (
-            <div className="hint">該当する問い合わせがありません。</div>
-          ) : (
-            <div className="list">
-              {items.map((t) => (
-                <Link key={t.id} href={`/admin/contact/${t.id}`} className="row">
-                  <div className="row-top">
-                    <div className="row-left">
-                      <span className={"pill status-" + t.status}>{t.status}</span>
-                      <span className={"pill prio-" + t.priority}>{t.priority}</span>
-                      <span className="pill cat">{t.category}</span>
-                    </div>
-                    <div className="row-time">{timeLabel(t.created_at)}</div>
-                  </div>
+      {loading ? (
+        <div className="status-message">読み込み中...</div>
+      ) : items.length === 0 ? (
+        <div className="status-message">該当する問い合わせがありません。</div>
+      ) : (
+        <div className="list">
+          {items.map((t) => (
+            <Link key={t.id} href={`/admin/contact/${t.id}`} className="row">
+              <div className="row-top">
+                <div className="row-left">
+                  <span className={"pill status-" + t.status}>{t.status}</span>
+                  <span className={"pill prio-" + t.priority}>{t.priority}</span>
+                  <span className="pill cat">{t.category}</span>
+                </div>
+                <div className="row-time">{timeLabel(t.created_at)}</div>
+              </div>
 
-                  <div className="row-mid">
-                    <div className="row-name">{t.name || "（名前なし）"}</div>
-                    <div className="row-sub">
-                      <span className="mono">{t.user_type}</span>
+              <div className="row-mid">
+                <div className="row-name">{t.name || "（名前なし）"}</div>
+                <div className="row-sub">
+                  <span className="mono">{t.user_type}</span>
+                  <span className="dot">·</span>
+                  <span className="mono">{shortId(t.user_id)}</span>
+                  {t.email ? (
+                    <>
                       <span className="dot">·</span>
-                      <span className="mono">{shortId(t.user_id)}</span>
-                      {t.email ? (
-                        <>
-                          <span className="dot">·</span>
-                          <span className="mono">email</span>
-                        </>
-                      ) : null}
-                    </div>
-                  </div>
+                      <span className="mono">email</span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
 
-                  <div className="row-body">{clip(t.body, 72)}</div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </section>
-      </main>
-
-      <BottomNav active="mypage" hasUnread={HAS_UNREAD} />
+              <div className="row-body">{clip(t.body, 90)}</div>
+            </Link>
+          ))}
+        </div>
+      )}
 
       <style jsx>{`
-        .admin-main {
-          padding: 12px 16px 90px;
-          max-width: 480px;
+        .page-root {
+          max-width: 1100px;
           margin: 0 auto;
         }
-        .admin-card {
-          margin-top: 10px;
-          padding: 12px;
-        }
-        .admin-head {
+
+        .page-head {
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: space-between;
           gap: 12px;
           margin-bottom: 10px;
         }
-        .admin-title {
-          font-size: 14px;
-          font-weight: 700;
-        }
-        .btn-outline {
-          font-size: 12px;
-          padding: 6px 10px;
-          border-radius: 999px;
-          border: 1px solid var(--border);
-          background: var(--surface-soft);
-          color: var(--text-sub);
+
+        .page-title {
+          font-size: 18px;
+          font-weight: 800;
+          letter-spacing: 0.02em;
+          margin-bottom: 4px;
         }
 
-        .filters {
+        .page-lead {
+          font-size: 12px;
+          color: var(--text-sub, #6b7280);
+          line-height: 1.7;
+        }
+
+        .btn-outline {
+          font-size: 12px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
+          background: var(--surface-soft, #fff);
+          color: var(--text-sub, #6b7280);
+          white-space: nowrap;
+        }
+
+        .toolbar {
           display: flex;
           gap: 10px;
+          align-items: flex-end;
           flex-wrap: wrap;
-          margin-bottom: 10px;
+          margin: 10px 0 10px;
         }
+
         .filter {
           display: flex;
           flex-direction: column;
           gap: 6px;
-          min-width: 140px;
-        }
-        .filter.grow {
-          flex: 1;
-          min-width: 200px;
-        }
-        .filter-label {
-          font-size: 11px;
-          color: var(--text-sub);
-        }
-        .filter-input {
-          border-radius: 10px;
-          border: 1px solid var(--border);
-          padding: 8px 10px;
-          font-size: 13px;
-          background: var(--surface-soft);
+          min-width: 160px;
         }
 
-        .error {
-          margin: 8px 0;
-          font-size: 12px;
-          color: #b91c1c;
+        .filter.grow {
+          flex: 1;
+          min-width: 240px;
         }
-        .hint {
+
+        .filter-label {
+          font-size: 11px;
+          color: var(--text-sub, #6b7280);
+        }
+
+        .filter-input {
+          border-radius: 10px;
+          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
+          padding: 8px 10px;
+          font-size: 13px;
+          background: var(--surface-soft, #fff);
+          outline: none;
+        }
+
+        .filter-input:focus {
+          border-color: rgba(215, 185, 118, 0.9);
+          box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.18);
+        }
+
+        .count {
           font-size: 12px;
-          color: var(--text-sub);
+          color: var(--text-sub, #777);
+          white-space: nowrap;
+          margin-left: auto;
+          padding-bottom: 2px;
+        }
+
+        .status-message {
+          font-size: 13px;
+          color: var(--text-sub, #555);
           padding: 10px 2px;
         }
 
+        .status-message.error {
+          color: #b94a48;
+        }
+
         .list {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
           margin-top: 8px;
         }
+
         .row {
           display: block;
           text-decoration: none;
@@ -254,7 +282,15 @@ export default function AdminContactListPage() {
           background: var(--surface-soft, rgba(255, 255, 255, 0.9));
           border-radius: 14px;
           padding: 10px;
+          transition: transform 0.08s ease, border-color 0.08s ease, box-shadow 0.08s ease;
         }
+
+        .row:hover {
+          transform: translateY(-1px);
+          border-color: rgba(215, 185, 118, 0.45);
+          box-shadow: 0 10px 24px rgba(10, 10, 10, 0.04);
+        }
+
         .row-top {
           display: flex;
           align-items: center;
@@ -262,16 +298,19 @@ export default function AdminContactListPage() {
           gap: 10px;
           margin-bottom: 6px;
         }
+
         .row-left {
           display: flex;
           gap: 6px;
           flex-wrap: wrap;
         }
+
         .row-time {
           font-size: 11px;
-          color: var(--text-sub);
+          color: var(--text-sub, #6b7280);
           white-space: nowrap;
         }
+
         .pill {
           font-size: 11px;
           padding: 2px 8px;
@@ -280,6 +319,7 @@ export default function AdminContactListPage() {
           background: rgba(255, 255, 255, 0.7);
           white-space: nowrap;
         }
+
         .status-new {
           background: rgba(215, 185, 118, 0.22);
         }
@@ -295,6 +335,7 @@ export default function AdminContactListPage() {
         .status-closed {
           background: rgba(148, 163, 184, 0.16);
         }
+
         .prio-high {
           border-color: rgba(239, 68, 68, 0.25);
           background: rgba(239, 68, 68, 0.08);
@@ -305,6 +346,7 @@ export default function AdminContactListPage() {
         .prio-low {
           background: rgba(203, 213, 225, 0.12);
         }
+
         .cat {
           background: rgba(255, 255, 255, 0.7);
         }
@@ -316,31 +358,48 @@ export default function AdminContactListPage() {
           gap: 10px;
           margin-bottom: 4px;
         }
+
         .row-name {
           font-size: 13px;
-          font-weight: 700;
+          font-weight: 800;
+          color: #2d2620;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
+          max-width: 60%;
         }
+
         .row-sub {
           font-size: 11px;
-          color: var(--text-sub);
+          color: var(--text-sub, #6b7280);
           white-space: nowrap;
           display: flex;
           align-items: center;
           gap: 6px;
         }
+
         .mono {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+            monospace;
         }
+
         .dot {
           opacity: 0.6;
         }
+
         .row-body {
           font-size: 12px;
-          color: var(--text-sub);
+          color: var(--text-sub, #6b7280);
           line-height: 1.6;
+        }
+
+        @media (max-width: 860px) {
+          .list {
+            grid-template-columns: 1fr;
+          }
+          .row-name {
+            max-width: 58%;
+          }
         }
       `}</style>
     </div>

@@ -2,26 +2,23 @@
 "use client";
 
 import React, { useEffect, useMemo, useState, ChangeEvent } from "react";
-import AppHeader from "@/components/AppHeader";
-import BottomNav from "@/components/BottomNav";
 import type { DbSignupApplicationRow, DbSignupStatus } from "@/types/db";
 
-const hasUnread = false;
 type StoreSignup = DbSignupApplicationRow;
 
 const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY ?? "";
 
 async function adminFetch(input: string, init?: RequestInit) {
   const headers = new Headers(init?.headers);
-  headers.set("Content-Type", headers.get("Content-Type") ?? "application/json");
+  if (!headers.get("Content-Type") && init?.method && init.method !== "GET") {
+    headers.set("Content-Type", "application/json");
+  }
   if (ADMIN_KEY) headers.set("x-admin-key", ADMIN_KEY);
   return fetch(input, { ...init, headers, cache: "no-store" });
 }
 
 async function apiGetStoreSignups(): Promise<StoreSignup[]> {
-  const res = await adminFetch("/api/admin/store-signups?type=store", {
-    method: "GET",
-  });
+  const res = await adminFetch("/api/admin/store-signups?type=store", { method: "GET" });
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
   if (!res.ok) throw new Error(json.error ?? "failed");
@@ -33,18 +30,13 @@ async function apiApproveStore(appId: string): Promise<StoreSignup> {
     method: "POST",
     body: JSON.stringify({ appId }),
   });
-
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
   if (!res.ok) throw new Error(json.error ?? "failed");
   return json.data as StoreSignup;
 }
 
-// ★ 承認とは別APIへ（pending / rejected 用）
-async function apiUpdateSignupStatus(
-  id: string,
-  status: DbSignupStatus
-): Promise<StoreSignup> {
+async function apiUpdateSignupStatus(id: string, status: DbSignupStatus): Promise<StoreSignup> {
   const res = await adminFetch("/api/admin/store-signups/status", {
     method: "POST",
     body: JSON.stringify({ id, status }),
@@ -222,11 +214,36 @@ export default function AdminStoresPage() {
         </div>
 
         <div className="card-meta">
-          {area && <div className="kv"><span className="k">エリア</span><span className="v">{area}</span></div>}
-          {contactName && <div className="kv"><span className="k">担当</span><span className="v">{contactName}</span></div>}
-          {website && <div className="kv"><span className="k">Web</span><span className="v">{website}</span></div>}
-          {contact && <div className="kv"><span className="k">連絡先</span><span className="v">{contact}</span></div>}
-          {created && <div className="kv"><span className="k">申請日時</span><span className="v">{created}</span></div>}
+          {area && (
+            <div className="kv">
+              <span className="k">エリア</span>
+              <span className="v">{area}</span>
+            </div>
+          )}
+          {contactName && (
+            <div className="kv">
+              <span className="k">担当</span>
+              <span className="v">{contactName}</span>
+            </div>
+          )}
+          {website && (
+            <div className="kv">
+              <span className="k">Web</span>
+              <span className="v">{website}</span>
+            </div>
+          )}
+          {contact && (
+            <div className="kv">
+              <span className="k">連絡先</span>
+              <span className="v">{contact}</span>
+            </div>
+          )}
+          {created && (
+            <div className="kv">
+              <span className="k">申請日時</span>
+              <span className="v">{created}</span>
+            </div>
+          )}
         </div>
 
         {note && (
@@ -256,70 +273,61 @@ export default function AdminStoresPage() {
   };
 
   return (
-    <div className="app-shell">
-      <AppHeader title="店舗申請一覧" />
-      <main className="app-main">
-        <div className="page-root">
-          <p className="page-lead">
-            /signup/creator から送信された店舗向けの申請一覧です。承認（approved）にすると「店舗の本登録」「users.role の更新」まで自動で行われます。
-          </p>
+    <div className="page-root">
+      <h1 className="page-title">店舗申請一覧</h1>
+      <p className="page-lead">
+        /signup/creator から送信された店舗向け申請の一覧です。承認（approved）にすると「店舗の本登録」「users.role の更新」まで自動で行われます。
+      </p>
 
-          <div className="toolbar">
-            <input
-              className="search"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="店舗名 / 連絡先 / エリア / 補足 を検索"
-            />
-            <div className="count">{filtered.length} 件</div>
+      <div className="toolbar">
+        <input
+          className="search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="店舗名 / 連絡先 / エリア / 補足 を検索"
+        />
+        <div className="count">{filtered.length} 件</div>
+      </div>
+
+      {loading ? (
+        <div className="status-message">読み込み中...</div>
+      ) : error ? (
+        <div className="status-message error">{error}</div>
+      ) : filtered.length === 0 ? (
+        <div className="status-message">該当する申請はありません。</div>
+      ) : (
+        <>
+          <div className="table-only">
+            <div className="table-wrapper">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th className="th main-cell">店舗情報</th>
+                    <th className="th contact-cell">連絡先 / 申請日時</th>
+                    <th className="th note-cell">補足</th>
+                    <th className="th status-cell">ステータス</th>
+                  </tr>
+                </thead>
+                <tbody>{filtered.map(renderRow)}</tbody>
+              </table>
+            </div>
           </div>
 
-          {loading ? (
-            <div className="status-message">読み込み中...</div>
-          ) : error ? (
-            <div className="status-message error">{error}</div>
-          ) : filtered.length === 0 ? (
-            <div className="status-message">該当する申請はありません。</div>
-          ) : (
-            <>
-              <div className="table-only">
-                <div className="table-wrapper">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th className="th main-cell">店舗情報</th>
-                        <th className="th contact-cell">連絡先 / 申請日時</th>
-                        <th className="th note-cell">補足</th>
-                        <th className="th status-cell">ステータス</th>
-                      </tr>
-                    </thead>
-                    <tbody>{filtered.map(renderRow)}</tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="card-only">{filtered.map(renderCard)}</div>
-            </>
-          )}
-        </div>
-      </main>
-
-      <BottomNav hasUnread={hasUnread} />
+          <div className="card-only">{filtered.map(renderCard)}</div>
+        </>
+      )}
 
       <style jsx>{`
-        .app-shell {
-          min-height: 100vh;
-          display: flex;
-          flex-direction: column;
-          background: #faf7f3;
-        }
-        .app-main {
-          flex: 1;
-          padding: 12px 12px 72px;
-        }
         .page-root {
-          max-width: 960px;
+          max-width: 1100px;
           margin: 0 auto;
+        }
+
+        .page-title {
+          font-size: 18px;
+          font-weight: 800;
+          letter-spacing: 0.02em;
+          margin-bottom: 6px;
         }
 
         .page-lead {
@@ -333,8 +341,9 @@ export default function AdminStoresPage() {
           display: flex;
           gap: 10px;
           align-items: center;
-          margin-bottom: 10px;
+          margin: 10px 0 10px;
         }
+
         .search {
           flex: 1;
           border-radius: 999px;
@@ -342,7 +351,14 @@ export default function AdminStoresPage() {
           padding: 9px 12px;
           font-size: 12px;
           background: #fff;
+          outline: none;
         }
+
+        .search:focus {
+          border-color: rgba(215, 185, 118, 0.9);
+          box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.18);
+        }
+
         .count {
           font-size: 12px;
           color: var(--text-sub, #777);
@@ -352,7 +368,7 @@ export default function AdminStoresPage() {
         .status-message {
           font-size: 13px;
           color: var(--text-sub, #555);
-          padding: 12px;
+          padding: 12px 2px;
         }
         .status-message.error {
           color: #b94a48;
@@ -364,11 +380,13 @@ export default function AdminStoresPage() {
           border: 1px solid rgba(220, 210, 200, 0.9);
           background: #fff;
         }
+
         .table {
           width: 100%;
           border-collapse: collapse;
           font-size: 12px;
         }
+
         .th {
           text-align: left;
           padding: 10px 10px;
@@ -376,6 +394,7 @@ export default function AdminStoresPage() {
           background: #fdf8f1;
           white-space: nowrap;
         }
+
         .cell {
           padding: 10px 10px;
           border-bottom: 1px solid #f3e7d8;
@@ -384,6 +403,7 @@ export default function AdminStoresPage() {
         .row:last-child .cell {
           border-bottom: none;
         }
+
         .main-cell {
           min-width: 220px;
         }
@@ -409,6 +429,7 @@ export default function AdminStoresPage() {
           flex-wrap: wrap;
           gap: 6px;
         }
+
         .pill {
           font-size: 11px;
           color: var(--text-sub, #666);
@@ -426,6 +447,7 @@ export default function AdminStoresPage() {
         .muted {
           color: #999;
         }
+
         .date {
           font-size: 11px;
           color: var(--text-sub, #999);
@@ -452,6 +474,7 @@ export default function AdminStoresPage() {
           background: #fff;
           margin-bottom: 6px;
         }
+
         .status-pending {
           color: #8a6d3b;
           background: #fff7e6;
@@ -485,9 +508,11 @@ export default function AdminStoresPage() {
           padding: 12px 12px 10px;
           box-shadow: 0 8px 24px rgba(10, 10, 10, 0.02);
         }
+
         .card + .card {
           margin-top: 10px;
         }
+
         .card-head {
           display: flex;
           gap: 10px;
@@ -495,36 +520,43 @@ export default function AdminStoresPage() {
           justify-content: space-between;
           margin-bottom: 8px;
         }
+
         .card-title {
           font-size: 14px;
           font-weight: 800;
           color: #2d2620;
           line-height: 1.3;
         }
+
         .card-meta {
           display: grid;
           gap: 6px;
         }
+
         .kv {
           display: grid;
           grid-template-columns: 70px 1fr;
           gap: 8px;
           align-items: start;
         }
+
         .k {
           font-size: 11px;
           color: #8b8177;
         }
+
         .v {
           font-size: 12px;
           color: #4d433a;
           word-break: break-word;
         }
+
         .card-note {
           margin-top: 8px;
           padding-top: 8px;
           border-top: 1px solid #f0e1cf;
         }
+
         .card-actions {
           display: flex;
           gap: 10px;
@@ -539,6 +571,7 @@ export default function AdminStoresPage() {
         .card-only {
           display: none;
         }
+
         @media (max-width: 640px) {
           .table-only {
             display: none;

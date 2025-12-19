@@ -1,24 +1,46 @@
 // app/admin/users/page.tsx
 "use client";
 
-import React, { useEffect, useState, ChangeEvent } from "react";
-import AppHeader from "@/components/AppHeader";
-import BottomNav from "@/components/BottomNav";
+import React, { useEffect, useMemo, useState, ChangeEvent } from "react";
 import {
   listSignupApplications,
   updateSignupStatus,
 } from "@/lib/repositories/signupRepository";
 import type { DbSignupApplicationRow, DbSignupStatus } from "@/types/db";
 
-const hasUnread = false; // 管理画面なので一旦 false のまま
-
 type UserSignup = DbSignupApplicationRow;
+
+function formatCreatedAt(iso?: string | null) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function statusLabel(s: DbSignupStatus) {
+  if (s === "pending") return "審査待ち";
+  if (s === "approved") return "承認";
+  if (s === "rejected") return "却下";
+  return s;
+}
+
+function clip(s: string, n = 120) {
+  const t = (s ?? "").trim();
+  return t.length > n ? t.slice(0, n) + "…" : t;
+}
 
 export default function AdminUsersPage() {
   const [items, setItems] = useState<UserSignup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [q, setQ] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -27,19 +49,14 @@ export default function AdminUsersPage() {
       setLoading(true);
       setError(null);
       try {
-        // type="user" の申請だけ取得
         const rows = await listSignupApplications({ type: "user" });
         if (cancelled) return;
         setItems(rows);
       } catch (err) {
         console.error("[AdminUsersPage] load error:", err);
-        if (!cancelled) {
-          setError("読み込みに失敗しました。");
-        }
+        if (!cancelled) setError("読み込みに失敗しました。");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -49,20 +66,37 @@ export default function AdminUsersPage() {
     };
   }, []);
 
-  const handleStatusChange = async (
-    id: string,
-    status: DbSignupStatus
-  ) => {
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return items;
+
+    return items.filter((app) => {
+      const payload = (app.payload ?? {}) as any;
+
+      const name = String(app.name ?? "");
+      const contact = String(app.contact ?? payload.contact ?? "");
+      const currentUserId = String(payload.currentUserId ?? "");
+      const hopes = String(payload.hopes ?? "");
+      const howToUse = String(payload.howToUse ?? "");
+
+      return [name, contact, currentUserId, hopes, howToUse]
+        .join(" ")
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [items, q]);
+
+  const handleStatusChange = async (id: string, status: DbSignupStatus) => {
     setUpdatingId(id);
+    setError(null);
+
     try {
       const updated = await updateSignupStatus({ id, status });
       if (!updated) {
         setError("ステータス更新に失敗しました。");
         return;
       }
-      setItems((prev) =>
-        prev.map((item) => (item.id === id ? updated : item))
-      );
+      setItems((prev) => prev.map((item) => (item.id === id ? updated : item)));
     } catch (err) {
       console.error("[AdminUsersPage] update error:", err);
       setError("ステータス更新に失敗しました。");
@@ -73,52 +107,42 @@ export default function AdminUsersPage() {
 
   const renderRow = (app: UserSignup) => {
     const payload = (app.payload ?? {}) as any;
-    const hopes = payload.hopes ?? "";
-    const howToUse = payload.howToUse ?? "";
+
     const contact = app.contact ?? payload.contact ?? "";
     const currentUserId = payload.currentUserId ?? "";
-
-    const created = app.created_at
-      ? new Date(app.created_at).toLocaleString("ja-JP", {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "";
+    const hopes = payload.hopes ?? "";
+    const howToUse = payload.howToUse ?? "";
+    const created = formatCreatedAt(app.created_at);
 
     return (
       <tr key={app.id} className="row">
         <td className="cell main-cell">
           <div className="name">{app.name}</div>
-          {currentUserId && (
-            <div className="sub">仮ユーザーID: {currentUserId}</div>
-          )}
+          <div className="meta">
+            {currentUserId && <span className="pill">仮ユーザーID: {currentUserId}</span>}
+          </div>
         </td>
+
         <td className="cell contact-cell">
-          {contact && <div className="sub">{contact}</div>}
+          {contact ? <div className="sub">{contact}</div> : <div className="sub muted">—</div>}
           <div className="date">{created}</div>
         </td>
+
         <td className="cell hopes-cell">
-          {hopes && (
-            <div className="sub">
-              <strong>できたら嬉しいこと:</strong>
-              <br />
-              {hopes}
-            </div>
-          )}
+          {hopes ? <div className="note-text">{hopes}</div> : <div className="sub muted">—</div>}
         </td>
+
         <td className="cell howto-cell">
-          {howToUse && (
-            <div className="sub">
-              <strong>使い方イメージ:</strong>
-              <br />
-              {howToUse}
-            </div>
+          {howToUse ? (
+            <div className="note-text">{howToUse}</div>
+          ) : (
+            <div className="sub muted">—</div>
           )}
         </td>
+
         <td className="cell status-cell">
+          <div className={`status-chip status-${app.status}`}>{statusLabel(app.status)}</div>
+
           <select
             className="status-select"
             value={app.status}
@@ -127,34 +151,119 @@ export default function AdminUsersPage() {
               handleStatusChange(app.id, e.target.value as DbSignupStatus)
             }
           >
-            <option value="pending">pending</option>
-            <option value="approved">approved</option>
-            <option value="rejected">rejected</option>
+            <option value="pending">審査待ち</option>
+            <option value="approved">承認</option>
+            <option value="rejected">却下</option>
           </select>
+
+          {updatingId === app.id && <div className="sub muted">更新中…</div>}
         </td>
       </tr>
     );
   };
 
-  return (
-    <div className="app-shell">
-      <AppHeader title="一般ユーザー申請一覧" />
-      <main className="app-main">
-        <div className="page-root">
-          <p className="page-lead">
-            /signup/user から送信された一般ユーザー向けの
-            signup_applications を表示しています。
-            ステータスを approved / rejected に変更すると、審査結果が確定した扱いになります。
-            （users への本登録は、別途 /admin 実装で行います）
-          </p>
+  const renderCard = (app: UserSignup) => {
+    const payload = (app.payload ?? {}) as any;
 
-          {loading ? (
-            <div className="status-message">読み込み中...</div>
-          ) : error ? (
-            <div className="status-message error">{error}</div>
-          ) : items.length === 0 ? (
-            <div className="status-message">まだ申請はありません。</div>
-          ) : (
+    const contact = app.contact ?? payload.contact ?? "";
+    const currentUserId = payload.currentUserId ?? "";
+    const hopes = payload.hopes ?? "";
+    const howToUse = payload.howToUse ?? "";
+    const created = formatCreatedAt(app.created_at);
+
+    return (
+      <div key={app.id} className="card">
+        <div className="card-head">
+          <div className="card-title">{app.name}</div>
+          <div className={`status-chip status-${app.status}`}>{statusLabel(app.status)}</div>
+        </div>
+
+        <div className="card-meta">
+          {currentUserId && (
+            <div className="kv">
+              <span className="k">仮ユーザーID</span>
+              <span className="v">{currentUserId}</span>
+            </div>
+          )}
+          {contact && (
+            <div className="kv">
+              <span className="k">連絡先</span>
+              <span className="v">{contact}</span>
+            </div>
+          )}
+          {created && (
+            <div className="kv">
+              <span className="k">申請日時</span>
+              <span className="v">{created}</span>
+            </div>
+          )}
+        </div>
+
+        {hopes && (
+          <div className="card-note">
+            <div className="k">できたら嬉しいこと</div>
+            <div className="v">{clip(hopes, 240)}</div>
+          </div>
+        )}
+
+        {howToUse && (
+          <div className="card-note">
+            <div className="k">使い方イメージ</div>
+            <div className="v">{clip(howToUse, 240)}</div>
+          </div>
+        )}
+
+        <div className="card-actions">
+          <select
+            className="status-select"
+            value={app.status}
+            disabled={updatingId === app.id}
+            onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+              handleStatusChange(app.id, e.target.value as DbSignupStatus)
+            }
+          >
+            <option value="pending">審査待ち</option>
+            <option value="approved">承認</option>
+            <option value="rejected">却下</option>
+          </select>
+
+          {updatingId === app.id && <div className="sub muted">更新中…</div>}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="page-root">
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">一般ユーザー申請</h1>
+          <p className="page-lead">
+            /signup/user から送信された一般ユーザー申請（signup_applications）を表示します。
+            ステータスを approved / rejected に変更すると審査結果が確定した扱いになります。
+          </p>
+        </div>
+      </div>
+
+      <div className="toolbar">
+        <input
+          className="search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="名前 / 連絡先 / 仮ユーザーID / できたら嬉しいこと / 使い方イメージ を検索"
+        />
+        <div className="count">{filtered.length} 件</div>
+      </div>
+
+      {loading ? (
+        <div className="status-message">読み込み中...</div>
+      ) : error ? (
+        <div className="status-message error">{error}</div>
+      ) : filtered.length === 0 ? (
+        <div className="status-message">まだ申請はありません。</div>
+      ) : (
+        <>
+          <div className="table-only">
             <div className="table-wrapper">
               <table className="table">
                 <thead>
@@ -166,46 +275,75 @@ export default function AdminUsersPage() {
                     <th className="th status-cell">ステータス</th>
                   </tr>
                 </thead>
-                <tbody>{items.map(renderRow)}</tbody>
+                <tbody>{filtered.map(renderRow)}</tbody>
               </table>
             </div>
-          )}
-        </div>
-      </main>
+          </div>
 
-      <BottomNav hasUnread={hasUnread} />
+          <div className="card-only">{filtered.map(renderCard)}</div>
+        </>
+      )}
 
       <style jsx>{`
-        .app-shell {
-          min-height: 100vh;
-          display: flex;
-          flex-direction: column;
-          background: #faf7f3;
-        }
-
-        .app-main {
-          flex: 1;
-          padding: 12px 12px 72px;
-        }
-
         .page-root {
-          max-width: 960px;
+          max-width: 1100px;
           margin: 0 auto;
+        }
+
+        .page-head {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 10px;
+        }
+
+        .page-title {
+          font-size: 18px;
+          font-weight: 800;
+          letter-spacing: 0.02em;
+          margin-bottom: 4px;
         }
 
         .page-lead {
           font-size: 12px;
-          color: var(--text-sub, #666);
+          color: var(--text-sub, #6b7280);
           line-height: 1.7;
-          margin-bottom: 12px;
+        }
+
+        .toolbar {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          margin: 10px 0 10px;
+        }
+
+        .search {
+          flex: 1;
+          border-radius: 999px;
+          border: 1px solid rgba(220, 210, 200, 0.9);
+          padding: 9px 12px;
+          font-size: 12px;
+          background: #fff;
+          outline: none;
+        }
+
+        .search:focus {
+          border-color: rgba(215, 185, 118, 0.9);
+          box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.18);
+        }
+
+        .count {
+          font-size: 12px;
+          color: var(--text-sub, #777);
+          white-space: nowrap;
         }
 
         .status-message {
           font-size: 13px;
           color: var(--text-sub, #555);
-          padding: 12px;
+          padding: 12px 2px;
         }
-
         .status-message.error {
           color: #b94a48;
         }
@@ -225,48 +363,62 @@ export default function AdminUsersPage() {
 
         .th {
           text-align: left;
-          padding: 8px 10px;
+          padding: 10px 10px;
           border-bottom: 1px solid #eee3d8;
           background: #fdf8f1;
           white-space: nowrap;
         }
 
         .cell {
-          padding: 8px 10px;
+          padding: 10px 10px;
           border-bottom: 1px solid #f3e7d8;
           vertical-align: top;
         }
-
         .row:last-child .cell {
           border-bottom: none;
         }
 
         .main-cell {
-          min-width: 160px;
+          min-width: 240px;
         }
-
         .contact-cell {
-          min-width: 160px;
+          min-width: 220px;
         }
-
         .hopes-cell {
-          min-width: 200px;
-          max-width: 260px;
+          min-width: 320px;
+          max-width: 420px;
         }
-
         .howto-cell {
-          min-width: 200px;
-          max-width: 260px;
+          min-width: 320px;
+          max-width: 420px;
         }
-
         .status-cell {
-          min-width: 120px;
+          min-width: 170px;
         }
 
         .name {
           font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 2px;
+          font-weight: 700;
+          margin-bottom: 6px;
+        }
+
+        .meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+
+        .pill {
+          font-size: 11px;
+          color: var(--text-sub, #666);
+          background: #faf3ea;
+          border: 1px solid #f0e1cf;
+          padding: 3px 8px;
+          border-radius: 999px;
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .sub {
@@ -274,19 +426,136 @@ export default function AdminUsersPage() {
           color: var(--text-sub, #777);
           line-height: 1.5;
         }
+        .muted {
+          color: #999;
+        }
 
         .date {
           font-size: 11px;
           color: var(--text-sub, #999);
-          margin-top: 4px;
+          margin-top: 6px;
+        }
+
+        .note-text {
+          font-size: 12px;
+          line-height: 1.6;
+          color: #5b5248;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
+
+        .status-chip {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 11px;
+          font-weight: 700;
+          padding: 4px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(220, 210, 200, 0.9);
+          background: #fff;
+          margin-bottom: 6px;
+        }
+
+        .status-pending {
+          color: #8a6d3b;
+          background: #fff7e6;
+          border-color: #f3d7a3;
+        }
+        .status-approved {
+          color: #1b6b44;
+          background: #eaf7f0;
+          border-color: #bfe4cf;
+        }
+        .status-rejected {
+          color: #8c2e2b;
+          background: #fdecea;
+          border-color: #f5c2c0;
         }
 
         .status-select {
           font-size: 12px;
           border-radius: 999px;
           border: 1px solid var(--border, #ddd);
-          padding: 4px 8px;
+          padding: 6px 10px;
           background: #fff;
+          width: 100%;
+          max-width: 160px;
+        }
+
+        .card {
+          background: #fff;
+          border: 1px solid rgba(220, 210, 200, 0.9);
+          border-radius: 14px;
+          padding: 12px 12px 10px;
+          box-shadow: 0 8px 24px rgba(10, 10, 10, 0.02);
+        }
+        .card + .card {
+          margin-top: 10px;
+        }
+        .card-head {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 8px;
+        }
+        .card-title {
+          font-size: 14px;
+          font-weight: 800;
+          color: #2d2620;
+          line-height: 1.3;
+        }
+        .card-meta {
+          display: grid;
+          gap: 6px;
+        }
+        .kv {
+          display: grid;
+          grid-template-columns: 90px 1fr;
+          gap: 8px;
+          align-items: start;
+        }
+        .k {
+          font-size: 11px;
+          color: #8b8177;
+        }
+        .v {
+          font-size: 12px;
+          color: #4d433a;
+          word-break: break-word;
+          white-space: pre-wrap;
+        }
+        .card-note {
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px solid #f0e1cf;
+        }
+        .card-actions {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          justify-content: space-between;
+          margin-top: 10px;
+        }
+
+        .table-only {
+          display: block;
+        }
+        .card-only {
+          display: none;
+        }
+
+        @media (max-width: 640px) {
+          .table-only {
+            display: none;
+          }
+          .card-only {
+            display: grid;
+          }
+          .status-select {
+            max-width: 100%;
+          }
         }
       `}</style>
     </div>
