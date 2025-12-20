@@ -13,7 +13,7 @@ function safeNext(next: string | null) {
 type OptionsResponse = {
   options: any;
   challengeId?: string;
-  rp?: { id?: string; origin?: string };
+  next?: string;
   error?: string;
 };
 
@@ -29,7 +29,6 @@ export default function LoginClient() {
     setBusy(true);
     setMsg("");
     try {
-      // 1) options取得
       const optRes = await fetch("/api/admin/webauthn/login/options", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -38,20 +37,17 @@ export default function LoginClient() {
       const optJson: OptionsResponse = await optRes.json();
       if (!optRes.ok) throw new Error(optJson?.error || "options failed");
 
-      // ★ challengeId は verify に渡す（B1の正）
-      const challengeId = optJson.challengeId;
+      const assertion = await startAuthentication({
+        optionsJSON: optJson.options,
+      });
 
-      // 2) ブラウザPasskey開始
-      const assertion = await startAuthentication(optJson.options);
-
-      // 3) verify
       const verRes = await fetch("/api/admin/webauthn/login/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           assertion,
           next,
-          challengeId, // ★追加
+          challengeId: optJson.challengeId,
         }),
       });
       const verJson = await verRes.json();
@@ -65,7 +61,6 @@ export default function LoginClient() {
     }
   };
 
-  // 初回登録ボタン（あなたが最初にPasskeyを登録する用途）
   const registerPasskey = async () => {
     setBusy(true);
     setMsg("");
@@ -78,17 +73,16 @@ export default function LoginClient() {
       if (!optRes.ok)
         throw new Error(optJson?.error || "register options failed");
 
-      // ★ challengeId は verify に渡す（B1の正）
-      const challengeId = optJson.challengeId;
-
-      const attestation = await startRegistration(optJson.options);
+      const attestation = await startRegistration({
+        optionsJSON: optJson.options,
+      });
 
       const verRes = await fetch("/api/admin/webauthn/register/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           attestation,
-          challengeId, // ★追加
+          challengeId: optJson.challengeId,
         }),
       });
       const verJson = await verRes.json();
