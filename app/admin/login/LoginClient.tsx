@@ -39,7 +39,7 @@ export default function LoginClient() {
       const optJson: OptionsResponse = await optRes.json();
       if (!optRes.ok) throw new Error(optJson?.error || "options failed");
 
-      // ✅ 正しい呼び方：optionsJSON で包まない
+      // ✅ 期待される呼び方（互換モード回避）
       const assertion = await startAuthentication(optJson.options);
 
       const verRes = await fetch("/api/admin/webauthn/login/verify", {
@@ -76,7 +76,7 @@ export default function LoginClient() {
       if (!optRes.ok)
         throw new Error(optJson?.error || "register options failed");
 
-      // ✅ 正しい呼び方：optionsJSON で包まない
+      // ✅ ここも同じ（互換モード回避）
       const attestation = await startRegistration(optJson.options);
 
       const verRes = await fetch("/api/admin/webauthn/register/verify", {
