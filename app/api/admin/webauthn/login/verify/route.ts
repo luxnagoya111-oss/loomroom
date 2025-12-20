@@ -167,8 +167,12 @@ export async function POST(req: Request) {
       expectedOrigin: ADMIN_ORIGIN,
       expectedRPID: ADMIN_RP_ID,
 
-      authenticator: authLike,
-      credential: authLike,
+      // ★ ここがB1の正
+      credential: {
+        id: credentialIdStr,              // base64url string のまま
+        publicKey: credentialPublicKeyU8, // Uint8Array（bytea→U8に変換済み）
+        counter,                          // number
+      },
 
       requireUserVerification: false,
     } as any);
