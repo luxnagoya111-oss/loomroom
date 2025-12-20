@@ -12,6 +12,7 @@ import { createAdminSession } from "@/lib/adminSession";
 import { consumeChallenge } from "../../_store";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const ADMIN_EMAIL = ADMIN_EMAIL_ALLOWLIST[0] || null;
 
@@ -21,8 +22,7 @@ function safeNext(next: string | null) {
 }
 
 /* =========================================================
- * bytea / Uint8Array を ArrayBuffer 固定 Uint8Array に変換
- * SharedArrayBuffer 完全排除版（DB public_key 用）
+ * DB bytea(public_key) -> Uint8Array<ArrayBuffer>
  * ========================================================= */
 function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
   const ab = new ArrayBuffer(buf.length);
@@ -34,20 +34,16 @@ function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
 function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
   if (!v) return new Uint8Array(new ArrayBuffer(0));
 
-  if (Buffer.isBuffer(v)) {
-    return bufferToStrictUint8(v);
-  }
+  if (Buffer.isBuffer(v)) return bufferToStrictUint8(v);
 
-  if (v instanceof Uint8Array) {
-    return bufferToStrictUint8(Buffer.from(v));
-  }
+  if (v instanceof Uint8Array) return bufferToStrictUint8(Buffer.from(v));
 
   if (typeof v === "string") {
     try {
       if (v.startsWith("\\x")) {
         return bufferToStrictUint8(Buffer.from(v.slice(2), "hex"));
       }
-      // base64 / base64url の両方を許容
+      // base64url/base64 を許容
       const s = v.replace(/-/g, "+").replace(/_/g, "/");
       const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
       return bufferToStrictUint8(Buffer.from(s + pad, "base64"));
@@ -64,9 +60,10 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
 }
 
 /* =========================================================
- * assertion の「base64url 正規化」
- * - @simplewebauthn/server は JSON で base64url 文字列を期待
- * - Uint8Array / ArrayBuffer / {type:"Buffer"} を吸収
+ * assertion base64url normalization
+ * - server は base64url string を期待
+ * - Uint8Array / ArrayBuffer / JSON Buffer を base64url string に変換
+ * - 変換不能な object は「undefined」にして後段で弾く
  * ========================================================= */
 
 function bytesToBase64url(bytes: Uint8Array): string {
@@ -74,27 +71,32 @@ function bytesToBase64url(bytes: Uint8Array): string {
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
+function isBase64UrlLike(s: string): boolean {
+  // base64url の文字集合のみ許可（パディングなし前提）
+  return /^[A-Za-z0-9\-_]+$/.test(s);
+}
+
 function coerceToBase64url(v: any): string | undefined {
   if (v == null) return undefined;
 
   if (typeof v === "string") {
-    // 既にbase64urlっぽいならそのまま
-    if (/^[A-Za-z0-9\-_]+$/.test(v)) return v;
+    // base64url ならそのまま
+    if (isBase64UrlLike(v)) return v;
 
-    // base64っぽいならbase64urlへ変換
+    // base64 っぽいなら base64url へ
     if (/^[A-Za-z0-9+/=]+$/.test(v)) {
       return v.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
     }
 
-    // その他はそのまま返す（原因追跡のため）
-    return v;
+    // その他の文字列は「危険」なので undefined にする（内部で Length… を起こしやすい）
+    return undefined;
   }
 
   if (v instanceof Uint8Array) return bytesToBase64url(v);
 
   if (v instanceof ArrayBuffer) return bytesToBase64url(new Uint8Array(v));
 
-  // JSON化されたBuffer
+  // JSON化 Buffer
   if (typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) {
     return bytesToBase64url(Uint8Array.from(v.data));
   }
@@ -105,19 +107,15 @@ function coerceToBase64url(v: any): string | undefined {
 function normalizeAssertion(input: any) {
   const a = input ?? {};
 
-  const id = coerceToBase64url(a.id) ?? a.id;
-  const rawId = coerceToBase64url(a.rawId) ?? a.rawId;
+  const id = coerceToBase64url(a.id);
+  const rawId = coerceToBase64url(a.rawId);
 
-  const clientDataJSON =
-    coerceToBase64url(a?.response?.clientDataJSON) ??
-    a?.response?.clientDataJSON;
-  const authenticatorData =
-    coerceToBase64url(a?.response?.authenticatorData) ??
-    a?.response?.authenticatorData;
-  const signature =
-    coerceToBase64url(a?.response?.signature) ?? a?.response?.signature;
-  const userHandle =
-    coerceToBase64url(a?.response?.userHandle) ?? a?.response?.userHandle;
+  const clientDataJSON = coerceToBase64url(a?.response?.clientDataJSON);
+  const authenticatorData = coerceToBase64url(a?.response?.authenticatorData);
+  const signature = coerceToBase64url(a?.response?.signature);
+
+  // userHandle は null/undefined のことがあるので optional
+  const userHandle = coerceToBase64url(a?.response?.userHandle);
 
   return {
     ...a,
@@ -134,17 +132,17 @@ function normalizeAssertion(input: any) {
 }
 
 /* =========================================================
- * credential を id / rawId で探索（保存形式ブレの保険）
+ * credential lookup
  * ========================================================= */
 async function findCredentialForAdmin(params: {
   adminEmail: string;
-  credentialId: string;
-  credentialRawId?: string | null;
+  credentialId?: string;
+  credentialRawId?: string;
 }) {
   const { adminEmail, credentialId, credentialRawId } = params;
 
-  // 1) assertion.id で検索
-  {
+  // 1) id
+  if (credentialId) {
     const { data, error } = await supabaseAdmin
       .from("admin_webauthn_credentials")
       .select("credential_id, public_key, counter")
@@ -156,7 +154,7 @@ async function findCredentialForAdmin(params: {
     if (data) return data;
   }
 
-  // 2) assertion.rawId でも検索（保険）
+  // 2) rawId
   if (credentialRawId) {
     const { data, error } = await supabaseAdmin
       .from("admin_webauthn_credentials")
@@ -193,12 +191,31 @@ export async function POST(req: Request) {
       );
     }
 
-    // ★ ここで正規化（壊れた入力の吸収）
     const assertion = normalizeAssertion(assertionRaw);
 
-    if (!assertion?.id || !assertion?.response) {
+    // ✅ ここで「壊れた assertion」を明確に弾く（Length… の根本対策）
+    const missing: string[] = [];
+    if (!assertion?.id) missing.push("assertion.id");
+    if (!assertion?.rawId) missing.push("assertion.rawId");
+    if (!assertion?.response?.clientDataJSON) missing.push("response.clientDataJSON");
+    if (!assertion?.response?.authenticatorData) missing.push("response.authenticatorData");
+    if (!assertion?.response?.signature) missing.push("response.signature");
+
+    if (missing.length) {
       return NextResponse.json(
-        { error: "invalid assertion payload" },
+        {
+          error: "invalid assertion payload (non-base64url or missing fields)",
+          missing,
+          // デバッグしやすいように型だけ返す（中身は返さない）
+          types: {
+            id: typeof assertionRaw?.id,
+            rawId: typeof assertionRaw?.rawId,
+            clientDataJSON: typeof assertionRaw?.response?.clientDataJSON,
+            authenticatorData: typeof assertionRaw?.response?.authenticatorData,
+            signature: typeof assertionRaw?.response?.signature,
+            userHandle: typeof assertionRaw?.response?.userHandle,
+          },
+        },
         { status: 400 }
       );
     }
@@ -206,24 +223,16 @@ export async function POST(req: Request) {
     // 1) challenge 消費
     const ch = await consumeChallenge(String(challengeId));
     if (!ch || ch.purpose !== "login") {
-      return NextResponse.json(
-        { error: "challenge not found" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "challenge not found" }, { status: 400 });
     }
 
-    // 2) credential 取得（id → rawId の順で探索）
-    const credentialIdFromClient = String(assertion.id);
-    const credentialRawIdFromClient = assertion.rawId
-      ? String(assertion.rawId)
-      : null;
-
+    // 2) credential 取得
     let cred: any = null;
     try {
       cred = await findCredentialForAdmin({
         adminEmail: ADMIN_EMAIL,
-        credentialId: credentialIdFromClient,
-        credentialRawId: credentialRawIdFromClient,
+        credentialId: String(assertion.id),
+        credentialRawId: String(assertion.rawId),
       });
     } catch (dbErr: any) {
       return NextResponse.json(
@@ -233,10 +242,7 @@ export async function POST(req: Request) {
     }
 
     if (!cred) {
-      return NextResponse.json(
-        { error: "credential not found" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "credential not found" }, { status: 400 });
     }
 
     const publicKey = normalizeBytea(cred.public_key);
@@ -244,7 +250,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "invalid public_key" }, { status: 500 });
     }
 
-    // ★ ここは string 固定（型定義に合わせる）
     const credentialID = String(cred.credential_id);
 
     const counter =
@@ -255,16 +260,14 @@ export async function POST(req: Request) {
     // 3) verify
     const verification = await verifyAuthenticationResponse({
       response: assertion,
-      expectedChallenge: ch.challenge,
+      expectedChallenge: String(ch.challenge),
       expectedOrigin: ADMIN_ORIGIN,
       expectedRPID: ADMIN_RP_ID,
-
       credential: {
         id: credentialID,
         publicKey,
         counter,
       },
-
       requireUserVerification: false,
     });
 

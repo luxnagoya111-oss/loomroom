@@ -27,7 +27,6 @@ function pickChallengeFromClientDataJSON(attestation: any): string | null {
   const cd = attestation?.response?.clientDataJSON;
   if (!cd) return null;
 
-  // cd が string の場合（base64url想定）
   if (typeof cd === "string") {
     try {
       const json = JSON.parse(base64urlToUtf8(cd));
@@ -37,12 +36,17 @@ function pickChallengeFromClientDataJSON(attestation: any): string | null {
     }
   }
 
-  // cd が ArrayBuffer/Uint8Array の場合（保険）
+  // ArrayBuffer/Uint8Array/Buffer JSON などの保険
   try {
     const buf =
       cd instanceof ArrayBuffer
         ? Buffer.from(cd)
+        : cd instanceof Uint8Array
+        ? Buffer.from(cd)
+        : typeof cd === "object" && cd?.type === "Buffer" && Array.isArray(cd?.data)
+        ? Buffer.from(cd.data)
         : Buffer.from(cd?.buffer ?? cd);
+
     const json = JSON.parse(buf.toString("utf8"));
     return typeof json?.challenge === "string" ? json.challenge : null;
   } catch {
@@ -51,7 +55,7 @@ function pickChallengeFromClientDataJSON(attestation: any): string | null {
 }
 
 /* =========================================================
- * challenge 文字列でDB照会して消費（challengeId が無い場合の救済）
+ * challenge 文字列でDB照会して消費（challengeIdが無い場合の救済）
  * ========================================================= */
 async function consumeChallengeByValue(
   purpose: "register" | "login",
@@ -69,41 +73,39 @@ async function consumeChallengeByValue(
   if (error) throw error;
   if (!data) return null;
 
-  await supabaseAdmin
-    .from("admin_webauthn_challenges")
-    .delete()
-    .eq("id", data.id);
-
+  await supabaseAdmin.from("admin_webauthn_challenges").delete().eq("id", data.id);
   return data as any;
 }
 
 /* =========================================================
- * attestation の「base64url 正規化」
- * - @simplewebauthn/server は JSON で base64url 文字列を期待
- * - Uint8Array / ArrayBuffer / {type:"Buffer"} を吸収
+ * attestation normalization
+ * - server は base64url string を期待
+ * - Uint8Array / ArrayBuffer / JSON Buffer を base64url 文字列へ
+ * - 変換できない string/object は undefined にして後段で弾く
  * ========================================================= */
+
 function bytesToBase64url(bytes: Uint8Array): string {
   const b64 = Buffer.from(bytes).toString("base64");
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function isBase64UrlLike(s: string): boolean {
+  return /^[A-Za-z0-9\-_]+$/.test(s);
 }
 
 function coerceToBase64url(v: any): string | undefined {
   if (v == null) return undefined;
 
   if (typeof v === "string") {
-    // base64urlっぽいならそのまま
-    if (/^[A-Za-z0-9\-_]+$/.test(v)) return v;
-
-    // base64っぽいならbase64urlへ
+    if (isBase64UrlLike(v)) return v;
     if (/^[A-Za-z0-9+/=]+$/.test(v)) {
       return v.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
     }
-
-    return v;
+    // それ以外の “文字列” は危険（内部で Length… を誘発しやすい）なので弾く
+    return undefined;
   }
 
   if (v instanceof Uint8Array) return bytesToBase64url(v);
-
   if (v instanceof ArrayBuffer) return bytesToBase64url(new Uint8Array(v));
 
   if (typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) {
@@ -116,16 +118,13 @@ function coerceToBase64url(v: any): string | undefined {
 function normalizeAttestation(input: any) {
   const a = input ?? {};
 
-  const id = coerceToBase64url(a.id) ?? a.id;
-  const rawId = coerceToBase64url(a.rawId) ?? a.rawId;
+  const id = coerceToBase64url(a.id);
+  const rawId = coerceToBase64url(a.rawId);
 
-  const clientDataJSON =
-    coerceToBase64url(a?.response?.clientDataJSON) ?? a?.response?.clientDataJSON;
+  const clientDataJSON = coerceToBase64url(a?.response?.clientDataJSON);
+  const attestationObject = coerceToBase64url(a?.response?.attestationObject);
 
-  const attestationObject =
-    coerceToBase64url(a?.response?.attestationObject) ??
-    a?.response?.attestationObject;
-
+  // transports は browser が返す場合のみ、そのまま
   const transports = Array.isArray(a?.response?.transports)
     ? a.response.transports
     : undefined;
@@ -153,7 +152,8 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const { attestation: attestationRaw, challengeId } = body || {};
+    const attestationRaw = body?.attestation;
+    const challengeId = body?.challengeId;
 
     if (!attestationRaw) {
       return NextResponse.json(
@@ -162,14 +162,36 @@ export async function POST(req: Request) {
       );
     }
 
-    // ★ verify に渡す前に正規化
     const attestation = normalizeAttestation(attestationRaw);
 
-    // 1) challenge を取得（challengeId 優先、無ければ clientDataJSON から抽出して照会）
+    // ✅ 必須フィールドチェック（ここで落とせば Length… は確実に止まる）
+    const missing: string[] = [];
+    if (!attestation?.id) missing.push("attestation.id");
+    if (!attestation?.rawId) missing.push("attestation.rawId");
+    if (!attestation?.response?.clientDataJSON) missing.push("response.clientDataJSON");
+    if (!attestation?.response?.attestationObject) missing.push("response.attestationObject");
+
+    if (missing.length) {
+      return NextResponse.json(
+        {
+          error: "invalid attestation payload (non-base64url or missing fields)",
+          missing,
+          types: {
+            id: typeof attestationRaw?.id,
+            rawId: typeof attestationRaw?.rawId,
+            clientDataJSON: typeof attestationRaw?.response?.clientDataJSON,
+            attestationObject: typeof attestationRaw?.response?.attestationObject,
+          },
+        },
+        { status: 400 }
+      );
+    }
+
+    // 1) challenge を取得（challengeId 優先、無ければ clientDataJSON から抽出）
     let ch: any = null;
 
     if (challengeId) {
-      ch = await consumeChallenge(challengeId);
+      ch = await consumeChallenge(String(challengeId));
       if (ch && ch.purpose !== "register") ch = null;
     }
 
@@ -193,7 +215,7 @@ export async function POST(req: Request) {
 
     const verification = await verifyRegistrationResponse({
       response: attestation,
-      expectedChallenge: ch.challenge,
+      expectedChallenge: String(ch.challenge),
       expectedOrigin: ADMIN_ORIGIN,
       expectedRPID: ADMIN_RP_ID,
       requireUserVerification: false,
@@ -208,26 +230,21 @@ export async function POST(req: Request) {
 
     const reg = verification.registrationInfo;
 
-    // ★ browser から来た JSON の id を正とする
+    // browser から来た JSON の id を正とする（DB は base64url string で保持）
     const credentialID = String(attestation.id);
     if (!credentialID) {
-      return NextResponse.json(
-        { error: "invalid credential id" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "invalid credential id" }, { status: 400 });
     }
 
     const credentialPublicKey = reg.credential.publicKey;
     const counter = reg.credential.counter;
 
-    // 同じ credential_id がすでにある場合を吸収（再登録・二重登録の保険）
-    // onConflict を使えない場合もあるので、upsert で統一
     const { error: upsertErr } = await supabaseAdmin
       .from("admin_webauthn_credentials")
       .upsert(
         {
           admin_email: ADMIN_EMAIL,
-          credential_id: credentialID, // base64url string
+          credential_id: credentialID,
           public_key: Buffer.from(credentialPublicKey),
           counter,
           last_used_at: new Date().toISOString(),

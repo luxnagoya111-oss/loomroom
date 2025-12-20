@@ -1,5 +1,10 @@
+// app/api/admin/webauthn/register/options/route.ts
 import { NextResponse } from "next/server";
-import { generateRegistrationOptions } from "@simplewebauthn/server";
+import {
+  generateRegistrationOptions,
+  type AuthenticatorTransportFuture,
+} from "@simplewebauthn/server";
+
 import {
   ADMIN_EMAIL_ALLOWLIST,
   ADMIN_RP_ID,
@@ -10,13 +15,14 @@ import { saveChallenge } from "../../_store";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const ADMIN_EMAIL = ADMIN_EMAIL_ALLOWLIST[0] || null;
 
 function credentialIdToBase64url(id: any): string {
   if (!id) return "";
 
-  // 既にbase64url/文字列として保存しているならそのまま
+  // 既に base64url 文字列として保存しているならそのまま
   if (typeof id === "string") return id;
 
   // Buffer(bytea)
@@ -31,15 +37,6 @@ function credentialIdToBase64url(id: any): string {
 
   // それ以外は最後に文字列化
   return String(id);
-}
-
-function challengeToString(ch: any): string {
-  if (typeof ch === "string") return ch;
-  if (ch instanceof Uint8Array) return Buffer.from(ch).toString("base64url");
-  if (typeof Buffer !== "undefined" && Buffer.isBuffer(ch)) {
-    return Buffer.from(ch).toString("base64url");
-  }
-  return String(ch ?? "");
 }
 
 export async function POST() {
@@ -63,11 +60,24 @@ export async function POST() {
       );
     }
 
-    // ★ excludeCredentials は id:string(base64url) の配列にする（TS/ブラウザ互換）
+    // ✅ 型に合わせて transports を定義（string[] ではなく union 配列）
+    const transports: AuthenticatorTransportFuture[] = [
+      "internal",
+      "hybrid",
+      "usb",
+      "ble",
+      "nfc",
+    ];
+
+    // ✅ generateRegistrationOptions の型定義に合わせる：
+    // excludeCredentials: { id: string; transports?: AuthenticatorTransportFuture[] }[]
     const excludeCredentials = (creds ?? [])
       .map((c: any) => credentialIdToBase64url(c.credential_id))
       .filter(Boolean)
-      .map((id) => ({ id }));
+      .map((id) => ({
+        id,
+        transports,
+      }));
 
     const options = await generateRegistrationOptions({
       rpName: ADMIN_RP_NAME,
@@ -83,8 +93,8 @@ export async function POST() {
       excludeCredentials,
     });
 
-    const challengeStr = challengeToString((options as any).challenge);
-    const challengeId = await saveChallenge("register", challengeStr);
+    // challenge は通常 string(base64url) で返るのでそのまま保存
+    const challengeId = await saveChallenge("register", String(options.challenge));
 
     return NextResponse.json({
       options,
