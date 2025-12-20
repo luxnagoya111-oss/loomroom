@@ -18,6 +18,14 @@ type OptionsResponse = {
   error?: string;
 };
 
+function toPlainError(e: any) {
+  return {
+    name: e?.name,
+    message: e?.message,
+    stack: e?.stack,
+  };
+}
+
 export default function LoginClient() {
   const router = useRouter();
   const sp = useSearchParams();
@@ -36,11 +44,17 @@ export default function LoginClient() {
         body: JSON.stringify({ next }),
       });
 
-      const optJson: OptionsResponse = await optRes.json();
+      const optJson: OptionsResponse = await optRes.json().catch(() => ({} as any));
       if (!optRes.ok) throw new Error(optJson?.error || "options failed");
+      if (!optJson?.options) throw new Error("options is missing");
 
-      // ✅ 期待される呼び方（互換モード回避）
-      const assertion = await startAuthentication(optJson.options);
+      // ✅ 正しい呼び方：{ optionsJSON: ... }
+      const assertion = await startAuthentication({
+        optionsJSON: optJson.options,
+      });
+
+      // デバッグ：verifyに投げる実物（Networkでも見えるが念のため）
+      console.log("[webauthn] assertion to verify:", assertion);
 
       const verRes = await fetch("/api/admin/webauthn/login/verify", {
         method: "POST",
@@ -52,11 +66,12 @@ export default function LoginClient() {
         }),
       });
 
-      const verJson = await verRes.json();
+      const verJson = await verRes.json().catch(() => ({} as any));
       if (!verRes.ok) throw new Error(verJson?.error || "verify failed");
 
       router.replace(verJson.redirectTo || next);
     } catch (e: any) {
+      console.error("[webauthn] login error:", toPlainError(e));
       setMsg(e?.message || "ログインに失敗しました");
     } finally {
       setBusy(false);
@@ -72,12 +87,16 @@ export default function LoginClient() {
         headers: { "Content-Type": "application/json" },
       });
 
-      const optJson: OptionsResponse = await optRes.json();
-      if (!optRes.ok)
-        throw new Error(optJson?.error || "register options failed");
+      const optJson: OptionsResponse = await optRes.json().catch(() => ({} as any));
+      if (!optRes.ok) throw new Error(optJson?.error || "register options failed");
+      if (!optJson?.options) throw new Error("options is missing");
 
-      // ✅ ここも同じ（互換モード回避）
-      const attestation = await startRegistration(optJson.options);
+      // ✅ 正しい呼び方：{ optionsJSON: ... }
+      const attestation = await startRegistration({
+        optionsJSON: optJson.options,
+      });
+
+      console.log("[webauthn] attestation to verify:", attestation);
 
       const verRes = await fetch("/api/admin/webauthn/register/verify", {
         method: "POST",
@@ -88,11 +107,12 @@ export default function LoginClient() {
         }),
       });
 
-      const verJson = await verRes.json();
+      const verJson = await verRes.json().catch(() => ({} as any));
       if (!verRes.ok) throw new Error(verJson?.error || "register verify failed");
 
       setMsg("Passkeyを登録しました。続けてログインしてください。");
     } catch (e: any) {
+      console.error("[webauthn] register error:", toPlainError(e));
       setMsg(e?.message || "登録に失敗しました");
     } finally {
       setBusy(false);
@@ -116,7 +136,6 @@ export default function LoginClient() {
             <h1 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 800 }}>
               管理画面に入る
             </h1>
-
             <p
               style={{
                 margin: "0 0 14px",
