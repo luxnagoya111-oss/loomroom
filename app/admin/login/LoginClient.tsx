@@ -10,6 +10,13 @@ function safeNext(next: string | null) {
   return next.startsWith("/") ? next : "/admin";
 }
 
+type OptionsResponse = {
+  options: any;
+  challengeId?: string;
+  rp?: { id?: string; origin?: string };
+  error?: string;
+};
+
 export default function LoginClient() {
   const router = useRouter();
   const sp = useSearchParams();
@@ -28,8 +35,11 @@ export default function LoginClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ next }),
       });
-      const optJson = await optRes.json();
+      const optJson: OptionsResponse = await optRes.json();
       if (!optRes.ok) throw new Error(optJson?.error || "options failed");
+
+      // ★ challengeId は verify に渡す（B1の正）
+      const challengeId = optJson.challengeId;
 
       // 2) ブラウザPasskey開始
       const assertion = await startAuthentication(optJson.options);
@@ -38,7 +48,11 @@ export default function LoginClient() {
       const verRes = await fetch("/api/admin/webauthn/login/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assertion, next }),
+        body: JSON.stringify({
+          assertion,
+          next,
+          challengeId, // ★追加
+        }),
       });
       const verJson = await verRes.json();
       if (!verRes.ok) throw new Error(verJson?.error || "verify failed");
@@ -60,16 +74,22 @@ export default function LoginClient() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
-      const optJson = await optRes.json();
+      const optJson: OptionsResponse = await optRes.json();
       if (!optRes.ok)
         throw new Error(optJson?.error || "register options failed");
+
+      // ★ challengeId は verify に渡す（B1の正）
+      const challengeId = optJson.challengeId;
 
       const attestation = await startRegistration(optJson.options);
 
       const verRes = await fetch("/api/admin/webauthn/register/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attestation }),
+        body: JSON.stringify({
+          attestation,
+          challengeId, // ★追加
+        }),
       });
       const verJson = await verRes.json();
       if (!verRes.ok) throw new Error(verJson?.error || "register verify failed");
