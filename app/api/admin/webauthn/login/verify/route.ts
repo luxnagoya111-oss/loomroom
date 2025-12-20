@@ -22,7 +22,7 @@ function safeNext(next: string | null) {
 
 /* =========================================================
  * bytea / Uint8Array を ArrayBuffer 固定 Uint8Array に変換
- * SharedArrayBuffer 完全排除版
+ * SharedArrayBuffer 完全排除版（DB public_key 用）
  * ========================================================= */
 function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
   const ab = new ArrayBuffer(buf.length);
@@ -47,7 +47,10 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
       if (v.startsWith("\\x")) {
         return bufferToStrictUint8(Buffer.from(v.slice(2), "hex"));
       }
-      return bufferToStrictUint8(Buffer.from(v, "base64"));
+      // base64 / base64url の両方を許容（Nodeはbase64でbase64urlも概ね通るが、念のため寄せる）
+      const s = v.replace(/-/g, "+").replace(/_/g, "/");
+      const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
+      return bufferToStrictUint8(Buffer.from(s + pad, "base64"));
     } catch {
       return new Uint8Array(new ArrayBuffer(0));
     }
@@ -60,7 +63,74 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
   return new Uint8Array(new ArrayBuffer(0));
 }
 
-/* ========================================================= */
+/* =========================================================
+ * assertion の「base64url 正規化」
+ * - @simplewebauthn/server は JSON で base64url 文字列を期待
+ * - Uint8Array / ArrayBuffer / {type:"Buffer"} を吸収
+ * ========================================================= */
+
+function bytesToBase64url(bytes: Uint8Array): string {
+  // bytes -> base64 -> base64url
+  const b64 = Buffer.from(bytes).toString("base64");
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function coerceToBase64url(v: any): string | undefined {
+  if (v == null) return undefined;
+
+  if (typeof v === "string") {
+    // 既にbase64urlっぽいならそのまま
+    if (/^[A-Za-z0-9\-_]+$/.test(v)) return v;
+
+    // base64っぽいならbase64urlへ変換
+    if (/^[A-Za-z0-9+/=]+$/.test(v)) {
+      return v.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    }
+
+    // その他はそのまま返す（原因追跡のため）
+    return v;
+  }
+
+  if (v instanceof Uint8Array) return bytesToBase64url(v);
+
+  if (v instanceof ArrayBuffer) return bytesToBase64url(new Uint8Array(v));
+
+  // JSON化されたBuffer
+  if (typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) {
+    return bytesToBase64url(Uint8Array.from(v.data));
+  }
+
+  return undefined;
+}
+
+function normalizeAssertion(input: any) {
+  const a = input ?? {};
+
+  const id = coerceToBase64url(a.id) ?? a.id;
+  const rawId = coerceToBase64url(a.rawId) ?? a.rawId;
+
+  const clientDataJSON =
+    coerceToBase64url(a?.response?.clientDataJSON) ?? a?.response?.clientDataJSON;
+  const authenticatorData =
+    coerceToBase64url(a?.response?.authenticatorData) ?? a?.response?.authenticatorData;
+  const signature =
+    coerceToBase64url(a?.response?.signature) ?? a?.response?.signature;
+  const userHandle =
+    coerceToBase64url(a?.response?.userHandle) ?? a?.response?.userHandle;
+
+  return {
+    ...a,
+    id,
+    rawId,
+    response: {
+      ...a?.response,
+      clientDataJSON,
+      authenticatorData,
+      signature,
+      userHandle,
+    },
+  };
+}
 
 export async function POST(req: Request) {
   try {
@@ -72,18 +142,21 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const assertion: any = body?.assertion;
+    const assertionRaw: any = body?.assertion;
     const challengeId: string | undefined = body?.challengeId;
     const next: string | null = body?.next ?? null;
 
-    if (!assertion || !challengeId) {
+    if (!assertionRaw || !challengeId) {
       return NextResponse.json(
         { error: "assertion/challengeId is required" },
         { status: 400 }
       );
     }
 
-    if (!assertion.id || !assertion.response) {
+    // ★ ここで正規化（今回の 500 を止める本丸）
+    const assertion = normalizeAssertion(assertionRaw);
+
+    if (!assertion?.id || !assertion?.response) {
       return NextResponse.json(
         { error: "invalid assertion payload" },
         { status: 400 }
@@ -93,10 +166,7 @@ export async function POST(req: Request) {
     // 1) challenge 消費
     const ch = await consumeChallenge(String(challengeId));
     if (!ch || ch.purpose !== "login") {
-      return NextResponse.json(
-        { error: "challenge not found" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "challenge not found" }, { status: 400 });
     }
 
     // 2) credential 取得
@@ -112,23 +182,16 @@ export async function POST(req: Request) {
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
-
     if (!cred) {
-      return NextResponse.json(
-        { error: "credential not found" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "credential not found" }, { status: 400 });
     }
 
     const publicKey = normalizeBytea(cred.public_key);
     if (!publicKey.length) {
-      return NextResponse.json(
-        { error: "invalid public_key" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "invalid public_key" }, { status: 500 });
     }
 
-    // ★ ここは string 固定（この版の型定義に合わせる）
+    // ★ ここは string 固定（型定義に合わせる）
     const credentialID = String(cred.credential_id);
 
     const counter =
@@ -179,6 +242,7 @@ export async function POST(req: Request) {
       redirectTo: safeNext(next),
     });
   } catch (e: any) {
+    // 500でも原因が見えるように message を返す（Vercelログも追いやすくなる）
     return NextResponse.json(
       { error: e?.message || "verify error" },
       { status: 500 }
