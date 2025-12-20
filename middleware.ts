@@ -1,6 +1,6 @@
 // middleware.ts
 import { NextResponse, type NextRequest } from "next/server";
-import { createServerClient } from "@supabase/ssr";
+import { ADMIN_SESSION_COOKIE } from "@/lib/adminConfig";
 
 /**
  * OAuth の callback / confirm は「無風地帯」
@@ -16,12 +16,17 @@ function isAdminPath(pathname: string) {
   return pathname === "/admin" || pathname.startsWith("/admin/");
 }
 
-function buildLoginRedirect(req: NextRequest) {
+// /admin/login 自体はガードしない（無限リダイレクト防止）
+function isAdminLoginPath(pathname: string) {
+  return pathname === "/admin/login" || pathname.startsWith("/admin/login/");
+}
+
+function buildAdminLoginRedirect(req: NextRequest) {
   const url = req.nextUrl.clone();
   const next = req.nextUrl.pathname + (req.nextUrl.search || "");
-  url.pathname = "/login";
+  url.pathname = "/admin/login";
   url.search = `?next=${encodeURIComponent(next)}`;
-  return NextResponse.redirect(url);
+  return NextResponse.redirect(url); // 307になるのはNextの挙動。B1では許容でOK
 }
 
 export async function middleware(req: NextRequest) {
@@ -32,69 +37,28 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // ★ /admin 以外は触らない（全域 getUser はしない方針）
+  // ★ /admin 以外は触らない（B1: 最小）
   if (!isAdminPath(pathname)) {
     return NextResponse.next();
   }
 
-  // NextResponse は「リクエストヘッダを引き継ぐ」形で作る
-  let res = NextResponse.next({
-    request: {
-      headers: req.headers,
-    },
-  });
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-  // 環境変数欠落は安全側で弾く
-  if (!supabaseUrl || !supabaseAnonKey) {
-    return NextResponse.redirect(new URL("/", req.url));
+  // ★ /admin/login は素通し（無限リダイレクト防止）
+  if (isAdminLoginPath(pathname)) {
+    return NextResponse.next();
   }
 
-  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
-    cookies: {
-      getAll() {
-        return req.cookies.getAll();
-      },
-      setAll(cookiesToSet) {
-        // middleware で cookie を更新する
-        cookiesToSet.forEach(({ name, value, options }) => {
-          res.cookies.set(name, value, options);
-        });
-      },
-    },
-  });
-
-  // 1) ログイン確認
-  const { data: userData, error: userErr } = await supabase.auth.getUser();
-  const user = userData?.user ?? null;
-
-  if (userErr || !user) {
-    return buildLoginRedirect(req);
+  // ★ B1: admin session cookie の有無だけで入口を分岐
+  const sid = req.cookies.get(ADMIN_SESSION_COOKIE)?.value ?? null;
+  if (!sid) {
+    return buildAdminLoginRedirect(req);
   }
 
-  // 2) 管理者判定（RPC is_admin）
-  //   - public.is_admin() が作ってある前提
-  //   - エラー時は安全側（拒否）
-  const { data: isAdmin, error: adminErr } = await supabase.rpc("is_admin");
-
-  if (adminErr) {
-    return NextResponse.redirect(new URL("/", req.url));
-  }
-
-  if (!isAdmin) {
-    return NextResponse.redirect(new URL("/", req.url));
-  }
-
-  // OK
-  return res;
+  // cookie があるなら通す（厳密なDB照会は server側でやるのが安全）
+  return NextResponse.next();
 }
 
 /**
- * matcher は /admin のみ対象にする（最小・明確）
- * - callback/confirm は middleware 内でも素通しにしているが、
- *   matcher レベルでも対象外なので二重に安全
+ * matcher は /admin のみ対象（最小・明確）
  */
 export const config = {
   matcher: ["/admin", "/admin/:path*"],
