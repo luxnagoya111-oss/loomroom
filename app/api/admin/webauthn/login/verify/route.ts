@@ -1,7 +1,6 @@
 // app/api/admin/webauthn/login/verify/route.ts
 import { NextResponse } from "next/server";
 import { verifyAuthenticationResponse } from "@simplewebauthn/server";
-import { isoBase64URL } from "@simplewebauthn/server/helpers";
 
 import {
   ADMIN_EMAIL_ALLOWLIST,
@@ -21,40 +20,47 @@ function safeNext(next: string | null) {
   return next.startsWith("/") ? next : "/admin";
 }
 
-/**
- * Supabaseのbytea(public_key)を、必ず Buffer に揃える
- * - "\\x...." (hex文字列)
- * - base64文字列
- * - Buffer / Uint8Array
- * のどれで来てもOK
- */
-function normalizeByteaToBuffer(v: any): Buffer {
-  if (!v) return Buffer.alloc(0);
+/* =========================================================
+ * bytea / Uint8Array を ArrayBuffer 固定 Uint8Array に変換
+ * SharedArrayBuffer 完全排除版
+ * ========================================================= */
+function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
+  const ab = new ArrayBuffer(buf.length);
+  const view = new Uint8Array(ab);
+  view.set(buf);
+  return view;
+}
 
-  if (Buffer.isBuffer(v)) return v;
+function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
+  if (!v) return new Uint8Array(new ArrayBuffer(0));
 
-  if (v instanceof Uint8Array) return Buffer.from(v);
+  if (Buffer.isBuffer(v)) {
+    return bufferToStrictUint8(v);
+  }
+
+  if (v instanceof Uint8Array) {
+    return bufferToStrictUint8(Buffer.from(v));
+  }
 
   if (typeof v === "string") {
-    // Postgres bytea hex 表現
-    if (v.startsWith("\\x")) {
-      return Buffer.from(v.slice(2), "hex");
-    }
-    // PostgRESTがbase64で返すケース
     try {
-      return Buffer.from(v, "base64");
+      if (v.startsWith("\\x")) {
+        return bufferToStrictUint8(Buffer.from(v.slice(2), "hex"));
+      }
+      return bufferToStrictUint8(Buffer.from(v, "base64"));
     } catch {
-      return Buffer.alloc(0);
+      return new Uint8Array(new ArrayBuffer(0));
     }
   }
 
-  // まれに { type: 'Buffer', data: [...] } の形で来ることもある
   if (v?.type === "Buffer" && Array.isArray(v?.data)) {
-    return Buffer.from(v.data);
+    return bufferToStrictUint8(Buffer.from(v.data));
   }
 
-  return Buffer.alloc(0);
+  return new Uint8Array(new ArrayBuffer(0));
 }
+
+/* ========================================================= */
 
 export async function POST(req: Request) {
   try {
@@ -66,9 +72,9 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const assertion = body?.assertion;
-    const challengeId = body?.challengeId;
-    const next = body?.next;
+    const assertion: any = body?.assertion;
+    const challengeId: string | undefined = body?.challengeId;
+    const next: string | null = body?.next ?? null;
 
     if (!assertion || !challengeId) {
       return NextResponse.json(
@@ -77,15 +83,14 @@ export async function POST(req: Request) {
       );
     }
 
-    // assertion の最低限チェック（欠けてると simplewebauthn が内部で落ちやすい）
-    if (!assertion?.id || !assertion?.response) {
+    if (!assertion.id || !assertion.response) {
       return NextResponse.json(
-        { error: "invalid assertion payload (missing id/response)" },
+        { error: "invalid assertion payload" },
         { status: 400 }
       );
     }
 
-    // 1) challenge 取得（DBから消費）
+    // 1) challenge 消費
     const ch = await consumeChallenge(String(challengeId));
     if (!ch || ch.purpose !== "login") {
       return NextResponse.json(
@@ -94,27 +99,18 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2) credential を特定（DBのキーは base64url string のまま照合）
-    const credentialIdStr: string = String(assertion.id);
-    if (!credentialIdStr) {
-      return NextResponse.json(
-        { error: "assertion.id is missing" },
-        { status: 400 }
-      );
-    }
+    // 2) credential 取得
+    const credentialIdFromClient = String(assertion.id);
 
-    const { data: cred, error: credErr } = await supabaseAdmin
+    const { data: cred, error } = await supabaseAdmin
       .from("admin_webauthn_credentials")
       .select("credential_id, public_key, counter")
       .eq("admin_email", ADMIN_EMAIL)
-      .eq("credential_id", credentialIdStr)
+      .eq("credential_id", credentialIdFromClient)
       .maybeSingle();
 
-    if (credErr) {
-      return NextResponse.json(
-        { error: credErr.message || "failed to load credential" },
-        { status: 500 }
-      );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     if (!cred) {
@@ -124,49 +120,47 @@ export async function POST(req: Request) {
       );
     }
 
-    // ★今回の核心：public_key(bytea) を必ず Buffer にする
-    const publicKeyBuf = normalizeByteaToBuffer(cred.public_key);
-    if (!publicKeyBuf.length) {
+    const publicKey = normalizeBytea(cred.public_key);
+    if (!publicKey.length) {
       return NextResponse.json(
-        { error: "public_key is empty or invalid (bytea decode failed)" },
+        { error: "invalid public_key" },
         { status: 500 }
       );
     }
 
-    // ★credentialID は raw bytes を要求する版があるため Buffer に
-    //   DBには base64url string を保存している前提
-    const credentialIdBuf = isoBase64URL.toBuffer(String(cred.credential_id));
+    // ★ ここは string 固定（この版の型定義に合わせる）
+    const credentialID = String(cred.credential_id);
 
-    const counter = Number.isFinite(cred.counter) ? Number(cred.counter) : 0;
+    const counter =
+      typeof cred.counter === "number" && Number.isFinite(cred.counter)
+        ? cred.counter
+        : 0;
 
+    // 3) verify
     const verification = await verifyAuthenticationResponse({
       response: assertion,
       expectedChallenge: ch.challenge,
       expectedOrigin: ADMIN_ORIGIN,
       expectedRPID: ADMIN_RP_ID,
 
-      // 版差はあるが、実運用で落ちない構造に固定（anyで通す）
-      authenticator: {
-        credentialID: credentialIdBuf, // raw bytes
-        credentialPublicKey: publicKeyBuf, // COSE key bytes
+      credential: {
+        id: credentialID,
+        publicKey,
         counter,
       },
 
       requireUserVerification: false,
-    } as any);
+    });
 
-    if (!verification?.verified) {
+    if (!verification.verified) {
       return NextResponse.json(
         { error: "authentication not verified" },
         { status: 401 }
       );
     }
 
-    // counter 更新
-    const newCounter =
-      (verification as any)?.authenticationInfo?.newCounter ??
-      (verification as any)?.authenticationInfo?.counter ??
-      counter;
+    // 4) counter 更新
+    const newCounter = verification.authenticationInfo.newCounter;
 
     await supabaseAdmin
       .from("admin_webauthn_credentials")
@@ -175,12 +169,15 @@ export async function POST(req: Request) {
         last_used_at: new Date().toISOString(),
       })
       .eq("admin_email", ADMIN_EMAIL)
-      .eq("credential_id", String(cred.credential_id));
+      .eq("credential_id", cred.credential_id);
 
-    // admin session cookie 発行
+    // 5) admin session
     await createAdminSession(ADMIN_EMAIL);
 
-    return NextResponse.json({ ok: true, redirectTo: safeNext(next ?? null) });
+    return NextResponse.json({
+      ok: true,
+      redirectTo: safeNext(next),
+    });
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message || "verify error" },
