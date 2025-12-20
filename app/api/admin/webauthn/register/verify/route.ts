@@ -126,20 +126,19 @@ export async function POST(req: Request) {
 
     const reg = verification.registrationInfo;
 
-    // @simplewebauthn/server の新しめの型：credential の中に入っている
-    const credentialID = reg.credential.id;
+    // ★ browser から来た JSON の id を正とする
+    const credentialID = attestation.id;       // ← ここだけ変更
     const credentialPublicKey = reg.credential.publicKey;
     const counter = reg.credential.counter;
 
-    await supabaseAdmin.from("admin_webauthn_credentials").insert([
-      {
+    await supabaseAdmin
+      .from("admin_webauthn_credentials")
+      .insert({
         admin_email: ADMIN_EMAIL,
-        credential_id: credentialID,
-        public_key: credentialPublicKey,
+        credential_id: credentialID,            // ★ base64url string
+        public_key: Buffer.from(credentialPublicKey),
         counter,
-        created_at: new Date().toISOString(),
-      },
-    ]);
+      });
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
