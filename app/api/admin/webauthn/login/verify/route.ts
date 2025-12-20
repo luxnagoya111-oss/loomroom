@@ -1,8 +1,13 @@
+// app/api/admin/webauthn/login/verify/route.ts
 import { NextResponse } from "next/server";
 import { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
 
-import { ADMIN_EMAIL_ALLOWLIST, ADMIN_ORIGIN, ADMIN_RP_ID } from "@/lib/adminConfig";
+import {
+  ADMIN_EMAIL_ALLOWLIST,
+  ADMIN_ORIGIN,
+  ADMIN_RP_ID,
+} from "@/lib/adminConfig";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { createAdminSession } from "@/lib/adminSession";
 import { consumeChallenge } from "../../_store";
@@ -39,7 +44,6 @@ function normalizeByteaToBuffer(v: any): Buffer {
     try {
       return Buffer.from(v, "base64");
     } catch {
-      // それでもダメなら空
       return Buffer.alloc(0);
     }
   }
@@ -62,7 +66,9 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const { assertion, challengeId, next } = body || {};
+    const assertion = body?.assertion;
+    const challengeId = body?.challengeId;
+    const next = body?.next;
 
     if (!assertion || !challengeId) {
       return NextResponse.json(
@@ -71,16 +77,30 @@ export async function POST(req: Request) {
       );
     }
 
+    // assertion の最低限チェック（欠けてると simplewebauthn が内部で落ちやすい）
+    if (!assertion?.id || !assertion?.response) {
+      return NextResponse.json(
+        { error: "invalid assertion payload (missing id/response)" },
+        { status: 400 }
+      );
+    }
+
     // 1) challenge 取得（DBから消費）
-    const ch = await consumeChallenge(challengeId);
+    const ch = await consumeChallenge(String(challengeId));
     if (!ch || ch.purpose !== "login") {
-      return NextResponse.json({ error: "challenge not found" }, { status: 400 });
+      return NextResponse.json(
+        { error: "challenge not found" },
+        { status: 400 }
+      );
     }
 
     // 2) credential を特定（DBのキーは base64url string のまま照合）
-    const credentialIdStr: string = assertion?.id;
+    const credentialIdStr: string = String(assertion.id);
     if (!credentialIdStr) {
-      return NextResponse.json({ error: "assertion.id is missing" }, { status: 400 });
+      return NextResponse.json(
+        { error: "assertion.id is missing" },
+        { status: 400 }
+      );
     }
 
     const { data: cred, error: credErr } = await supabaseAdmin
@@ -98,10 +118,13 @@ export async function POST(req: Request) {
     }
 
     if (!cred) {
-      return NextResponse.json({ error: "credential not found" }, { status: 400 });
+      return NextResponse.json(
+        { error: "credential not found" },
+        { status: 400 }
+      );
     }
 
-    // ★ここが今回の核心：public_key(bytea) を必ず Buffer にする
+    // ★今回の核心：public_key(bytea) を必ず Buffer にする
     const publicKeyBuf = normalizeByteaToBuffer(cred.public_key);
     if (!publicKeyBuf.length) {
       return NextResponse.json(
@@ -110,8 +133,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // ★credentialID は server が raw bytes を想定することがあるため Buffer に
-    const credentialIdBuf = isoBase64URL.toBuffer(cred.credential_id);
+    // ★credentialID は raw bytes を要求する版があるため Buffer に
+    //   DBには base64url string を保存している前提
+    const credentialIdBuf = isoBase64URL.toBuffer(String(cred.credential_id));
 
     const counter = Number.isFinite(cred.counter) ? Number(cred.counter) : 0;
 
@@ -123,15 +147,15 @@ export async function POST(req: Request) {
 
       // 版差はあるが、実運用で落ちない構造に固定（anyで通す）
       authenticator: {
-        credentialID: credentialIdBuf,         // raw bytes
-        credentialPublicKey: publicKeyBuf,     // COSE key bytes
+        credentialID: credentialIdBuf, // raw bytes
+        credentialPublicKey: publicKeyBuf, // COSE key bytes
         counter,
       },
 
       requireUserVerification: false,
     } as any);
 
-    if (!verification.verified) {
+    if (!verification?.verified) {
       return NextResponse.json(
         { error: "authentication not verified" },
         { status: 401 }
@@ -146,9 +170,12 @@ export async function POST(req: Request) {
 
     await supabaseAdmin
       .from("admin_webauthn_credentials")
-      .update({ counter: newCounter, last_used_at: new Date().toISOString() })
+      .update({
+        counter: newCounter,
+        last_used_at: new Date().toISOString(),
+      })
       .eq("admin_email", ADMIN_EMAIL)
-      .eq("credential_id", cred.credential_id);
+      .eq("credential_id", String(cred.credential_id));
 
     // admin session cookie 発行
     await createAdminSession(ADMIN_EMAIL);
