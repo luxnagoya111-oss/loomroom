@@ -47,7 +47,7 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
       if (v.startsWith("\\x")) {
         return bufferToStrictUint8(Buffer.from(v.slice(2), "hex"));
       }
-      // base64 / base64url の両方を許容（Nodeはbase64でbase64urlも概ね通るが、念のため寄せる）
+      // base64 / base64url の両方を許容
       const s = v.replace(/-/g, "+").replace(/_/g, "/");
       const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
       return bufferToStrictUint8(Buffer.from(s + pad, "base64"));
@@ -70,7 +70,6 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
  * ========================================================= */
 
 function bytesToBase64url(bytes: Uint8Array): string {
-  // bytes -> base64 -> base64url
   const b64 = Buffer.from(bytes).toString("base64");
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
@@ -110,9 +109,11 @@ function normalizeAssertion(input: any) {
   const rawId = coerceToBase64url(a.rawId) ?? a.rawId;
 
   const clientDataJSON =
-    coerceToBase64url(a?.response?.clientDataJSON) ?? a?.response?.clientDataJSON;
+    coerceToBase64url(a?.response?.clientDataJSON) ??
+    a?.response?.clientDataJSON;
   const authenticatorData =
-    coerceToBase64url(a?.response?.authenticatorData) ?? a?.response?.authenticatorData;
+    coerceToBase64url(a?.response?.authenticatorData) ??
+    a?.response?.authenticatorData;
   const signature =
     coerceToBase64url(a?.response?.signature) ?? a?.response?.signature;
   const userHandle =
@@ -130,6 +131,45 @@ function normalizeAssertion(input: any) {
       userHandle,
     },
   };
+}
+
+/* =========================================================
+ * credential を id / rawId で探索（保存形式ブレの保険）
+ * ========================================================= */
+async function findCredentialForAdmin(params: {
+  adminEmail: string;
+  credentialId: string;
+  credentialRawId?: string | null;
+}) {
+  const { adminEmail, credentialId, credentialRawId } = params;
+
+  // 1) assertion.id で検索
+  {
+    const { data, error } = await supabaseAdmin
+      .from("admin_webauthn_credentials")
+      .select("credential_id, public_key, counter")
+      .eq("admin_email", adminEmail)
+      .eq("credential_id", credentialId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data) return data;
+  }
+
+  // 2) assertion.rawId でも検索（保険）
+  if (credentialRawId) {
+    const { data, error } = await supabaseAdmin
+      .from("admin_webauthn_credentials")
+      .select("credential_id, public_key, counter")
+      .eq("admin_email", adminEmail)
+      .eq("credential_id", credentialRawId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data) return data;
+  }
+
+  return null;
 }
 
 export async function POST(req: Request) {
@@ -153,7 +193,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // ★ ここで正規化（今回の 500 を止める本丸）
+    // ★ ここで正規化（壊れた入力の吸収）
     const assertion = normalizeAssertion(assertionRaw);
 
     if (!assertion?.id || !assertion?.response) {
@@ -166,24 +206,37 @@ export async function POST(req: Request) {
     // 1) challenge 消費
     const ch = await consumeChallenge(String(challengeId));
     if (!ch || ch.purpose !== "login") {
-      return NextResponse.json({ error: "challenge not found" }, { status: 400 });
+      return NextResponse.json(
+        { error: "challenge not found" },
+        { status: 400 }
+      );
     }
 
-    // 2) credential 取得
+    // 2) credential 取得（id → rawId の順で探索）
     const credentialIdFromClient = String(assertion.id);
+    const credentialRawIdFromClient = assertion.rawId
+      ? String(assertion.rawId)
+      : null;
 
-    const { data: cred, error } = await supabaseAdmin
-      .from("admin_webauthn_credentials")
-      .select("credential_id, public_key, counter")
-      .eq("admin_email", ADMIN_EMAIL)
-      .eq("credential_id", credentialIdFromClient)
-      .maybeSingle();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    let cred: any = null;
+    try {
+      cred = await findCredentialForAdmin({
+        adminEmail: ADMIN_EMAIL,
+        credentialId: credentialIdFromClient,
+        credentialRawId: credentialRawIdFromClient,
+      });
+    } catch (dbErr: any) {
+      return NextResponse.json(
+        { error: dbErr?.message || "credential lookup failed" },
+        { status: 500 }
+      );
     }
+
     if (!cred) {
-      return NextResponse.json({ error: "credential not found" }, { status: 400 });
+      return NextResponse.json(
+        { error: "credential not found" },
+        { status: 400 }
+      );
     }
 
     const publicKey = normalizeBytea(cred.public_key);
@@ -242,7 +295,6 @@ export async function POST(req: Request) {
       redirectTo: safeNext(next),
     });
   } catch (e: any) {
-    // 500でも原因が見えるように message を返す（Vercelログも追いやすくなる）
     return NextResponse.json(
       { error: e?.message || "verify error" },
       { status: 500 }

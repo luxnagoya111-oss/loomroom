@@ -1,3 +1,4 @@
+// app/admin/login/LoginClient.tsx
 "use client";
 
 import React, { useMemo, useState } from "react";
@@ -34,12 +35,12 @@ export default function LoginClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ next }),
       });
+
       const optJson: OptionsResponse = await optRes.json();
       if (!optRes.ok) throw new Error(optJson?.error || "options failed");
 
-      const assertion = await startAuthentication({
-        optionsJSON: optJson.options,
-      });
+      // ✅ 正しい呼び方：optionsJSON で包まない
+      const assertion = await startAuthentication(optJson.options);
 
       const verRes = await fetch("/api/admin/webauthn/login/verify", {
         method: "POST",
@@ -50,6 +51,7 @@ export default function LoginClient() {
           challengeId: optJson.challengeId,
         }),
       });
+
       const verJson = await verRes.json();
       if (!verRes.ok) throw new Error(verJson?.error || "verify failed");
 
@@ -69,13 +71,13 @@ export default function LoginClient() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
+
       const optJson: OptionsResponse = await optRes.json();
       if (!optRes.ok)
         throw new Error(optJson?.error || "register options failed");
 
-      const attestation = await startRegistration({
-        optionsJSON: optJson.options,
-      });
+      // ✅ 正しい呼び方：optionsJSON で包まない
+      const attestation = await startRegistration(optJson.options);
 
       const verRes = await fetch("/api/admin/webauthn/register/verify", {
         method: "POST",
@@ -85,6 +87,7 @@ export default function LoginClient() {
           challengeId: optJson.challengeId,
         }),
       });
+
       const verJson = await verRes.json();
       if (!verRes.ok) throw new Error(verJson?.error || "register verify failed");
 
@@ -113,6 +116,7 @@ export default function LoginClient() {
             <h1 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 800 }}>
               管理画面に入る
             </h1>
+
             <p
               style={{
                 margin: "0 0 14px",
