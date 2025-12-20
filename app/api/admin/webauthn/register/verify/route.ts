@@ -36,17 +36,9 @@ function pickChallengeFromClientDataJSON(attestation: any): string | null {
     }
   }
 
-  // ArrayBuffer/Uint8Array/Buffer JSON などの保険
   try {
     const buf =
-      cd instanceof ArrayBuffer
-        ? Buffer.from(cd)
-        : cd instanceof Uint8Array
-        ? Buffer.from(cd)
-        : typeof cd === "object" && cd?.type === "Buffer" && Array.isArray(cd?.data)
-        ? Buffer.from(cd.data)
-        : Buffer.from(cd?.buffer ?? cd);
-
+      cd instanceof ArrayBuffer ? Buffer.from(cd) : Buffer.from(cd?.buffer ?? cd);
     const json = JSON.parse(buf.toString("utf8"));
     return typeof json?.challenge === "string" ? json.challenge : null;
   } catch {
@@ -78,31 +70,22 @@ async function consumeChallengeByValue(
 }
 
 /* =========================================================
- * attestation normalization
- * - server は base64url string を期待
- * - Uint8Array / ArrayBuffer / JSON Buffer を base64url 文字列へ
- * - 変換できない string/object は undefined にして後段で弾く
+ * attestation の base64url 正規化
  * ========================================================= */
-
 function bytesToBase64url(bytes: Uint8Array): string {
   const b64 = Buffer.from(bytes).toString("base64");
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function isBase64UrlLike(s: string): boolean {
-  return /^[A-Za-z0-9\-_]+$/.test(s);
 }
 
 function coerceToBase64url(v: any): string | undefined {
   if (v == null) return undefined;
 
   if (typeof v === "string") {
-    if (isBase64UrlLike(v)) return v;
+    if (/^[A-Za-z0-9\-_]+$/.test(v)) return v;
     if (/^[A-Za-z0-9+/=]+$/.test(v)) {
       return v.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
     }
-    // それ以外の “文字列” は危険（内部で Length… を誘発しやすい）なので弾く
-    return undefined;
+    return v;
   }
 
   if (v instanceof Uint8Array) return bytesToBase64url(v);
@@ -118,13 +101,15 @@ function coerceToBase64url(v: any): string | undefined {
 function normalizeAttestation(input: any) {
   const a = input ?? {};
 
-  const id = coerceToBase64url(a.id);
-  const rawId = coerceToBase64url(a.rawId);
+  const id = coerceToBase64url(a.id) ?? a.id;
+  const rawId = coerceToBase64url(a.rawId) ?? a.rawId;
 
-  const clientDataJSON = coerceToBase64url(a?.response?.clientDataJSON);
-  const attestationObject = coerceToBase64url(a?.response?.attestationObject);
+  const clientDataJSON =
+    coerceToBase64url(a?.response?.clientDataJSON) ?? a?.response?.clientDataJSON;
 
-  // transports は browser が返す場合のみ、そのまま
+  const attestationObject =
+    coerceToBase64url(a?.response?.attestationObject) ?? a?.response?.attestationObject;
+
   const transports = Array.isArray(a?.response?.transports)
     ? a.response.transports
     : undefined;
@@ -142,6 +127,27 @@ function normalizeAttestation(input: any) {
   };
 }
 
+/* =========================================================
+ * registrationInfo の差異吸収（バージョン差対応）
+ * ========================================================= */
+function pickRegistrationKey(regInfo: any): { publicKey: Uint8Array; counter: number } | null {
+  if (!regInfo) return null;
+
+  // パターンA: registrationInfo.credentialPublicKey / counter
+  if (regInfo.credentialPublicKey instanceof Uint8Array) {
+    const c = typeof regInfo.counter === "number" ? regInfo.counter : 0;
+    return { publicKey: regInfo.credentialPublicKey, counter: c };
+  }
+
+  // パターンB: registrationInfo.credential.publicKey / counter
+  if (regInfo.credential?.publicKey instanceof Uint8Array) {
+    const c = typeof regInfo.credential?.counter === "number" ? regInfo.credential.counter : 0;
+    return { publicKey: regInfo.credential.publicKey, counter: c };
+  }
+
+  return null;
+}
+
 export async function POST(req: Request) {
   try {
     if (!ADMIN_EMAIL) {
@@ -152,46 +158,19 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const attestationRaw = body?.attestation;
-    const challengeId = body?.challengeId;
+    const { attestation: attestationRaw, challengeId } = body || {};
 
     if (!attestationRaw) {
-      return NextResponse.json(
-        { error: "attestation is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "attestation is required" }, { status: 400 });
     }
 
     const attestation = normalizeAttestation(attestationRaw);
 
-    // ✅ 必須フィールドチェック（ここで落とせば Length… は確実に止まる）
-    const missing: string[] = [];
-    if (!attestation?.id) missing.push("attestation.id");
-    if (!attestation?.rawId) missing.push("attestation.rawId");
-    if (!attestation?.response?.clientDataJSON) missing.push("response.clientDataJSON");
-    if (!attestation?.response?.attestationObject) missing.push("response.attestationObject");
-
-    if (missing.length) {
-      return NextResponse.json(
-        {
-          error: "invalid attestation payload (non-base64url or missing fields)",
-          missing,
-          types: {
-            id: typeof attestationRaw?.id,
-            rawId: typeof attestationRaw?.rawId,
-            clientDataJSON: typeof attestationRaw?.response?.clientDataJSON,
-            attestationObject: typeof attestationRaw?.response?.attestationObject,
-          },
-        },
-        { status: 400 }
-      );
-    }
-
-    // 1) challenge を取得（challengeId 優先、無ければ clientDataJSON から抽出）
+    // 1) challenge 取得（challengeId優先、無ければclientDataJSONから抽出）
     let ch: any = null;
 
     if (challengeId) {
-      ch = await consumeChallenge(String(challengeId));
+      ch = await consumeChallenge(challengeId);
       if (ch && ch.purpose !== "register") ch = null;
     }
 
@@ -199,10 +178,7 @@ export async function POST(req: Request) {
       const extracted = pickChallengeFromClientDataJSON(attestation);
       if (!extracted) {
         return NextResponse.json(
-          {
-            error:
-              "challenge not found (missing challengeId and cannot extract challenge)",
-          },
+          { error: "challenge not found (missing challengeId and cannot extract challenge)" },
           { status: 400 }
         );
       }
@@ -215,29 +191,32 @@ export async function POST(req: Request) {
 
     const verification = await verifyRegistrationResponse({
       response: attestation,
-      expectedChallenge: String(ch.challenge),
+      expectedChallenge: ch.challenge,
       expectedOrigin: ADMIN_ORIGIN,
       expectedRPID: ADMIN_RP_ID,
       requireUserVerification: false,
     });
 
     if (!verification.verified || !verification.registrationInfo) {
+      return NextResponse.json({ error: "registration not verified" }, { status: 400 });
+    }
+
+    // ★ ここが本丸：公開鍵の取り出しをバージョン差で吸収
+    const picked = pickRegistrationKey(verification.registrationInfo);
+    if (!picked?.publicKey?.length) {
       return NextResponse.json(
-        { error: "registration not verified" },
+        { error: "registrationInfo does not contain a valid public key" },
         { status: 400 }
       );
     }
 
-    const reg = verification.registrationInfo;
-
-    // browser から来た JSON の id を正とする（DB は base64url string で保持）
+    // ★ browserから来た id（base64url string）をDBキーとして正にする
     const credentialID = String(attestation.id);
     if (!credentialID) {
       return NextResponse.json({ error: "invalid credential id" }, { status: 400 });
     }
 
-    const credentialPublicKey = reg.credential.publicKey;
-    const counter = reg.credential.counter;
+    const { publicKey, counter } = picked;
 
     const { error: upsertErr } = await supabaseAdmin
       .from("admin_webauthn_credentials")
@@ -245,7 +224,7 @@ export async function POST(req: Request) {
         {
           admin_email: ADMIN_EMAIL,
           credential_id: credentialID,
-          public_key: Buffer.from(credentialPublicKey),
+          public_key: Buffer.from(publicKey),
           counter,
           last_used_at: new Date().toISOString(),
         },
@@ -261,9 +240,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "verify error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e?.message || "verify error" }, { status: 500 });
   }
 }
