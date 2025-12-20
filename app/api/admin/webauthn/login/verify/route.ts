@@ -18,7 +18,7 @@ function safeNext(next: string | null) {
   return next.startsWith("/") ? next : "/admin";
 }
 
-function toBase64url(input: any): string {
+function toBase64urlString(input: any): string {
   if (!input) return "";
   if (typeof input === "string") return input;
   if (typeof Buffer !== "undefined" && Buffer.isBuffer(input)) {
@@ -28,6 +28,11 @@ function toBase64url(input: any): string {
     return Buffer.from(input).toString("base64url");
   }
   return String(input);
+}
+
+function base64urlToUint8Array(s: string): Uint8Array {
+  // Node runtime 前提
+  return new Uint8Array(Buffer.from(s, "base64url"));
 }
 
 /**
@@ -48,10 +53,12 @@ function byteaToUint8Array(v: any): Uint8Array {
   }
 
   if (typeof v === "string") {
+    // Supabase bytea が "\\x..." で返るケース
     if (v.startsWith("\\x")) {
       const hex = v.slice(2);
       return Uint8Array.from(Buffer.from(hex, "hex"));
     }
+    // base64url/base64 の可能性
     try {
       return Uint8Array.from(Buffer.from(v, "base64url"));
     } catch {
@@ -105,9 +112,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2) credential を取得（assertion.id は base64url string）
-    const credentialId = toBase64url(assertion?.id);
-    if (!credentialId) {
+    // 2) credential をDBから取得（照合キーは base64url 文字列）
+    const credentialIdStr = toBase64urlString(assertion?.id);
+    if (!credentialIdStr) {
       return NextResponse.json(
         { error: "assertion.id is missing" },
         { status: 400 }
@@ -118,7 +125,7 @@ export async function POST(req: Request) {
       .from("admin_webauthn_credentials")
       .select("credential_id, public_key, counter")
       .eq("admin_email", ADMIN_EMAIL)
-      .eq("credential_id", credentialId)
+      .eq("credential_id", credentialIdStr)
       .maybeSingle();
 
     if (credErr) {
@@ -134,26 +141,24 @@ export async function POST(req: Request) {
       );
     }
 
-    const publicKeyU8 = byteaToUint8Array(cred.public_key);
+    const credentialPublicKeyU8 = byteaToUint8Array(cred.public_key);
     const counter = Number.isFinite(cred.counter) ? Number(cred.counter) : 0;
 
-    /**
-     * ★版差吸収のため、
-     * - authenticator 版
-     * - credential 版
-     * の両方を同時に渡す
-     * さらにフィールド名も複数持たせる（ID/publicKey/counter）
-     */
-    const authLike = {
-      // authenticator 版が読む可能性のある名前
-      credentialID: credentialId,
-      credentialId: credentialId,
-      credentialPublicKey: publicKeyU8,
-      publicKey: publicKeyU8,
-      counter,
+    // ★ server verify に渡す credentialID は bytes (Uint8Array) が必要な版がある
+    const credentialIdBytes = base64urlToUint8Array(credentialIdStr);
 
-      // credential 版が読む可能性のある名前
-      id: credentialId,
+    // 3) verify：版差吸収（authenticator/credential 両方、idはbytesで渡す）
+    const authLike = {
+      // bytes
+      credentialID: credentialIdBytes,
+      credentialId: credentialIdBytes,
+      id: credentialIdBytes,
+
+      // public key bytes
+      credentialPublicKey: credentialPublicKeyU8,
+      publicKey: credentialPublicKeyU8,
+
+      counter,
     };
 
     const verification = await verifyAuthenticationResponse({
@@ -162,7 +167,6 @@ export async function POST(req: Request) {
       expectedOrigin: ADMIN_ORIGIN,
       expectedRPID: ADMIN_RP_ID,
 
-      // どっちのキーを読む実装でも落ちないように両方渡す
       authenticator: authLike,
       credential: authLike,
 
@@ -183,9 +187,9 @@ export async function POST(req: Request) {
       .from("admin_webauthn_credentials")
       .update({ counter: newCounter })
       .eq("admin_email", ADMIN_EMAIL)
-      .eq("credential_id", credentialId);
+      .eq("credential_id", credentialIdStr);
 
-    // admin session 発行（cookie）
+    // 4) admin session cookie 発行
     await createAdminSession(ADMIN_EMAIL);
 
     return NextResponse.json({ ok: true, redirectTo: next });
