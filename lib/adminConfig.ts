@@ -8,7 +8,7 @@ export const ADMIN_ORIGIN =
 // Passkey登録を許可する管理者（最初はあなた1人固定が安全）
 // 例：あなたのGoogleログインemailを入れる
 export const ADMIN_EMAIL_ALLOWLIST = (
-  process.env.ADMIN_EMAIL_ALLOWLIST || ""
+  process.env.ADMIN_EMAIL_ALLOWLIST || "lux.nagoya111@gmail.com"
 )
   .split(",")
   .map((s) => s.trim())
