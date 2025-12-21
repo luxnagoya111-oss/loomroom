@@ -99,7 +99,9 @@ export default function AdminContactListPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">問い合わせ</h1>
-          <p className="page-lead">contact_tickets の受信一覧です。クリックで詳細へ移動します。</p>
+          <p className="page-lead">
+            contact_tickets の受信一覧です。クリックで詳細へ移動します。
+          </p>
         </div>
 
         <button type="button" className="btn-outline" onClick={load} disabled={loading}>
@@ -205,9 +207,13 @@ export default function AdminContactListPage() {
           padding: 8px 12px;
           border-radius: 999px;
           border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
-          background: var(--surface-soft, #fff);
+          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
           color: var(--text-sub, #6b7280);
           white-space: nowrap;
+        }
+
+        .btn-outline:disabled {
+          opacity: 0.7;
         }
 
         .toolbar {
@@ -240,18 +246,20 @@ export default function AdminContactListPage() {
           border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
           padding: 8px 10px;
           font-size: 13px;
-          background: var(--surface-soft, #fff);
+          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
+          color: inherit;
           outline: none;
         }
 
         .filter-input:focus {
           border-color: rgba(215, 185, 118, 0.9);
           box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.18);
+          background: var(--surface, #fff);
         }
 
         .count {
           font-size: 12px;
-          color: var(--text-sub, #777);
+          color: var(--text-sub, #6b7280);
           white-space: nowrap;
           margin-left: auto;
           padding-bottom: 2px;
@@ -259,7 +267,7 @@ export default function AdminContactListPage() {
 
         .status-message {
           font-size: 13px;
-          color: var(--text-sub, #555);
+          color: var(--text-sub, #6b7280);
           padding: 10px 2px;
         }
 
@@ -278,10 +286,12 @@ export default function AdminContactListPage() {
           display: block;
           text-decoration: none;
           color: inherit;
+
+          border-radius: 16px;
           border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.06));
-          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
-          border-radius: 14px;
+          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
           padding: 10px;
+
           transition: transform 0.08s ease, border-color 0.08s ease, box-shadow 0.08s ease;
         }
 
@@ -315,29 +325,35 @@ export default function AdminContactListPage() {
           font-size: 11px;
           padding: 2px 8px;
           border-radius: 999px;
-          border: 1px solid rgba(0, 0, 0, 0.08);
+          border: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
           background: rgba(255, 255, 255, 0.7);
           white-space: nowrap;
         }
 
+        /* ステータス色（軽いトーンで統一） */
         .status-new {
           background: rgba(215, 185, 118, 0.22);
+          border-color: rgba(215, 185, 118, 0.45);
         }
         .status-triaging {
-          background: rgba(147, 197, 253, 0.22);
+          background: rgba(147, 197, 253, 0.18);
+          border-color: rgba(147, 197, 253, 0.35);
         }
         .status-waiting_user {
-          background: rgba(251, 191, 36, 0.18);
+          background: rgba(251, 191, 36, 0.16);
+          border-color: rgba(251, 191, 36, 0.32);
         }
         .status-resolved {
-          background: rgba(74, 222, 128, 0.16);
+          background: rgba(74, 222, 128, 0.14);
+          border-color: rgba(74, 222, 128, 0.28);
         }
         .status-closed {
-          background: rgba(148, 163, 184, 0.16);
+          background: rgba(148, 163, 184, 0.14);
+          border-color: rgba(148, 163, 184, 0.28);
         }
 
         .prio-high {
-          border-color: rgba(239, 68, 68, 0.25);
+          border-color: rgba(239, 68, 68, 0.22);
           background: rgba(239, 68, 68, 0.08);
         }
         .prio-normal {
@@ -362,7 +378,7 @@ export default function AdminContactListPage() {
         .row-name {
           font-size: 13px;
           font-weight: 800;
-          color: #2d2620;
+          color: var(--text-main, #111827);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -399,6 +415,9 @@ export default function AdminContactListPage() {
           }
           .row-name {
             max-width: 58%;
+          }
+          .count {
+            margin-left: 0;
           }
         }
       `}</style>

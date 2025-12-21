@@ -30,7 +30,7 @@ function statusLabel(s: DbSignupStatus) {
   return s;
 }
 
-function clip(s: string, n = 120) {
+function clip(s: string, n = 240) {
   const t = (s ?? "").trim();
   return t.length > n ? t.slice(0, n) + "…" : t;
 }
@@ -202,14 +202,14 @@ export default function AdminUsersPage() {
         {hopes && (
           <div className="card-note">
             <div className="k">できたら嬉しいこと</div>
-            <div className="v">{clip(hopes, 240)}</div>
+            <div className="v">{clip(hopes, 260)}</div>
           </div>
         )}
 
         {howToUse && (
           <div className="card-note">
             <div className="k">使い方イメージ</div>
-            <div className="v">{clip(howToUse, 240)}</div>
+            <div className="v">{clip(howToUse, 260)}</div>
           </div>
         )}
 
@@ -321,38 +321,42 @@ export default function AdminUsersPage() {
         .search {
           flex: 1;
           border-radius: 999px;
-          border: 1px solid rgba(220, 210, 200, 0.9);
+          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
           padding: 9px 12px;
           font-size: 12px;
-          background: #fff;
+          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
+          color: inherit;
           outline: none;
         }
 
         .search:focus {
           border-color: rgba(215, 185, 118, 0.9);
           box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.18);
+          background: var(--surface, #fff);
         }
 
         .count {
           font-size: 12px;
-          color: var(--text-sub, #777);
+          color: var(--text-sub, #6b7280);
           white-space: nowrap;
         }
 
         .status-message {
           font-size: 13px;
-          color: var(--text-sub, #555);
+          color: var(--text-sub, #6b7280);
           padding: 12px 2px;
         }
         .status-message.error {
           color: #b94a48;
         }
 
+        /* ===== Table ===== */
         .table-wrapper {
           overflow-x: auto;
           border-radius: 12px;
-          border: 1px solid rgba(220, 210, 200, 0.9);
-          background: #fff;
+          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
+          background: var(--surface, #fff);
+          box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
         }
 
         .table {
@@ -364,14 +368,14 @@ export default function AdminUsersPage() {
         .th {
           text-align: left;
           padding: 10px 10px;
-          border-bottom: 1px solid #eee3d8;
-          background: #fdf8f1;
+          border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
+          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
           white-space: nowrap;
         }
 
         .cell {
           padding: 10px 10px;
-          border-bottom: 1px solid #f3e7d8;
+          border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
           vertical-align: top;
         }
         .row:last-child .cell {
@@ -386,11 +390,11 @@ export default function AdminUsersPage() {
         }
         .hopes-cell {
           min-width: 320px;
-          max-width: 420px;
+          max-width: 460px;
         }
         .howto-cell {
           min-width: 320px;
-          max-width: 420px;
+          max-width: 460px;
         }
         .status-cell {
           min-width: 170px;
@@ -410,9 +414,9 @@ export default function AdminUsersPage() {
 
         .pill {
           font-size: 11px;
-          color: var(--text-sub, #666);
-          background: #faf3ea;
-          border: 1px solid #f0e1cf;
+          color: var(--text-sub, #6b7280);
+          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
+          border: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
           padding: 3px 8px;
           border-radius: 999px;
           max-width: 100%;
@@ -423,27 +427,30 @@ export default function AdminUsersPage() {
 
         .sub {
           font-size: 11px;
-          color: var(--text-sub, #777);
+          color: var(--text-sub, #6b7280);
           line-height: 1.5;
         }
         .muted {
-          color: #999;
+          opacity: 0.72;
         }
 
         .date {
           font-size: 11px;
-          color: var(--text-sub, #999);
+          color: var(--text-sub, #6b7280);
+          opacity: 0.85;
           margin-top: 6px;
         }
 
         .note-text {
           font-size: 12px;
           line-height: 1.6;
-          color: #5b5248;
+          color: var(--text-main, #111827);
+          opacity: 0.85;
           white-space: pre-wrap;
           word-break: break-word;
         }
 
+        /* ===== Status ===== */
         .status-chip {
           display: inline-flex;
           align-items: center;
@@ -452,47 +459,56 @@ export default function AdminUsersPage() {
           font-weight: 700;
           padding: 4px 10px;
           border-radius: 999px;
-          border: 1px solid rgba(220, 210, 200, 0.9);
-          background: #fff;
+          border: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
+          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
           margin-bottom: 6px;
         }
 
         .status-pending {
           color: #8a6d3b;
-          background: #fff7e6;
-          border-color: #f3d7a3;
+          background: rgba(243, 215, 163, 0.22);
+          border-color: rgba(243, 215, 163, 0.75);
         }
         .status-approved {
           color: #1b6b44;
-          background: #eaf7f0;
-          border-color: #bfe4cf;
+          background: rgba(191, 228, 207, 0.22);
+          border-color: rgba(191, 228, 207, 0.75);
         }
         .status-rejected {
           color: #8c2e2b;
-          background: #fdecea;
-          border-color: #f5c2c0;
+          background: rgba(245, 194, 192, 0.22);
+          border-color: rgba(245, 194, 192, 0.75);
         }
 
         .status-select {
           font-size: 12px;
           border-radius: 999px;
-          border: 1px solid var(--border, #ddd);
+          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
           padding: 6px 10px;
-          background: #fff;
+          background: var(--surface, #fff);
+          color: inherit;
           width: 100%;
           max-width: 160px;
+          outline: none;
         }
 
+        .status-select:focus {
+          border-color: rgba(215, 185, 118, 0.9);
+          box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.16);
+        }
+
+        /* ===== Cards (mobile) ===== */
         .card {
-          background: #fff;
-          border: 1px solid rgba(220, 210, 200, 0.9);
-          border-radius: 14px;
+          background: var(--surface, #fff);
+          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
+          border-radius: 16px;
           padding: 12px 12px 10px;
-          box-shadow: 0 8px 24px rgba(10, 10, 10, 0.02);
+          box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
         }
         .card + .card {
           margin-top: 10px;
         }
+
         .card-head {
           display: flex;
           gap: 10px;
@@ -500,37 +516,45 @@ export default function AdminUsersPage() {
           justify-content: space-between;
           margin-bottom: 8px;
         }
+
         .card-title {
           font-size: 14px;
           font-weight: 800;
-          color: #2d2620;
+          color: var(--text-main, #111827);
           line-height: 1.3;
         }
+
         .card-meta {
           display: grid;
           gap: 6px;
         }
+
         .kv {
           display: grid;
           grid-template-columns: 90px 1fr;
           gap: 8px;
           align-items: start;
         }
+
         .k {
           font-size: 11px;
-          color: #8b8177;
+          color: var(--text-sub, #6b7280);
         }
+
         .v {
           font-size: 12px;
-          color: #4d433a;
+          color: var(--text-main, #111827);
+          opacity: 0.85;
           word-break: break-word;
           white-space: pre-wrap;
         }
+
         .card-note {
           margin-top: 8px;
           padding-top: 8px;
-          border-top: 1px solid #f0e1cf;
+          border-top: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
         }
+
         .card-actions {
           display: flex;
           gap: 10px;
@@ -546,7 +570,8 @@ export default function AdminUsersPage() {
           display: none;
         }
 
-        @media (max-width: 640px) {
+        /* ★ layout.tsx と同じ 860px で切り替える */
+        @media (max-width: 860px) {
           .table-only {
             display: none;
           }
@@ -555,6 +580,13 @@ export default function AdminUsersPage() {
           }
           .status-select {
             max-width: 100%;
+          }
+          .toolbar {
+            flex-direction: column;
+            align-items: stretch;
+          }
+          .count {
+            text-align: right;
           }
         }
       `}</style>
