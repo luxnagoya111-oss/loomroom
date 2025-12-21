@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getCurrentUserId, logout } from "@/lib/auth";
 import { isGuestId } from "@/types/user";
+import { supabase } from "@/lib/supabaseClient";
 
 type AppHeaderProps = {
   title?: string;
@@ -12,6 +13,14 @@ type AppHeaderProps = {
   rightSlot?: React.ReactNode;
   backAriaLabel?: string;
 };
+
+type DbUserRow = {
+  id: string;
+  role: "user" | "therapist" | "store" | null;
+};
+
+type DbStoreRow = { id: string };
+type DbTherapistRow = { id: string };
 
 const AppHeader: React.FC<AppHeaderProps> = ({
   title = "LRoom",
@@ -23,6 +32,11 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   const [menuOpen, setMenuOpen] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
   const router = useRouter();
+
+  const go = (href: string) => {
+    setMenuOpen(false);
+    router.push(href);
+  };
 
   const handleBack = () => {
     if (typeof window !== "undefined") window.history.back();
@@ -41,19 +55,81 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     router.push("/");
   };
 
-  // ★ 修正：マイページ遷移（/mypage/[id] へ）
-  const handleMyPageClick = () => {
+  /**
+   * ★ BottomNav と完全に同じ「マイ」遷移
+   * - guest -> /login
+   * - store -> /store/{storeId}
+   * - therapist -> /therapist/{therapistId}
+   * - user -> /mypage/{userId}
+   */
+  const handleMyPageClick = async () => {
     const id = getCurrentUserId();
 
     setMenuOpen(false);
 
-    // ゲストはログインへ（必要なら /signup/user でもOK）
-    if (isGuestId(id)) {
+    if (!id || isGuestId(id)) {
       router.push("/login");
       return;
     }
 
-    router.push(`/mypage/${encodeURIComponent(id)}`);
+    try {
+      // users.role
+      const { data: u, error: uErr } = await supabase
+        .from("users")
+        .select("id, role")
+        .eq("id", id)
+        .maybeSingle<DbUserRow>();
+
+      if (uErr) {
+        console.error("[AppHeader] users.role fetch error:", uErr);
+        router.push(`/mypage/${encodeURIComponent(id)}`);
+        return;
+      }
+
+      const role = u?.role ?? null;
+
+      if (role === "store") {
+        const { data: s, error: sErr } = await supabase
+          .from("stores")
+          .select("id")
+          .eq("owner_user_id", id)
+          .maybeSingle<DbStoreRow>();
+
+        if (sErr) console.error("[AppHeader] stores fetch error:", sErr);
+
+        if (s?.id) {
+          router.push(`/store/${encodeURIComponent(s.id)}`);
+          return;
+        }
+
+        router.push(`/mypage/${encodeURIComponent(id)}`);
+        return;
+      }
+
+      if (role === "therapist") {
+        const { data: t, error: tErr } = await supabase
+          .from("therapists")
+          .select("id")
+          .eq("user_id", id)
+          .maybeSingle<DbTherapistRow>();
+
+        if (tErr) console.error("[AppHeader] therapists fetch error:", tErr);
+
+        if (t?.id) {
+          router.push(`/therapist/${encodeURIComponent(t.id)}`);
+          return;
+        }
+
+        router.push(`/mypage/${encodeURIComponent(id)}`);
+        return;
+      }
+
+      // user / null は /mypage
+      router.push(`/mypage/${encodeURIComponent(id)}`);
+    } catch (e) {
+      console.error("[AppHeader] handleMyPageClick exception:", e);
+      router.push(`/mypage/${encodeURIComponent(id)}`);
+    }
   };
 
   return (
@@ -74,7 +150,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           <div className="header-icon-spacer header-back" />
         )}
 
-        {/* 画面のど真ん中：タイトル（絶対配置で固定） */}
+        {/* 中央：タイトル */}
         <div className="header-center">
           <div className="app-title">{title}</div>
           {subtitle && <div className="app-header-sub">{subtitle}</div>}
@@ -99,59 +175,66 @@ const AppHeader: React.FC<AppHeaderProps> = ({
 
       {/* ===== サイドメニュー ===== */}
       {menuOpen && (
-        <div
-          className="menu-drawer-overlay"
-          onClick={() => setMenuOpen(false)}
-        >
+        <div className="menu-drawer-overlay" onClick={() => setMenuOpen(false)}>
           <div className="menu-drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
               <div className="drawer-title">メニュー</div>
-              <button className="drawer-close" onClick={() => setMenuOpen(false)}>
+              <button
+                type="button"
+                className="drawer-close"
+                onClick={() => setMenuOpen(false)}
+                aria-label="閉じる"
+              >
                 ×
               </button>
             </div>
 
             <nav className="drawer-nav">
               {/* 基本ナビ */}
-              <a href="/" className="drawer-item" onClick={() => setMenuOpen(false)}>
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/")}
+              >
                 ホーム
-              </a>
-              <a
-                href="/search"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+              </button>
+
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/search")}
               >
                 さがす
-              </a>
+              </button>
 
-              {/* ★ 修正：/mypage は存在しないので動的に飛ばす */}
+              {/* ★ BottomNav と同じ遷移 */}
               <button
                 type="button"
                 className="drawer-item drawer-item-button"
                 onClick={handleMyPageClick}
               >
-                マイページ
+                マイ
               </button>
 
-              <a
-                href="/contact"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/contact")}
               >
                 お問い合わせ
-              </a>
+              </button>
 
               {/* 会員 / アカウント */}
               <div className="drawer-section-label">会員 / アカウント</div>
-              <a
-                href="/login"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/login")}
               >
                 ログイン / 新規登録
-              </a>
+              </button>
 
-              {/* ログイン中のみ表示されるログアウトボタン */}
               {loggedIn && (
                 <button
                   type="button"
@@ -162,51 +245,54 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 </button>
               )}
 
-              <a
-                href="/signup/creator/start?kind=store"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/signup/creator/start?kind=store")}
               >
                 会員登録（店舗）
-              </a>
-              <a
-                href="/signup/creator/start?kind=therapist"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+              </button>
+
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/signup/creator/start?kind=therapist")}
               >
                 会員登録（セラピスト）
-              </a>
+              </button>
 
               {/* ポリシー・ガイドライン */}
               <div className="drawer-section-label">ルール / ポリシー</div>
-              <a
-                href="/terms"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/terms")}
               >
                 利用規約
-              </a>
-              <a
-                href="/privacy"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+              </button>
+
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/privacy")}
               >
                 プライバシーポリシー
-              </a>
-              <a
-                href="/guideline"
-                className="drawer-item"
-                onClick={() => setMenuOpen(false)}
+              </button>
+
+              <button
+                type="button"
+                className="drawer-item drawer-item-button"
+                onClick={() => go("/guideline")}
               >
                 ガイドライン
-              </a>
+              </button>
             </nav>
           </div>
         </div>
       )}
 
       <style jsx>{`
-        /* ===== ナビバー本体 ===== */
         .app-header {
           position: sticky;
           top: 0;
@@ -223,7 +309,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           padding: 0 8px;
         }
 
-        /* 左端ボタン（相対） */
         .header-back {
           position: relative;
           z-index: 2;
@@ -248,6 +333,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           font-size: 16px;
           color: var(--text-sub);
           background: var(--surface-soft);
+          cursor: pointer;
         }
 
         .header-icon-spacer {
@@ -255,7 +341,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           height: 34px;
         }
 
-        /* ★ タイトルは画面の“物理的な中央”に固定 ★ */
         .header-center {
           position: absolute;
           left: 50%;
@@ -288,7 +373,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           text-overflow: ellipsis;
         }
 
-        /* ===== メニューの見た目 ===== */
         .menu-drawer-overlay {
           position: fixed;
           inset: 0;
@@ -353,7 +437,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           background: none;
         }
 
-        /* button版 drawer-item（見た目は同じ） */
         .drawer-item-button {
           width: 100%;
           text-align: left;
