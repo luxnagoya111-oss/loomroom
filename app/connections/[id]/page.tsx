@@ -1,7 +1,7 @@
 // app/connections/[id]/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 
 import AppHeader from "@/components/AppHeader";
@@ -12,7 +12,6 @@ import { RelationActions } from "@/components/RelationActions";
 import { supabase } from "@/lib/supabaseClient";
 import { getCurrentUserId } from "@/lib/auth";
 import { toPublicHandleFromUserId } from "@/lib/handle";
-
 import {
   setRelation as setRelationOnServer,
   type RelationFlags,
@@ -36,7 +35,7 @@ function normalizeTab(v: string | null): TabKey {
   return "followers";
 }
 
-// ===== Avatar URL 正規化（既存方針と同じ）=====
+// ===== Avatar URL 正規化（mypageと同じ方針）=====
 const AVATAR_BUCKET = "avatars";
 
 function normalizeAvatarUrl(v: any): string | null {
@@ -71,7 +70,8 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 }
 
 function normalizeFreeText(v: any): string {
-  return typeof v === "string" ? v.trim() : "";
+  const s = typeof v === "string" ? v.trim() : "";
+  return s;
 }
 
 // ==============================
@@ -82,13 +82,13 @@ type ConnectionUser = {
   role: "user" | "therapist" | "store";
   displayName: string;
   handle: string;
-  intro: string; // users.description / therapists.profile / stores.description を統一表示
+  intro: string;
   area?: string | null;
   avatar_url?: string | null; // raw
-  isFollowing: boolean; // viewer目線
+  isFollowing: boolean; // viewer -> item
+  followedAt?: string | null; // 並び順の根拠（relations.created_at）
 };
 
-// users（正）
 type DbUserRow = {
   id: string;
   name: string | null;
@@ -98,30 +98,20 @@ type DbUserRow = {
   description: string | null;
 };
 
-// therapists（補完用）
-type DbTherapistMini = {
+type DbTherapistRow = {
+  id: string;
   user_id: string;
   display_name: string | null;
   area: string | null;
   profile: string | null;
-  avatar_url: string | null;
 };
 
-// stores（補完用）
-type DbStoreMini = {
+type DbStoreRow = {
+  id: string;
   owner_user_id: string;
   name: string | null;
   area: string | null;
   description: string | null;
-  avatar_url: string | null;
-};
-
-// relations（follow）
-type DbRelationRow = {
-  user_id: string;
-  target_id: string;
-  type: string;
-  created_at: string;
 };
 
 function roleLabel(role: ConnectionUser["role"]) {
@@ -130,17 +120,13 @@ function roleLabel(role: ConnectionUser["role"]) {
   return "ユーザー";
 }
 
-function buildHandle(userId: string): string {
-  return toPublicHandleFromUserId(userId) ?? "@user";
-}
-
 // ==============================
 // Row Component (X風)
 // ==============================
 function ConnectionRow(props: {
   item: ConnectionUser;
   onOpenProfile: (userId: string) => void;
-  onToggleFollow: (userId: string, next: boolean) => void;
+  onToggleFollow: (userId: string, nextEnabled: boolean) => void;
 }) {
   const { item, onOpenProfile, onToggleFollow } = props;
 
@@ -188,16 +174,16 @@ function ConnectionRow(props: {
         </div>
       </button>
 
-      {/* 右：ボタン（RelationActions に統一。…メニューはCSSで非表示） */}
+      {/* 右：フォローボタン（RelationActionsを流用して色/挙動統一） */}
       <div className="right-col">
-        <RelationActions
-          className="conn-follow-actions"
-          flags={flags}
-          onToggleFollow={() => onToggleFollow(item.userId, !item.isFollowing)}
-          onToggleMute={() => {}}
-          onToggleBlock={() => {}}
-          onReport={() => {}}
-        />
+        <div className="follow-compact">
+          <RelationActions
+            flags={flags}
+            onToggleFollow={() => onToggleFollow(item.userId, !item.isFollowing)}
+            onToggleMute={() => {}}
+            onToggleBlock={() => {}}
+          />
+        </div>
       </div>
 
       <style jsx>{`
@@ -286,29 +272,27 @@ function ConnectionRow(props: {
           line-height: 1.55;
           color: var(--text-main);
           display: -webkit-box;
-          -webkit-line-clamp: 2; /* 2行 */
+          -webkit-line-clamp: 2;
           -webkit-box-orient: vertical;
           overflow: hidden;
         }
 
         .right-col {
-          width: 102px; /* 2行相当の存在感 */
+          width: 110px;
           flex-shrink: 0;
           display: flex;
           align-items: center;
           justify-content: flex-end;
         }
 
-        /* RelationActions をこのセルサイズに馴染ませる */
-        :global(.conn-follow-actions) {
-          margin-top: 0;
+        /* RelationActions を「フォローボタンだけ」に見せる（色は既存のまま） */
+        .follow-compact :global(.relation-more) {
+          display: none !important;
         }
-        :global(.conn-follow-actions .relation-actions-row) {
-          margin-top: 0;
-        }
-        /* …メニューは connections では不要（Xの一覧と同じでフォローだけ） */
-        :global(.conn-follow-actions .relation-more) {
-          display: none;
+        .follow-compact :global(.relation-main-actions) {
+          width: 100%;
+          display: flex;
+          justify-content: flex-end;
         }
       `}</style>
     </div>
@@ -323,8 +307,8 @@ const ConnectionsPage: React.FC = () => {
   const params = useParams<{ id: string }>();
   const searchParams = useSearchParams();
 
-  const targetUserId = params?.id;
-  const initialTab: TabKey = normalizeTab(searchParams.get("tab"));
+  const targetUserId = params?.id ?? null;
+  const isValidTarget = isUuid(targetUserId);
 
   // viewer
   const [authUserId, setAuthUserId] = useState<string | null>(null);
@@ -332,23 +316,23 @@ const ConnectionsPage: React.FC = () => {
   const [checkingAuth, setCheckingAuth] = useState(true);
 
   // tab
+  const initialTab: TabKey = normalizeTab(searchParams.get("tab"));
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
 
   // swipe container ref
   const pagerRef = useRef<HTMLDivElement | null>(null);
+  const syncingRef = useRef(false);
 
-  // data
+  // lists
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
   const [follows, setFollows] = useState<ConnectionUser[]>([]);
-
   const [loadingFollowers, setLoadingFollowers] = useState(false);
   const [loadingFollows, setLoadingFollows] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorText, setErrorText] = useState<string | null>(null);
 
   // handle 表示用
-  const isValidTarget = isUuid(targetUserId);
   const targetHandle = useMemo(() => {
-    if (!isValidTarget) return "@user";
+    if (!isValidTarget || !targetUserId) return "@user";
     return toPublicHandleFromUserId(targetUserId) ?? "@user";
   }, [isValidTarget, targetUserId]);
 
@@ -376,47 +360,81 @@ const ConnectionsPage: React.FC = () => {
     };
   }, []);
 
+  // ------------------------------
   // A方針：ログイン必須
+  // ------------------------------
   const isLoggedIn = !!authUserId;
 
   // ------------------------------
-  // URL <-> UI 同期
+  // URL -> state 同期（戻る/直打ち）
   // ------------------------------
   useEffect(() => {
     const t = normalizeTab(searchParams.get("tab"));
     setActiveTab(t);
   }, [searchParams]);
 
-  // activeTab が変わったら pager を該当ページへスナップ
-  useEffect(() => {
-    const el = pagerRef.current;
-    if (!el) return;
-
-    const width = el.clientWidth;
-    const x = activeTab === "followers" ? 0 : width;
-
-    el.scrollTo({ left: x, behavior: "smooth" });
-  }, [activeTab]);
-
-  // スワイプ（スクロール）でタブを更新し、URLも同期
+  // ------------------------------
+  // 初期タブの「表示ページ」と activeTab を確実に一致させる
+  // （ここが今回の “入った直後は表示されない→スワイプで出る” の核心）
+  // ------------------------------
   useEffect(() => {
     const el = pagerRef.current;
     if (!el) return;
 
     let raf = 0;
+    let tries = 0;
+
+    const snap = () => {
+      const width = el.clientWidth;
+
+      // layout前だと width=0 になり得るので数回リトライ
+      if (!width && tries < 20) {
+        tries += 1;
+        raf = requestAnimationFrame(snap);
+        return;
+      }
+
+      const x = activeTab === "followers" ? 0 : width;
+
+      // ここは “smooth” ではなく即合わせ（初期のズレ防止）
+      syncingRef.current = true;
+      el.scrollLeft = x;
+
+      // 直後のscrollイベント抑制
+      setTimeout(() => {
+        syncingRef.current = false;
+      }, 50);
+    };
+
+    raf = requestAnimationFrame(snap);
+    return () => cancelAnimationFrame(raf);
+  }, [activeTab]);
+
+  // ------------------------------
+  // スワイプ（スクロール）でタブを更新し、URLも同期
+  // ------------------------------
+  useEffect(() => {
+    const el = pagerRef.current;
+    if (!el) return;
+    if (!isValidTarget || !targetUserId) return;
+
+    let raf = 0;
 
     const onScroll = () => {
+      if (syncingRef.current) return;
+
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const width = el.clientWidth || 1;
         const idx = Math.round(el.scrollLeft / width);
         const next: TabKey = idx <= 0 ? "followers" : "follows";
 
-        setActiveTab((prev) => (prev === next ? prev : next));
-
-        if (isValidTarget) {
+        setActiveTab((prev) => {
+          if (prev === next) return prev;
+          // URL更新（replace）
           router.replace(`/connections/${targetUserId}?tab=${next}`);
-        }
+          return next;
+        });
       });
     };
 
@@ -427,240 +445,206 @@ const ConnectionsPage: React.FC = () => {
     };
   }, [router, isValidTarget, targetUserId]);
 
+  const gotoTab = (tab: TabKey) => {
+    if (!isValidTarget || !targetUserId) return;
+
+    router.replace(`/connections/${targetUserId}?tab=${tab}`);
+    setActiveTab(tab);
+
+    const el = pagerRef.current;
+    if (!el) return;
+
+    const width = el.clientWidth || 1;
+    const x = tab === "followers" ? 0 : width;
+
+    syncingRef.current = true;
+    el.scrollTo({ left: x, behavior: "smooth" });
+    setTimeout(() => {
+      syncingRef.current = false;
+    }, 250);
+  };
+
   // ------------------------------
-  // DB helpers
+  // DB: followers/follows を新しい順で取得
   // ------------------------------
-  async function hydrateUsers(
-    idsInOrder: string[],
-    viewerId: string
-  ): Promise<ConnectionUser[]> {
-    // 1) users（正）
-    const { data: users, error: uErr } = await supabase
-      .from("users")
-      .select("id, name, role, avatar_url, area, description")
-      .in("id", idsInOrder);
+  const buildConnectionList = useCallback(
+    async (kind: TabKey): Promise<ConnectionUser[]> => {
+      if (!authUserId) return [];
+      if (!isValidTarget || !targetUserId) return [];
 
-    if (uErr) throw uErr;
+      // kindに応じて relations を引く
+      // followers: target_id = targetUserId
+      // follows:   user_id   = targetUserId
+      const relQuery = supabase
+        .from("relations")
+        .select("user_id, target_id, type, created_at")
+        .eq("type", "follow")
+        .order("created_at", { ascending: false });
 
-    const userRows = (users ?? []) as DbUserRow[];
-    const userMap = new Map<string, DbUserRow>();
-    userRows.forEach((u) => userMap.set(u.id, u));
+      const { data: rels, error: relErr } =
+        kind === "followers"
+          ? await relQuery.eq("target_id", targetUserId)
+          : await relQuery.eq("user_id", targetUserId);
 
-    // 2) rolesごとの補完をまとめて取得
-    const therapistUserIds: string[] = [];
-    const storeOwnerIds: string[] = [];
+      if (relErr) throw relErr;
 
-    for (const id of idsInOrder) {
-      const u = userMap.get(id);
-      const role = (u?.role ?? "user") as "user" | "therapist" | "store";
-      if (role === "therapist") therapistUserIds.push(id);
-      if (role === "store") storeOwnerIds.push(id);
-    }
+      const rows = (rels ?? []) as any[];
+      const idsInOrder =
+        kind === "followers"
+          ? rows.map((r) => r.user_id).filter((x) => isUuid(x))
+          : rows.map((r) => r.target_id).filter((x) => isUuid(x));
 
-    const therapistMap = new Map<string, DbTherapistMini>();
-    if (therapistUserIds.length > 0) {
-      const { data: ts, error: tErr } = await supabase
-        .from("therapists")
-        .select("user_id, display_name, area, profile, avatar_url")
-        .in("user_id", therapistUserIds);
+      const followedAtById = new Map<string, string>();
+      rows.forEach((r) => {
+        const id = kind === "followers" ? r.user_id : r.target_id;
+        if (isUuid(id) && r.created_at) followedAtById.set(id, r.created_at);
+      });
 
-      if (tErr) throw tErr;
-      ((ts ?? []) as DbTherapistMini[]).forEach((t) =>
-        therapistMap.set(t.user_id, t)
+      // 0件なら終了
+      if (idsInOrder.length === 0) return [];
+
+      // users をまとめて取得
+      const { data: users, error: uErr } = await supabase
+        .from("users")
+        .select("id, name, role, avatar_url, area, description")
+        .in("id", idsInOrder);
+
+      if (uErr) throw uErr;
+
+      const userList = (users ?? []) as DbUserRow[];
+      const userById = new Map(userList.map((u) => [u.id, u]));
+
+      // therapist/store 補完（不足時だけ使う）
+      const therapistUserIds = userList
+        .filter((u) => u.role === "therapist")
+        .map((u) => u.id);
+      const storeOwnerIds = userList
+        .filter((u) => u.role === "store")
+        .map((u) => u.id);
+
+      const [therapistsRes, storesRes] = await Promise.all([
+        therapistUserIds.length
+          ? supabase
+              .from("therapists")
+              .select("id, user_id, display_name, area, profile")
+              .in("user_id", therapistUserIds)
+          : Promise.resolve({ data: [], error: null } as any),
+        storeOwnerIds.length
+          ? supabase
+              .from("stores")
+              .select("id, owner_user_id, name, area, description")
+              .in("owner_user_id", storeOwnerIds)
+          : Promise.resolve({ data: [], error: null } as any),
+      ]);
+
+      if (therapistsRes.error) throw therapistsRes.error;
+      if (storesRes.error) throw storesRes.error;
+
+      const therapistByUserId = new Map<string, DbTherapistRow>();
+      (therapistsRes.data ?? []).forEach((t: any) => {
+        if (t?.user_id) therapistByUserId.set(t.user_id, t);
+      });
+
+      const storeByOwnerId = new Map<string, DbStoreRow>();
+      (storesRes.data ?? []).forEach((s: any) => {
+        if (s?.owner_user_id) storeByOwnerId.set(s.owner_user_id, s);
+      });
+
+      // viewer がフォローしている相手をまとめて取得（viewer->target）
+      const { data: myFollows, error: mfErr } = await supabase
+        .from("relations")
+        .select("target_id")
+        .eq("type", "follow")
+        .eq("user_id", authUserId)
+        .in("target_id", idsInOrder);
+
+      if (mfErr) throw mfErr;
+      const myFollowSet = new Set(
+        (myFollows ?? []).map((r: any) => r.target_id).filter((x: any) => isUuid(x))
       );
+
+      // idsInOrder の順で組み立て
+      const list: ConnectionUser[] = idsInOrder
+        .map((id) => {
+          const u = userById.get(id);
+          if (!u) return null;
+
+          const role = (u.role ?? "user") as ConnectionUser["role"];
+          const t = role === "therapist" ? therapistByUserId.get(id) : null;
+          const s = role === "store" ? storeByOwnerId.get(id) : null;
+
+          const displayName =
+            normalizeFreeText(u.name) ||
+            (role === "therapist" ? normalizeFreeText(t?.display_name) : "") ||
+            (role === "store" ? normalizeFreeText(s?.name) : "") ||
+            (role === "store" ? "店舗アカウント" : role === "therapist" ? "セラピスト" : "ユーザー");
+
+          const intro =
+            normalizeFreeText(u.description) ||
+            (role === "therapist" ? normalizeFreeText(t?.profile) : "") ||
+            (role === "store" ? normalizeFreeText(s?.description) : "") ||
+            "まだ自己紹介はありません。";
+
+          const area =
+            normalizeFreeText(u.area) ||
+            (role === "therapist" ? normalizeFreeText(t?.area) : "") ||
+            (role === "store" ? normalizeFreeText(s?.area) : "") ||
+            null;
+
+          const handle = toPublicHandleFromUserId(id) ?? "@user";
+
+          return {
+            userId: id,
+            role,
+            displayName,
+            handle,
+            intro,
+            area,
+            avatar_url: u.avatar_url,
+            isFollowing: myFollowSet.has(id),
+            followedAt: followedAtById.get(id) ?? null,
+          } satisfies ConnectionUser;
+        })
+        .filter(Boolean) as ConnectionUser[];
+
+      return list;
+    },
+    [authUserId, isValidTarget, targetUserId]
+  );
+
+  const loadAll = useCallback(async () => {
+    if (!authUserId) return;
+    if (!isValidTarget || !targetUserId) return;
+
+    setErrorText(null);
+
+    setLoadingFollowers(true);
+    setLoadingFollows(true);
+
+    try {
+      const [a, b] = await Promise.all([
+        buildConnectionList("followers"),
+        buildConnectionList("follows"),
+      ]);
+
+      setFollowers(a);
+      setFollows(b);
+    } catch (e: any) {
+      console.error("[connections] load error:", e);
+      setErrorText(e?.message ?? "つながりの取得に失敗しました。");
+      setFollowers([]);
+      setFollows([]);
+    } finally {
+      setLoadingFollowers(false);
+      setLoadingFollows(false);
     }
-
-    const storeMap = new Map<string, DbStoreMini>();
-    if (storeOwnerIds.length > 0) {
-      const { data: ss, error: sErr } = await supabase
-        .from("stores")
-        .select("owner_user_id, name, area, description, avatar_url")
-        .in("owner_user_id", storeOwnerIds);
-
-      if (sErr) throw sErr;
-      ((ss ?? []) as DbStoreMini[]).forEach((s) =>
-        storeMap.set(s.owner_user_id, s)
-      );
-    }
-
-    // 3) viewer の follow 状態（一括）
-    const { data: myFollows, error: fErr } = await supabase
-      .from("relations")
-      .select("target_id")
-      .eq("user_id", viewerId)
-      .eq("type", "follow")
-      .in("target_id", idsInOrder);
-
-    if (fErr) throw fErr;
-
-    const followingSet = new Set<string>(
-      (myFollows ?? []).map((r: any) => r.target_id).filter(Boolean)
-    );
-
-    // 4) idsInOrder の順番で ConnectionUser を構築
-    const result: ConnectionUser[] = idsInOrder.map((id) => {
-      const u = userMap.get(id);
-
-      const role = (u?.role ?? "user") as "user" | "therapist" | "store";
-
-      const baseDisplayName = normalizeFreeText(u?.name);
-      const baseArea = normalizeFreeText(u?.area);
-      const baseIntro = normalizeFreeText(u?.description);
-
-      let displayName =
-        baseDisplayName ||
-        (role === "store"
-          ? "店舗アカウント"
-          : role === "therapist"
-          ? "セラピスト"
-          : "ユーザー");
-
-      let area = baseArea || null;
-      let intro = baseIntro || "";
-      let avatarRaw = u?.avatar_url ?? null;
-
-      if (role === "therapist") {
-        const t = therapistMap.get(id);
-        if (t) {
-          if (!baseDisplayName && normalizeFreeText(t.display_name))
-            displayName = normalizeFreeText(t.display_name);
-          if (!baseArea && normalizeFreeText(t.area)) area = normalizeFreeText(t.area);
-          if (!baseIntro && normalizeFreeText(t.profile)) intro = normalizeFreeText(t.profile);
-          // users.avatar_url が無いときだけ補完
-          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(t.avatar_url))
-            avatarRaw = t.avatar_url;
-        }
-      }
-
-      if (role === "store") {
-        const s = storeMap.get(id);
-        if (s) {
-          if (!baseDisplayName && normalizeFreeText(s.name))
-            displayName = normalizeFreeText(s.name);
-          if (!baseArea && normalizeFreeText(s.area)) area = normalizeFreeText(s.area);
-          if (!baseIntro && normalizeFreeText(s.description))
-            intro = normalizeFreeText(s.description);
-          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(s.avatar_url))
-            avatarRaw = s.avatar_url;
-        }
-      }
-
-      return {
-        userId: id,
-        role,
-        displayName,
-        handle: buildHandle(id),
-        intro: intro || "",
-        area,
-        avatar_url: avatarRaw,
-        isFollowing: followingSet.has(id),
-      };
-    });
-
-    return result;
-  }
-
-  // ------------------------------
-  // Fetch followers / follows (newest first)
-  // ------------------------------
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadFollowers() {
-      if (!isValidTarget || !authUserId) return;
-      setLoadingFollowers(true);
-      setErrorMsg(null);
-
-      try {
-        // フォロワー：target_id = targetUserId をフォローしている user_id
-        const { data, error } = await supabase
-          .from("relations")
-          .select("user_id, target_id, type, created_at")
-          .eq("type", "follow")
-          .eq("target_id", targetUserId)
-          .order("created_at", { ascending: false });
-
-        if (error) throw error;
-
-        const rows = (data ?? []) as DbRelationRow[];
-        const idsInOrder = rows
-          .map((r) => r.user_id)
-          .filter((x): x is string => !!x);
-
-        // 重複排除（順序維持）
-        const seen = new Set<string>();
-        const uniqIds = idsInOrder.filter((id) =>
-          seen.has(id) ? false : (seen.add(id), true)
-        );
-
-        const list = await hydrateUsers(uniqIds, authUserId);
-        if (!cancelled) setFollowers(list);
-      } catch (e: any) {
-        console.error("[Connections] loadFollowers error:", e);
-        if (!cancelled)
-          setErrorMsg(
-            e?.message ?? "フォロワーの取得に失敗しました。時間をおいて再度お試しください。"
-          );
-      } finally {
-        if (!cancelled) setLoadingFollowers(false);
-      }
-    }
-
-    void loadFollowers();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isValidTarget, targetUserId, authUserId]);
+  }, [authUserId, isValidTarget, targetUserId, buildConnectionList]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadFollows() {
-      if (!isValidTarget || !authUserId) return;
-      setLoadingFollows(true);
-      setErrorMsg(null);
-
-      try {
-        // フォロー中：user_id = targetUserId がフォローしている target_id
-        const { data, error } = await supabase
-          .from("relations")
-          .select("user_id, target_id, type, created_at")
-          .eq("type", "follow")
-          .eq("user_id", targetUserId)
-          .order("created_at", { ascending: false });
-
-        if (error) throw error;
-
-        const rows = (data ?? []) as DbRelationRow[];
-        const idsInOrder = rows
-          .map((r) => r.target_id)
-          .filter((x): x is string => !!x);
-
-        const seen = new Set<string>();
-        const uniqIds = idsInOrder.filter((id) =>
-          seen.has(id) ? false : (seen.add(id), true)
-        );
-
-        const list = await hydrateUsers(uniqIds, authUserId);
-        if (!cancelled) setFollows(list);
-      } catch (e: any) {
-        console.error("[Connections] loadFollows error:", e);
-        if (!cancelled)
-          setErrorMsg(
-            e?.message ?? "フォロー中の取得に失敗しました。時間をおいて再度お試しください。"
-          );
-      } finally {
-        if (!cancelled) setLoadingFollows(false);
-      }
-    }
-
-    void loadFollows();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isValidTarget, targetUserId, authUserId]);
+    if (!isLoggedIn) return;
+    if (!isValidTarget || !targetUserId) return;
+    void loadAll();
+  }, [isLoggedIn, isValidTarget, targetUserId, loadAll]);
 
   // ------------------------------
   // Handlers
@@ -669,32 +653,35 @@ const ConnectionsPage: React.FC = () => {
     router.push(`/mypage/${userId}`);
   };
 
-  const toggleFollow = async (targetId: string, nextEnabled: boolean) => {
+  const toggleFollow = async (userId: string, nextEnabled: boolean) => {
     if (!authUserId) return;
-    if (!isUuid(authUserId) || !isUuid(targetId)) return;
+    if (!isUuid(userId)) return;
 
     // optimistic update
-    setFollowers((prev) =>
-      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
-    );
-    setFollows((prev) =>
-      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
-    );
+    const apply = (tab: TabKey) => {
+      const updater = (prev: ConnectionUser[]) =>
+        prev.map((x) => (x.userId === userId ? { ...x, isFollowing: nextEnabled } : x));
+
+      if (tab === "followers") setFollowers(updater);
+      else setFollows(updater);
+    };
+
+    // 両タブに同一人物が出ることがある（相互フォローなど）ので両方更新
+    apply("followers");
+    apply("follows");
 
     const ok = await setRelationOnServer({
       userId: authUserId as UserId,
-      targetId: targetId as UserId,
+      targetId: userId as UserId,
       type: nextEnabled ? "follow" : null,
     });
 
     if (!ok) {
-      // rollback
-      setFollowers((prev) =>
-        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
-      );
-      setFollows((prev) =>
-        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
-      );
+      // revert
+      apply("followers");
+      apply("follows");
+      // revertを正しく戻すため、再取得（安全）
+      void loadAll();
     }
   };
 
@@ -709,13 +696,6 @@ const ConnectionsPage: React.FC = () => {
           <p className="empty-hint">このページは表示できません。</p>
         </main>
         <BottomNav />
-        <style jsx>{`
-          .empty-hint {
-            font-size: 13px;
-            color: var(--text-sub);
-            line-height: 1.6;
-          }
-        `}</style>
       </div>
     );
   }
@@ -728,13 +708,6 @@ const ConnectionsPage: React.FC = () => {
           <p className="empty-hint">確認しています…</p>
         </main>
         <BottomNav />
-        <style jsx>{`
-          .empty-hint {
-            font-size: 13px;
-            color: var(--text-sub);
-            line-height: 1.6;
-          }
-        `}</style>
       </div>
     );
   }
@@ -758,15 +731,11 @@ const ConnectionsPage: React.FC = () => {
           .primary-btn {
             padding: 8px 14px;
             font-size: 13px;
-            border-radius: 10px;
-            border: 1px solid var(--border, rgba(0, 0, 0, 0.14));
-            background: var(--surface, #ffffff);
-            color: var(--text-main, #111111);
+            border-radius: 8px;
+            border: none;
+            background: var(--accent);
+            color: #fff;
             cursor: pointer;
-            font-weight: 700;
-          }
-          .primary-btn:hover {
-            opacity: 0.92;
           }
           .empty-hint {
             font-size: 13px;
@@ -789,13 +758,11 @@ const ConnectionsPage: React.FC = () => {
       <AppHeader title="つながり" subtitle={targetHandle} showBack />
 
       <main className="app-main connections-main">
-        {/* X風：上部タブ（下にインジケータ） */}
+        {/* X風：上部タブ */}
         <div className="tabs">
           <button
             className={`tab ${activeTab === "followers" ? "active" : ""}`}
-            onClick={() =>
-              router.replace(`/connections/${targetUserId}?tab=followers`)
-            }
+            onClick={() => gotoTab("followers")}
           >
             フォロワー
             <span className="count">{followersCount}</span>
@@ -803,18 +770,19 @@ const ConnectionsPage: React.FC = () => {
 
           <button
             className={`tab ${activeTab === "follows" ? "active" : ""}`}
-            onClick={() =>
-              router.replace(`/connections/${targetUserId}?tab=follows`)
-            }
+            onClick={() => gotoTab("follows")}
           >
             フォロー中
             <span className="count">{followsCount}</span>
           </button>
         </div>
 
-        {errorMsg && (
-          <div className="error-box" role="alert">
-            {errorMsg}
+        {errorText && (
+          <div className="error">
+            {errorText}
+            <button className="retry" onClick={() => loadAll()}>
+              再読み込み
+            </button>
           </div>
         )}
 
@@ -833,7 +801,7 @@ const ConnectionsPage: React.FC = () => {
                     key={`followers:${u.userId}`}
                     item={u}
                     onOpenProfile={openProfile}
-                    onToggleFollow={toggleFollow}
+                    onToggleFollow={(uid, next) => toggleFollow(uid, next)}
                   />
                 ))}
               </div>
@@ -853,7 +821,7 @@ const ConnectionsPage: React.FC = () => {
                     key={`follows:${u.userId}`}
                     item={u}
                     onOpenProfile={openProfile}
-                    onToggleFollow={toggleFollow}
+                    onToggleFollow={(uid, next) => toggleFollow(uid, next)}
                   />
                 ))}
               </div>
@@ -920,18 +888,29 @@ const ConnectionsPage: React.FC = () => {
           background: var(--text-main);
         }
 
-        .error-box {
-          margin: 10px 0 4px;
-          padding: 10px 12px;
-          border-radius: 10px;
-          border: 1px solid rgba(176, 0, 32, 0.18);
-          background: rgba(176, 0, 32, 0.06);
+        .error {
+          padding: 10px 0;
+          font-size: 13px;
           color: #b00020;
-          font-size: 12px;
-          line-height: 1.6;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
         }
 
-        /* pager (X風スワイプ) */
+        .retry {
+          border: 1px solid rgba(148, 163, 184, 0.55);
+          background: var(--surface);
+          color: var(--text-main);
+          padding: 6px 10px;
+          border-radius: 999px;
+          cursor: pointer;
+          font-size: 12px;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+
+        /* pager */
         .pager {
           display: flex;
           overflow-x: auto;
