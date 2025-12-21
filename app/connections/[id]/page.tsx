@@ -358,10 +358,10 @@ const ConnectionsPage: React.FC = () => {
 
   // data
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
-  const [following, setFollows] = useState<ConnectionUser[]>([]);
+  const [following, setFollowing] = useState<ConnectionUser[]>([]);
 
   const [loadingFollowers, setLoadingFollowers] = useState(false);
-  const [loadingFollows, setLoadingFollows] = useState(false);
+  const [loadingFollowing, setLoadingFollowing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // ------------------------------
@@ -566,7 +566,7 @@ const ConnectionsPage: React.FC = () => {
     }
 
     // ★ viewer の follow 状態（一括）互換対応
-    const { data: myFollows, error: fErr } = await supabase
+    const { data: myFollowing, error: fErr } = await supabase
       .from("relations")
       .select("target_id")
       .eq("user_id", viewerId)
@@ -576,7 +576,7 @@ const ConnectionsPage: React.FC = () => {
     if (fErr) throw fErr;
 
     const followingSet = new Set<string>(
-      (myFollows ?? []).map((r: any) => r.target_id).filter(Boolean)
+      (myFollowing ?? []).map((r: any) => r.target_id).filter(Boolean)
     );
 
     const result: ConnectionUser[] = idsInOrder.map((id) => {
@@ -704,9 +704,9 @@ const ConnectionsPage: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadFollows() {
+    async function loadFollowing() {
       if (!isValidTarget || !authUserId) return;
-      setLoadingFollows(true);
+      setLoadingFollowing(true);
       setErrorMsg(null);
 
       try {
@@ -730,20 +730,20 @@ const ConnectionsPage: React.FC = () => {
         );
 
         const list = await hydrateUsers(uniqIds, authUserId);
-        if (!cancelled) setFollows(list);
+        if (!cancelled) setFollowing(list);
       } catch (e: any) {
-        console.error("[Connections] loadFollows error:", e);
+        console.error("[Connections] loadFollowing error:", e);
         if (!cancelled)
           setErrorMsg(
             e?.message ??
               "フォロー中の取得に失敗しました。時間をおいて再度お試しください。"
           );
       } finally {
-        if (!cancelled) setLoadingFollows(false);
+        if (!cancelled) setLoadingFollowing(false);
       }
     }
 
-    void loadFollows();
+    void loadFollowing();
 
     return () => {
       cancelled = true;
@@ -766,7 +766,7 @@ const ConnectionsPage: React.FC = () => {
         x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x
       )
     );
-    setFollows((prev) =>
+    setFollowing((prev) =>
       prev.map((x) =>
         x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x
       )
@@ -784,7 +784,7 @@ const ConnectionsPage: React.FC = () => {
           x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x
         )
       );
-      setFollows((prev) =>
+      setFollowing((prev) =>
         prev.map((x) =>
           x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x
         )
@@ -912,7 +912,7 @@ const ConnectionsPage: React.FC = () => {
         <div className="pager" ref={pagerRef}>
           {/* following */}
           <section className="page">
-            {loadingFollows ? (
+            {loadingFollowing ? (
               <div className="empty">読み込んでいます…</div>
             ) : following.length === 0 ? (
               <div className="empty">フォロー中はまだありません。</div>
