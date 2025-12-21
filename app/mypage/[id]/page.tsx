@@ -209,7 +209,7 @@ const PublicMyPage: React.FC = () => {
     blocked: false,
   });
 
-  // ===== Step 1: follow/follower counts（ログイン時のみ）=====
+  // ===== follow/follower counts =====
   const [followCount, setFollowCount] = useState<number | null>(null);
   const [followerCount, setFollowerCount] = useState<number | null>(null);
   const [loadingCounts, setLoadingCounts] = useState<boolean>(false);
@@ -416,19 +416,12 @@ const PublicMyPage: React.FC = () => {
     };
   }, [userId, storageKey]);
 
-  // ===== Step 1: follow/follower counts（ログイン時のみ）=====
+  // ===== follow/follower counts（公開SELECT前提で、ログイン不要で表示）=====
   useEffect(() => {
     let cancelled = false;
 
     async function fetchCounts() {
-      // ログインしてないなら表示しない（–）
-      if (!authUserId) {
-        setFollowCount(null);
-        setFollowerCount(null);
-        return;
-      }
-
-      // /mypage/[id] の対象が uuid じゃないなら（ゲスト互換）まだ数えない
+      // /mypage/[id] の対象が uuid じゃないなら（ゲスト互換）数えない
       if (!isUuid(userId)) {
         setFollowCount(null);
         setFollowerCount(null);
@@ -438,20 +431,20 @@ const PublicMyPage: React.FC = () => {
       setLoadingCounts(true);
 
       try {
-        // フォロー数：user_id = owner
+        // 重要：relations に id カラムが無い想定でも count が動くように、
+        // 実在する列を select する（head:true で実データは返さない）
         const { count: c1, error: e1 } = await supabase
           .from("relations")
-          .select("id", { count: "exact", head: true })
+          .select("target_id", { count: "exact", head: true })
           .eq("user_id", userId)
           .eq("type", "follow");
 
         if (cancelled) return;
         if (e1) throw e1;
 
-        // フォロワー数：target_id = owner
         const { count: c2, error: e2 } = await supabase
           .from("relations")
-          .select("id", { count: "exact", head: true })
+          .select("user_id", { count: "exact", head: true })
           .eq("target_id", userId)
           .eq("type", "follow");
 
@@ -461,7 +454,6 @@ const PublicMyPage: React.FC = () => {
         setFollowCount(typeof c1 === "number" ? c1 : 0);
         setFollowerCount(typeof c2 === "number" ? c2 : 0);
       } catch (e: any) {
-        // RLS / policy 未整備でも UI が壊れないようにする（ログに出すだけ）
         console.warn("[PublicMyPage] follow count fetch failed:", e);
         setFollowCount(null);
         setFollowerCount(null);
@@ -474,7 +466,7 @@ const PublicMyPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [authUserId, userId]);
+  }, [userId]);
 
   // relations 復元（uuid同士はサーバー / それ以外はlocalStorage）
   useEffect(() => {
@@ -671,10 +663,10 @@ const PublicMyPage: React.FC = () => {
   const isMeByGuest = !!currentUserId && currentUserId === userId;
   const canEdit = isOwner || isMeByGuest;
 
-  // counts 表示はログイン時のみ
-  const canShowCounts = !!authUserId && isUuid(userId);
+  // counts 表示は「対象がuuidなら表示」（ログイン不要）
+  const canShowCounts = isUuid(userId);
 
-  const followHref = `/connections/${userId}?tab=follows`;
+  const followHref = `/connections/${userId}?tab=following`;
   const followerHref = `/connections/${userId}?tab=followers`;
 
   return (
