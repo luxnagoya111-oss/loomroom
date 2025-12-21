@@ -52,7 +52,7 @@ function normalizeTab(v: string | null): TabKey {
 // ★ relations.type 互換読み取り（過去の "following" を吸収）
 const FOLLOW_TYPES = ["follow", "following"] as const;
 
-// ===== Avatar URL 正規化（既存方針と同じ）=====
+// ===== Avatar URL 正規化 =====
 const AVATAR_BUCKET = "avatars";
 
 function normalizeAvatarUrl(v: any): string | null {
@@ -157,8 +157,9 @@ function ConnectionRow(props: {
   item: ConnectionUser;
   onOpenProfile: (userId: string) => void;
   onToggleFollow: (userId: string, next: boolean) => void;
+  hideFollow?: boolean;
 }) {
-  const { item, onOpenProfile, onToggleFollow } = props;
+  const { item, onOpenProfile, onToggleFollow, hideFollow } = props;
 
   const avatarUrl = looksValidAvatarUrl(item.avatar_url)
     ? resolveAvatarUrl(item.avatar_url)
@@ -202,15 +203,18 @@ function ConnectionRow(props: {
         </div>
       </button>
 
+      {/* 右：フォローボタン（自分自身には出さない） */}
       <div className="right-col">
-        <RelationActions
-          className="conn-follow-actions"
-          flags={flags}
-          onToggleFollow={() => onToggleFollow(item.userId, !item.isFollowing)}
-          onToggleMute={() => {}}
-          onToggleBlock={() => {}}
-          onReport={() => {}}
-        />
+        {!hideFollow && (
+          <RelationActions
+            className="conn-follow-actions"
+            flags={flags}
+            onToggleFollow={() => onToggleFollow(item.userId, !item.isFollowing)}
+            onToggleMute={() => {}}
+            onToggleBlock={() => {}}
+            onReport={() => {}}
+          />
+        )}
       </div>
 
       <style jsx>{`
@@ -411,7 +415,7 @@ const ConnectionsPage: React.FC = () => {
 
   // ------------------------------
   // pager snap helpers
-  // ★ pagerの1枚目=following, 2枚目=followers に統一
+  // ★ pagerの1枚目=following, 2枚目=followers に固定
   // ------------------------------
   const snapPagerToTab = useCallback((tab: TabKey, behavior: ScrollBehavior) => {
     const el = pagerRef.current;
@@ -460,7 +464,6 @@ const ConnectionsPage: React.FC = () => {
 
   // ------------------------------
   // scroll -> state/URL 同期
-  // ★ 0ページ=following, 1ページ=followers
   // ------------------------------
   useEffect(() => {
     const el = pagerRef.current;
@@ -518,10 +521,15 @@ const ConnectionsPage: React.FC = () => {
     idsInOrder: string[],
     viewerId: string
   ): Promise<ConnectionUser[]> {
+    // ★ 推奨A：自分自身は一覧から除外
+    const ids = idsInOrder.filter((id) => id !== viewerId);
+
+    if (ids.length === 0) return [];
+
     const { data: users, error: uErr } = await supabase
       .from("users")
       .select("id, name, role, avatar_url, area, description")
-      .in("id", idsInOrder);
+      .in("id", ids);
 
     if (uErr) throw uErr;
 
@@ -532,7 +540,7 @@ const ConnectionsPage: React.FC = () => {
     const therapistUserIds: string[] = [];
     const storeOwnerIds: string[] = [];
 
-    for (const id of idsInOrder) {
+    for (const id of ids) {
       const u = userMap.get(id);
       const role = (u?.role ?? "user") as "user" | "therapist" | "store";
       if (role === "therapist") therapistUserIds.push(id);
@@ -565,13 +573,13 @@ const ConnectionsPage: React.FC = () => {
       );
     }
 
-    // ★ viewer の follow 状態（一括）互換対応
+    // viewer の follow 状態（互換）
     const { data: myFollowing, error: fErr } = await supabase
       .from("relations")
       .select("target_id")
       .eq("user_id", viewerId)
       .in("type", FOLLOW_TYPES as any)
-      .in("target_id", idsInOrder);
+      .in("target_id", ids);
 
     if (fErr) throw fErr;
 
@@ -579,9 +587,8 @@ const ConnectionsPage: React.FC = () => {
       (myFollowing ?? []).map((r: any) => r.target_id).filter(Boolean)
     );
 
-    const result: ConnectionUser[] = idsInOrder.map((id) => {
+    const result: ConnectionUser[] = ids.map((id) => {
       const u = userMap.get(id);
-
       const role = (u?.role ?? "user") as "user" | "therapist" | "store";
 
       const baseDisplayName = normalizeFreeText(u?.name);
@@ -761,6 +768,9 @@ const ConnectionsPage: React.FC = () => {
     if (!authUserId) return;
     if (!isUuid(authUserId) || !isUuid(targetId)) return;
 
+    // 自分自身には操作しない（保険）
+    if (authUserId === targetId) return;
+
     setFollowers((prev) =>
       prev.map((x) =>
         x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x
@@ -775,7 +785,7 @@ const ConnectionsPage: React.FC = () => {
     const ok = await setRelationOnServer({
       userId: authUserId as UserId,
       targetId: targetId as UserId,
-      type: nextEnabled ? "follow" : null, // ★書き込みは follow で統一
+      type: nextEnabled ? "follow" : null,
     });
 
     if (!ok) {
@@ -883,7 +893,6 @@ const ConnectionsPage: React.FC = () => {
       <AppHeader title="つながり" subtitle={targetHandle} showBack />
 
       <main className="app-main connections-main">
-        {/* タブ順：左=フォロー中 / 右=フォロワー */}
         <div className="tabs">
           <button
             className={`tab ${activeTab === "following" ? "active" : ""}`}
@@ -908,7 +917,6 @@ const ConnectionsPage: React.FC = () => {
           </div>
         )}
 
-        {/* Swipe pager：1枚目=following / 2枚目=followers */}
         <div className="pager" ref={pagerRef}>
           {/* following */}
           <section className="page">
@@ -924,6 +932,7 @@ const ConnectionsPage: React.FC = () => {
                     item={u}
                     onOpenProfile={openProfile}
                     onToggleFollow={toggleFollow}
+                    hideFollow={authUserId === u.userId}
                   />
                 ))}
               </div>
@@ -944,6 +953,7 @@ const ConnectionsPage: React.FC = () => {
                     item={u}
                     onOpenProfile={openProfile}
                     onToggleFollow={toggleFollow}
+                    hideFollow={authUserId === u.userId}
                   />
                 ))}
               </div>
