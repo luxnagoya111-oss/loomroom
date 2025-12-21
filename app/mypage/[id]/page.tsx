@@ -746,7 +746,7 @@ const PublicMyPage: React.FC = () => {
                   </span>
 
                   <span>
-                    フォロー{" "}
+                    フォロー中{" "}
                     <strong>
                       {canShowCounts ? (
                         <Link href={followingHref} className="stats-link">

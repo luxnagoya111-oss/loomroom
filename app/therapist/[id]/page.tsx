@@ -574,7 +574,7 @@ const TherapistProfilePage: React.FC = () => {
                     投稿 <strong>{posts.length}</strong>
                   </span>
                   <span>
-                    フォロー <strong>–</strong>
+                    フォロー中 <strong>–</strong>
                   </span>
                   <span>
                     フォロワー <strong>–</strong>
