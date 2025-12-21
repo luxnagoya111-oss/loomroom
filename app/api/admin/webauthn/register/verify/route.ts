@@ -72,7 +72,7 @@ async function consumeChallengeByValue(
     .delete()
     .eq("id", data.id);
 
-  return data;
+  return data as any;
 }
 
 /* =========================================================
@@ -155,21 +155,35 @@ function pickRegistrationKey(
 
   // パターンA: registrationInfo.credentialPublicKey / counter
   const a = toUint8(regInfo.credentialPublicKey);
-  if (a) return { publicKey: a, counter: typeof regInfo.counter === "number" ? regInfo.counter : 0 };
+  if (a) {
+    const c = typeof regInfo.counter === "number" ? regInfo.counter : 0;
+    return { publicKey: a, counter: c };
+  }
 
   // パターンB: registrationInfo.credential.publicKey / counter
   const b = toUint8(regInfo.credential?.publicKey);
-  if (b)
-    return {
-      publicKey: b,
-      counter: typeof regInfo.credential?.counter === "number" ? regInfo.credential.counter : 0,
-    };
+  if (b) {
+    const c =
+      typeof regInfo.credential?.counter === "number"
+        ? regInfo.credential.counter
+        : 0;
+    return { publicKey: b, counter: c };
+  }
 
   return null;
 }
 
 function isBase64url(s: string): boolean {
   return typeof s === "string" && /^[A-Za-z0-9\-_]+$/.test(s) && s.length > 0;
+}
+
+/**
+ * ★重要：PostgREST/Supabase に bytea を確実に保存するための形式
+ * - "\\x" + hex
+ * - Buffer/Uint8Array をそのまま渡すと JSON化され、今回のように {"type":"Buffer","data":[...]} が保存され得る
+ */
+function toByteaHex(bytes: Uint8Array): string {
+  return "\\x" + Buffer.from(bytes).toString("hex");
 }
 
 /* =========================================================
@@ -248,9 +262,8 @@ export async function POST(req: Request) {
       );
     }
 
-    // ★★★ ここが決定打：.buffer を使わず “view範囲だけ” を保存する ★★★
-    // Buffer.from(Uint8Array) は byteOffset/byteLength を尊重してくれる
-    const pkBytes = Buffer.from(picked.publicKey);
+    // ★決定打：byteaは "\\x" + hex で保存する
+    const publicKeyBytea = toByteaHex(picked.publicKey);
 
     const { error: upsertErr } = await supabaseAdmin
       .from("admin_webauthn_credentials")
@@ -258,7 +271,7 @@ export async function POST(req: Request) {
         {
           admin_email: ADMIN_EMAIL,
           credential_id: credentialID,
-          public_key: pkBytes,
+          public_key: publicKeyBytea,
           counter: picked.counter,
           last_used_at: new Date().toISOString(),
         },
