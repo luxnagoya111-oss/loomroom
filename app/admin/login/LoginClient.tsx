@@ -28,6 +28,40 @@ async function safeReadJson(res: Response) {
   }
 }
 
+function summarizeAssertion(a: any) {
+  // server に送る前に「実物」を軽く要約（console用）
+  try {
+    const id = a?.id;
+    const rawId = a?.rawId;
+
+    const cd = a?.response?.clientDataJSON;
+    const ad = a?.response?.authenticatorData;
+    const sig = a?.response?.signature;
+    const uh = a?.response?.userHandle;
+
+    const toLen = (v: any) =>
+      typeof v === "string"
+        ? v.length
+        : v?.byteLength ?? v?.buffer?.byteLength ?? (Array.isArray(v?.data) ? v.data.length : null);
+
+    return {
+      id,
+      rawId,
+      clientDataJSON_type: typeof cd,
+      authenticatorData_type: typeof ad,
+      signature_type: typeof sig,
+      userHandle_type: typeof uh,
+      clientDataJSON_len: toLen(cd),
+      authenticatorData_len: toLen(ad),
+      signature_len: toLen(sig),
+      userHandle_len: toLen(uh),
+      hasResponse: !!a?.response,
+    };
+  } catch (e: any) {
+    return { summarizeError: e?.message || String(e) };
+  }
+}
+
 export default function LoginClient() {
   const router = useRouter();
   const sp = useSearchParams();
@@ -37,16 +71,22 @@ export default function LoginClient() {
   const [msg, setMsg] = useState<string>("");
 
   const loginWithPasskey = async () => {
+    // ★ 実行されているコード確認用（まずここが出るか）
+    console.log("[ADMIN LOGIN] loginWithPasskey ACTIVE", new Date().toISOString());
+
     setBusy(true);
     setMsg("");
     try {
       const optRes = await fetch("/api/admin/webauthn/login/options", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({ next }),
       });
 
       const optJson: OptionsResponse = (await safeReadJson(optRes)) ?? {};
+      console.log("[ADMIN LOGIN] login/options status", optRes.status, optJson);
+
       if (!optRes.ok) throw new Error(optJson?.error || "options failed");
       if (!optJson?.options) throw new Error("options is missing");
 
@@ -55,21 +95,35 @@ export default function LoginClient() {
         optionsJSON: optJson.options,
       });
 
+      console.log("[ADMIN LOGIN] assertion summary", summarizeAssertion(assertion));
+
+      const payload = {
+        assertion,
+        next,
+        challengeId: optJson.challengeId,
+      };
+
+      console.log("[ADMIN LOGIN] verify payload keys", {
+        hasAssertion: !!payload.assertion,
+        challengeId: payload.challengeId,
+        next: payload.next,
+      });
+
       const verRes = await fetch("/api/admin/webauthn/login/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          assertion,
-          next,
-          challengeId: optJson.challengeId,
-        }),
+        cache: "no-store",
+        body: JSON.stringify(payload),
       });
 
       const verJson = (await safeReadJson(verRes)) ?? {};
+      console.log("[ADMIN LOGIN] login/verify status", verRes.status, verJson);
+
       if (!verRes.ok) throw new Error(verJson?.error || "verify failed");
 
       router.replace(verJson.redirectTo || next);
     } catch (e: any) {
+      console.error("[ADMIN LOGIN] error", e);
       setMsg(e?.message || "ログインに失敗しました");
     } finally {
       setBusy(false);
@@ -77,15 +131,20 @@ export default function LoginClient() {
   };
 
   const registerPasskey = async () => {
+    console.log("[ADMIN LOGIN] registerPasskey ACTIVE", new Date().toISOString());
+
     setBusy(true);
     setMsg("");
     try {
       const optRes = await fetch("/api/admin/webauthn/register/options", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
       });
 
       const optJson: OptionsResponse = (await safeReadJson(optRes)) ?? {};
+      console.log("[ADMIN LOGIN] register/options status", optRes.status, optJson);
+
       if (!optRes.ok) throw new Error(optJson?.error || "register options failed");
       if (!optJson?.options) throw new Error("options is missing");
 
@@ -94,9 +153,18 @@ export default function LoginClient() {
         optionsJSON: optJson.options,
       });
 
+      console.log("[ADMIN LOGIN] attestation (has)", {
+        id: attestation?.id,
+        rawId: attestation?.rawId,
+        hasResponse: !!attestation?.response,
+        clientDataJSON_type: typeof attestation?.response?.clientDataJSON,
+        attestationObject_type: typeof attestation?.response?.attestationObject,
+      });
+
       const verRes = await fetch("/api/admin/webauthn/register/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           attestation,
           challengeId: optJson.challengeId,
@@ -104,10 +172,13 @@ export default function LoginClient() {
       });
 
       const verJson = (await safeReadJson(verRes)) ?? {};
+      console.log("[ADMIN LOGIN] register/verify status", verRes.status, verJson);
+
       if (!verRes.ok) throw new Error(verJson?.error || "register verify failed");
 
       setMsg("Passkeyを登録しました。続けてログインしてください。");
     } catch (e: any) {
+      console.error("[ADMIN LOGIN] register error", e);
       setMsg(e?.message || "登録に失敗しました");
     } finally {
       setBusy(false);
