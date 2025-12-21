@@ -473,6 +473,13 @@ export default function NotificationsPage() {
           opacity: 0.6;
           cursor: default;
         }
+
+        /* 通知内はリンク色を使わない */
+        .notif,
+        .notif * {
+          color: var(--text);
+          text-decoration: none;
+        }
       `}</style>
     </>
   );
