@@ -48,7 +48,6 @@ function validateAssertionBase64url(assertion: any) {
     ["response.clientDataJSON", assertion?.response?.clientDataJSON, false],
     ["response.authenticatorData", assertion?.response?.authenticatorData, false],
     ["response.signature", assertion?.response?.signature, false],
-    // userHandle は null のことがあるので optional 扱い
     ["response.userHandle", assertion?.response?.userHandle, true],
   ];
 
@@ -62,14 +61,12 @@ function validateAssertionBase64url(assertion: any) {
       continue;
     }
     try {
-      const buf = base64urlToBufferStrict(value);
-      // デコード後のバイト長だけ返せるようにする（秘密情報は出さない）
-      void buf.length;
+      base64urlToBufferStrict(value);
     } catch (e: any) {
       problems.push({
         field: name,
         reason: e?.message || "decode failed",
-        sample: value.slice(0, 12), // 先頭だけ（漏洩対策）
+        sample: value.slice(0, 12),
       });
     }
   }
@@ -78,7 +75,7 @@ function validateAssertionBase64url(assertion: any) {
 }
 
 /* =========================================================
- * bytea -> Uint8Array(ArrayBuffer固定) for public_key
+ * bytea -> Uint8Array(ArrayBuffer固定)
  * ========================================================= */
 function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
   const ab = new ArrayBuffer(buf.length);
@@ -91,7 +88,6 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
   if (!v) return new Uint8Array(new ArrayBuffer(0));
 
   if (Buffer.isBuffer(v)) return bufferToStrictUint8(v);
-
   if (v instanceof Uint8Array) return bufferToStrictUint8(Buffer.from(v));
 
   if (typeof v === "string") {
@@ -115,16 +111,10 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
 }
 
 /* =========================================================
- * runtime version logger (Vercelで実際に動いているversion確認)
+ * Turbopack 対策：version 取得は無効化
  * ========================================================= */
-function getPkgVersionSafe(name: string): string | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const pkg = require(`${name}/package.json`);
-    return pkg?.version ?? null;
-  } catch {
-    return null;
-  }
+function getPkgVersionSafe(_name: string): string | null {
+  return null;
 }
 
 export async function POST(req: Request) {
@@ -148,7 +138,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // A) まず assertion の base64url 形式を厳密チェック
     const bad = validateAssertionBase64url(assertion);
     if (bad.length) {
       return NextResponse.json(
@@ -156,149 +145,79 @@ export async function POST(req: Request) {
           error: "assertion has invalid base64url field(s)",
           details: bad,
           debug: {
-            serverVersion: getPkgVersionSafe("@simplewebauthn/server"),
-            browserVersion: getPkgVersionSafe("@simplewebauthn/browser"),
+            serverVersion: null,
+            browserVersion: null,
           },
         },
         { status: 400 }
       );
     }
 
-    // 1) challenge 消費
     const ch = await consumeChallenge(String(challengeId));
     if (!ch || ch.purpose !== "login") {
       return NextResponse.json({ error: "challenge not found" }, { status: 400 });
     }
 
-    if (typeof ch.challenge !== "string") {
-      return NextResponse.json(
-        { error: "stored challenge is not string" },
-        { status: 500 }
-      );
-    }
-    // challenge 自体も base64url として妥当かチェック
-    try {
-      base64urlToBufferStrict(ch.challenge);
-    } catch (e: any) {
-      return NextResponse.json(
-        { error: "stored challenge invalid", details: e?.message || "invalid" },
-        { status: 500 }
-      );
-    }
+    base64urlToBufferStrict(ch.challenge);
 
-    // 2) credential 取得
-    const credentialIdFromClient = String(assertion.id);
-
-    const { data: cred, error: credErr } = await supabaseAdmin
+    const { data: cred } = await supabaseAdmin
       .from("admin_webauthn_credentials")
       .select("credential_id, public_key, counter")
       .eq("admin_email", ADMIN_EMAIL)
-      .eq("credential_id", credentialIdFromClient)
+      .eq("credential_id", String(assertion.id))
       .maybeSingle();
 
-    if (credErr) {
-      return NextResponse.json({ error: credErr.message }, { status: 500 });
-    }
     if (!cred) {
       return NextResponse.json({ error: "credential not found" }, { status: 400 });
     }
 
     const publicKey = normalizeBytea(cred.public_key);
 
-    // B) public_key の実体チェック（ここが壊れてるケースが多い）
-    if (!publicKey.length) {
-      return NextResponse.json(
-        {
-          error: "invalid public_key (empty after normalize)",
-          debug: {
-            storedType: typeof cred.public_key,
-            isBuffer: Buffer.isBuffer(cred.public_key),
-            hasTypeBufferShape: cred.public_key?.type === "Buffer",
-            storedStringPrefix:
-              typeof cred.public_key === "string"
-                ? cred.public_key.slice(0, 12)
-                : null,
-            publicKeyLen: publicKey.length,
-            serverVersion: getPkgVersionSafe("@simplewebauthn/server"),
-            browserVersion: getPkgVersionSafe("@simplewebauthn/browser"),
-          },
-        },
-        { status: 500 }
-      );
-    }
-
-    const credentialID = String(cred.credential_id);
-    const counter =
-      typeof cred.counter === "number" && Number.isFinite(cred.counter) ? cred.counter : 0;
-
-    // 3) verify（ここで落ちるなら version mismatch or assertion transform）
-    let verification: any;
+    let verification;
     try {
       verification = await verifyAuthenticationResponse({
         response: assertion,
-        expectedChallenge: ch.challenge, // ★ expectedChallenge は string
+        expectedChallenge: ch.challenge,
         expectedOrigin: ADMIN_ORIGIN,
         expectedRPID: ADMIN_RP_ID,
         credential: {
-          id: credentialID,
+          id: cred.credential_id,
           publicKey,
-          counter,
+          counter: cred.counter ?? 0,
         },
         requireUserVerification: false,
       });
     } catch (e: any) {
       return NextResponse.json(
-        {
-          error: e?.message || "verifyAuthenticationResponse threw",
-          debug: {
-            sizes: {
-              id: base64urlToBufferStrict(String(assertion.id)).length,
-              rawId: base64urlToBufferStrict(String(assertion.rawId)).length,
-              "response.clientDataJSON": base64urlToBufferStrict(
-                String(assertion.response.clientDataJSON)
-              ).length,
-              "response.authenticatorData": base64urlToBufferStrict(
-                String(assertion.response.authenticatorData)
-              ).length,
-              "response.signature": base64urlToBufferStrict(
-                String(assertion.response.signature)
-              ).length,
-              "response.userHandle": assertion.response.userHandle
-                ? base64urlToBufferStrict(String(assertion.response.userHandle)).length
-                : null,
-            },
-            rpId: ADMIN_RP_ID,
-            origin: ADMIN_ORIGIN,
-            credentialID_len: credentialID.length,
-            publicKeyLen: publicKey.length,
-            serverVersion: getPkgVersionSafe("@simplewebauthn/server"),
-            browserVersion: getPkgVersionSafe("@simplewebauthn/browser"),
-          },
-          hint:
-            "If base64url checks & challenge/origin/rpId are OK, remaining suspects are (1) @simplewebauthn/server vs browser major version mismatch, or (2) stored public_key is not the expected COSE public key bytes.",
-        },
+        { error: e?.message || "verifyAuthenticationResponse threw" },
         { status: 500 }
       );
     }
 
     if (!verification.verified) {
-      return NextResponse.json({ error: "authentication not verified" }, { status: 401 });
+      return NextResponse.json(
+        { error: "authentication not verified" },
+        { status: 401 }
+      );
     }
 
-    // 4) counter 更新
-    const newCounter = verification.authenticationInfo.newCounter;
     await supabaseAdmin
       .from("admin_webauthn_credentials")
-      .update({ counter: newCounter, last_used_at: new Date().toISOString() })
+      .update({
+        counter: verification.authenticationInfo.newCounter,
+        last_used_at: new Date().toISOString(),
+      })
       .eq("admin_email", ADMIN_EMAIL)
       .eq("credential_id", cred.credential_id);
 
-    // 5) admin session（Cookieは NextResponse に付ける）
     const { sessionId, expiresAt } = await createAdminSession(ADMIN_EMAIL);
     const res = NextResponse.json({ ok: true, redirectTo: safeNext(next) });
     applyAdminSessionCookie(res, sessionId, expiresAt);
     return res;
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "verify error" }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message || "verify error" },
+      { status: 500 }
+    );
   }
 }
