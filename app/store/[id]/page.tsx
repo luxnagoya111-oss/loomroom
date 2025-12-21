@@ -46,7 +46,7 @@ type DbUserRow = {
 };
 
 /**
- * ★ 投稿の area はこのページでは使わない（投稿個別エリア概念を撤去）
+ * ★ 投稿の area はこのページでは使わない
  */
 type DbPostRow = {
   id: string;
@@ -69,6 +69,9 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
+// relations.type 互換（過去の "following" を吸収）
+const FOLLOW_TYPES = ["follow", "following"] as const;
+
 // ===== Avatar URL 正規化（Home/Therapist と同一思想で統一）=====
 const AVATAR_BUCKET = "avatars";
 
@@ -83,8 +86,6 @@ function isProbablyHttpUrl(url: string): boolean {
 
 /**
  * URLとして使う前に「それっぽいゴミ」を弾く
- * - 空
- * - ".../public/avatars" で終わってる（ファイル名なし）等
  */
 function looksValidAvatarUrl(v: string | null | undefined): boolean {
   const s = (v ?? "").trim();
@@ -96,11 +97,6 @@ function looksValidAvatarUrl(v: string | null | undefined): boolean {
   return true;
 }
 
-/**
- * avatar_url が
- * - https://... ならそのまま
- * - それ以外（storage path）なら public URL に変換
- */
 function resolveAvatarUrl(raw: string | null | undefined): string | null {
   const v = normalizeAvatarUrl(raw);
   if (!v) return null;
@@ -165,7 +161,6 @@ const StoreProfilePage: React.FC = () => {
 
   /**
    * ★ handle は「owner_user_id(uuid) → @xxxxxx」に統一
-   * 初期は空にしておく（データ取得後に確定）
    */
   const [storeHandle, setStoreHandle] = useState<string>("");
 
@@ -192,7 +187,7 @@ const StoreProfilePage: React.FC = () => {
   // ★ オーナーのユーザーアバター（fallback）
   const [ownerAvatarUrl, setOwnerAvatarUrl] = useState<string | null>(null);
 
-  // ★ Owner 判定は Auth を正とする（store.owner_user_id は uuid）
+  // ★ Owner 判定は Auth を正とする
   const isOwner =
     !!authUserId &&
     !!storeOwnerUserId &&
@@ -205,6 +200,10 @@ const StoreProfilePage: React.FC = () => {
     muted: false,
     blocked: false,
   });
+
+  // ★ connections 用のカウント（mypage と同一：表示対象 users.id を正）
+  const [followingCount, setFollowingCount] = useState<number>(0);
+  const [followersCount, setFollowersCount] = useState<number>(0);
 
   // 在籍セラピスト（DB）
   const [therapists, setTherapists] = useState<TherapistHit[]>([]);
@@ -232,7 +231,6 @@ const StoreProfilePage: React.FC = () => {
 
   // relation 復元（uuid会員同士のみ）
   useEffect(() => {
-    // 自分のページは relation 無効
     if (isOwner) {
       setRelations({ following: false, muted: false, blocked: false });
       return;
@@ -255,6 +253,74 @@ const StoreProfilePage: React.FC = () => {
       cancelled = true;
     };
   }, [authUserId, storeOwnerUserId, isOwner]);
+
+  // ★ フォロー中 / フォロワー数（mypage と同一：owner users.id を正）
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCounts = async (userId: string) => {
+      if (!isUuid(userId)) {
+        if (!cancelled) {
+          setFollowingCount(0);
+          setFollowersCount(0);
+        }
+        return;
+      }
+
+      try {
+        const followingReq = supabase
+          .from("relations")
+          .select("target_id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .in("type", FOLLOW_TYPES as any);
+
+        const followersReq = supabase
+          .from("relations")
+          .select("user_id", { count: "exact", head: true })
+          .eq("target_id", userId)
+          .in("type", FOLLOW_TYPES as any);
+
+        const [followingRes, followersRes] = await Promise.all([
+          followingReq,
+          followersReq,
+        ]);
+
+        if (cancelled) return;
+
+        if (followingRes.error) {
+          console.error("[StoreProfile] following count error:", followingRes.error);
+        }
+        if (followersRes.error) {
+          console.error("[StoreProfile] followers count error:", followersRes.error);
+        }
+
+        setFollowingCount(followingRes.count ?? 0);
+        setFollowersCount(followersRes.count ?? 0);
+      } catch (e) {
+        if (cancelled) return;
+        console.error("[StoreProfile] count unexpected error:", e);
+        setFollowingCount(0);
+        setFollowersCount(0);
+      }
+    };
+
+    if (storeOwnerUserId) {
+      void loadCounts(storeOwnerUserId);
+    } else {
+      setFollowingCount(0);
+      setFollowersCount(0);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storeOwnerUserId]);
+
+  // ★ connections に飛ばす（mypage と同一：users.id を正）
+  const openConnections = (tab: "following" | "followers") => {
+    if (!storeOwnerUserId || !isUuid(storeOwnerUserId)) return;
+    router.push(`/connections/${storeOwnerUserId}?tab=${tab}`);
+  };
 
   // 在籍申請ボタン表示判定（uuid会員の therapist のみ）
   useEffect(() => {
@@ -314,6 +380,12 @@ const StoreProfilePage: React.FC = () => {
     if (!ok) return;
 
     setRelations({ following: nextEnabled, muted: false, blocked: false });
+
+    // ★ 楽観更新：対象(owner)の followers が増減
+    setFollowersCount((prev) => {
+      const next = nextEnabled ? prev + 1 : prev - 1;
+      return next < 0 ? 0 : next;
+    });
   };
 
   const handleToggleMute = async () => {
@@ -537,8 +609,7 @@ const StoreProfilePage: React.FC = () => {
           const resolved = looksValidAvatarUrl(raw) ? resolveAvatarUrl(raw) : null;
 
           const displayName =
-            ((t as DbTherapistRow).display_name ?? "").trim() ||
-            "セラピスト";
+            ((t as DbTherapistRow).display_name ?? "").trim() || "セラピスト";
 
           const userId = (t as DbTherapistRow).user_id ?? null;
 
@@ -637,13 +708,35 @@ const StoreProfilePage: React.FC = () => {
                 <span>対応エリア：{areaLabel}</span>
               </div>
 
+              {/* ★ mypage と同一：フォロー中/フォロワーを表示、押したら connections */}
               <div className="store-stats-row">
                 <span>
                   投稿 <strong>{posts.length}</strong>
                 </span>
+
                 <span>
                   在籍セラピスト <strong>{therapists.length}</strong>
                 </span>
+
+                <button
+                  type="button"
+                  className="stat-link"
+                  onClick={() => openConnections("following")}
+                  disabled={!isUuid(storeOwnerUserId)}
+                  aria-label="フォロー中一覧を見る"
+                >
+                  フォロー中 <strong>{followingCount}</strong>
+                </button>
+
+                <button
+                  type="button"
+                  className="stat-link"
+                  onClick={() => openConnections("followers")}
+                  disabled={!isUuid(storeOwnerUserId)}
+                  aria-label="フォロワー一覧を見る"
+                >
+                  フォロワー <strong>{followersCount}</strong>
+                </button>
               </div>
 
               {canShowRelationUi && (
@@ -688,9 +781,7 @@ const StoreProfilePage: React.FC = () => {
             </div>
           </div>
 
-          {loadingProfile && (
-            <p className="store-hero-lead">店舗情報を読み込んでいます…</p>
-          )}
+          {loadingProfile && <p className="store-hero-lead">店舗情報を読み込んでいます…</p>}
 
           {!loadingProfile && storeProfileText?.trim() && (
             <p className="store-hero-lead">
@@ -943,6 +1034,30 @@ const StoreProfilePage: React.FC = () => {
           display: flex;
           gap: 10px;
           flex-wrap: wrap;
+          align-items: center;
+        }
+
+        /* ★ mypage と同じ「押せる」見た目 */
+        .stat-link {
+          border: none;
+          background: none;
+          padding: 0;
+          margin: 0;
+          color: var(--text-sub);
+          font-size: 11px;
+          cursor: pointer;
+          text-decoration: underline;
+          text-underline-offset: 3px;
+        }
+        .stat-link strong {
+          color: var(--text-main);
+          font-weight: 700;
+          margin-left: 2px;
+        }
+        .stat-link:disabled {
+          cursor: default;
+          opacity: 0.5;
+          text-decoration: none;
         }
 
         .store-hero-lead {

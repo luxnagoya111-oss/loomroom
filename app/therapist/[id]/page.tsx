@@ -57,7 +57,6 @@ function looksValidAvatarUrl(v: string | null | undefined): boolean {
   if (!s) return false;
 
   // 例: https://xxxx.supabase.co/storage/v1/object/public/avatars
-  // これだと画像ではないので弾く
   if (s.includes("/storage/v1/object/public/avatars")) {
     if (/\/public\/avatars\/?$/i.test(s)) return false;
   }
@@ -94,7 +93,6 @@ type TherapistProfile = {
 
   /**
    * ★ 対応エリアは自由入力（string）
-   * - console 側に合わせる
    */
   area: string;
 
@@ -175,7 +173,7 @@ const TherapistProfilePage: React.FC = () => {
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
 
-  // ★ connections 用のカウント
+  // ★ connections 用のカウント（mypage と同一思想：表示対象 users.id を正）
   const [followingCount, setFollowingCount] = useState<number>(0);
   const [followersCount, setFollowersCount] = useState<number>(0);
 
@@ -198,7 +196,6 @@ const TherapistProfilePage: React.FC = () => {
       return;
     }
 
-    // ★ relations は uuid 会員同士のみ
     if (!isUuid(authUserId) || !isUuid(therapistUserId)) {
       setRelations({ following: false, muted: false, blocked: false });
       return;
@@ -234,9 +231,12 @@ const TherapistProfilePage: React.FC = () => {
 
     setRelations({ following: nextEnabled, muted: false, blocked: false });
 
-    // ★ 自分の「フォロー中」一覧に入る/抜ける で followersCount も変わり得るが、
-    // ここではカウントは次の集計で整合させる（即時反映は別途でも可）
-    // 体感を上げたいなら followingCount/followersCount を楽観更新してもOK
+    // ★ mypage と同じ体感：楽観更新（外れても後続再集計で整合）
+    // 自分(authUserId)が therapistUserId を follow するので、対象の followers が増減
+    setFollowersCount((prev) => {
+      const next = nextEnabled ? prev + 1 : prev - 1;
+      return next < 0 ? 0 : next;
+    });
   };
 
   const handleToggleMute = async () => {
@@ -500,26 +500,29 @@ const TherapistProfilePage: React.FC = () => {
     };
   }, [linkedStoreId]);
 
-  // ★ フォロー中 / フォロワー数の取得（tuid が確定したら）
+  /**
+   * ★ フォロー中 / フォロワー数の取得
+   * mypage と同一思想：表示対象 users.id を正として集計
+   */
   useEffect(() => {
     let cancelled = false;
 
     const loadCounts = async (userId: string) => {
       if (!isUuid(userId)) {
-        setFollowingCount(0);
-        setFollowersCount(0);
+        if (!cancelled) {
+          setFollowingCount(0);
+          setFollowersCount(0);
+        }
         return;
       }
 
       try {
-        // following = 自分(user_id)が follow している数
         const followingReq = supabase
           .from("relations")
           .select("target_id", { count: "exact", head: true })
           .eq("user_id", userId)
           .in("type", FOLLOW_TYPES as any);
 
-        // followers = 自分(target_id)を follow している数
         const followersReq = supabase
           .from("relations")
           .select("user_id", { count: "exact", head: true })
@@ -579,7 +582,7 @@ const TherapistProfilePage: React.FC = () => {
 
   const areaLabel = profile.area?.trim() ? profile.area.trim() : "未設定";
 
-  // ★ connections に飛ばす（users.id ベース）
+  // ★ connections に飛ばす（mypage と同一：users.id を正）
   const openConnections = (tab: "following" | "followers") => {
     if (!therapistUserId || !isUuid(therapistUserId)) return;
     router.push(`/connections/${therapistUserId}?tab=${tab}`);
@@ -632,7 +635,6 @@ const TherapistProfilePage: React.FC = () => {
                   </span>
                 </div>
 
-                {/* ★ 表示仕様：アカウント種別 / 対応エリア */}
                 <div className="profile-meta-row">
                   <span className="profile-meta-item">
                     アカウント種別：セラピスト
@@ -648,7 +650,7 @@ const TherapistProfilePage: React.FC = () => {
                   )}
                 </div>
 
-                {/* ★ マイページと同じ挙動：押すと connections */}
+                {/* ★ mypage と同じ：押したら connections */}
                 <div className="profile-stats-row">
                   <span>
                     投稿 <strong>{posts.length}</strong>
@@ -682,9 +684,7 @@ const TherapistProfilePage: React.FC = () => {
                     onToggleMute={handleToggleMute}
                     onToggleBlock={handleToggleBlock}
                     onReport={() => {
-                      alert(
-                        "このプロフィールの通報を受け付けました（現在はテスト用です）。"
-                      );
+                      alert("このプロフィールの通報を受け付けました。");
                     }}
                   />
                 )}
@@ -710,7 +710,6 @@ const TherapistProfilePage: React.FC = () => {
               <p className="profile-intro">{profile.intro}</p>
             )}
 
-            {/* 関連リンク */}
             {showSnsBlock && (
               <div className="profile-sns-block">
                 <div className="profile-sns-title">関連リンク</div>
@@ -760,9 +759,7 @@ const TherapistProfilePage: React.FC = () => {
                       <AvatarCircle size={40} fallbackText="…" className="store-avatar" />
                       <div className="linked-store-main">
                         <div className="linked-store-name">読み込み中…</div>
-                        <div className="linked-store-meta">
-                          店舗情報を取得しています
-                        </div>
+                        <div className="linked-store-meta">店舗情報を取得しています</div>
                       </div>
                     </div>
                   </div>
@@ -810,9 +807,7 @@ const TherapistProfilePage: React.FC = () => {
                       <AvatarCircle size={40} fallbackText="S" className="store-avatar" />
                       <div className="linked-store-main">
                         <div className="linked-store-name">在籍店舗</div>
-                        <div className="linked-store-meta">
-                          在籍店舗が見つかりませんでした
-                        </div>
+                        <div className="linked-store-meta">在籍店舗が見つかりませんでした</div>
                       </div>
                     </div>
                   </div>
@@ -868,7 +863,6 @@ const TherapistProfilePage: React.FC = () => {
                             <span className="post-username">{profile.handle || ""}</span>
                           </div>
 
-                          {/* ★ 投稿エリア表示を撤去（時間だけ） */}
                           <div className="post-meta">
                             <span>{p.timeAgo}</span>
                           </div>
