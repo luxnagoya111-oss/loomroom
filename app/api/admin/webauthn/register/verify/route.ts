@@ -108,7 +108,8 @@ function normalizeAttestation(input: any) {
     coerceToBase64url(a?.response?.clientDataJSON) ?? a?.response?.clientDataJSON;
 
   const attestationObject =
-    coerceToBase64url(a?.response?.attestationObject) ?? a?.response?.attestationObject;
+    coerceToBase64url(a?.response?.attestationObject) ??
+    a?.response?.attestationObject;
 
   const transports = Array.isArray(a?.response?.transports)
     ? a.response.transports
@@ -128,24 +129,65 @@ function normalizeAttestation(input: any) {
 }
 
 /* =========================================================
- * registrationInfo の差異吸収（バージョン差対応）
+ * publicKey（COSE bytes）を「必ず Uint8Array」に正規化
+ * - バージョン差 / 実装差 / JSON化事故を全部吸収
  * ========================================================= */
-function pickRegistrationKey(regInfo: any): { publicKey: Uint8Array; counter: number } | null {
-  if (!regInfo) return null;
+function toUint8(v: any): Uint8Array | null {
+  if (!v) return null;
 
-  // パターンA: registrationInfo.credentialPublicKey / counter
-  if (regInfo.credentialPublicKey instanceof Uint8Array) {
-    const c = typeof regInfo.counter === "number" ? regInfo.counter : 0;
-    return { publicKey: regInfo.credentialPublicKey, counter: c };
+  if (v instanceof Uint8Array) return v;
+
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(v)) {
+    return new Uint8Array(v);
   }
 
-  // パターンB: registrationInfo.credential.publicKey / counter
-  if (regInfo.credential?.publicKey instanceof Uint8Array) {
-    const c = typeof regInfo.credential?.counter === "number" ? regInfo.credential.counter : 0;
-    return { publicKey: regInfo.credential.publicKey, counter: c };
+  if (v instanceof ArrayBuffer) {
+    return new Uint8Array(v);
+  }
+
+  // JSON化された Buffer: { type:"Buffer", data:number[] }
+  if (typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) {
+    return Uint8Array.from(v.data);
+  }
+
+  // number[]
+  if (Array.isArray(v) && v.every((n) => typeof n === "number")) {
+    return Uint8Array.from(v);
   }
 
   return null;
+}
+
+/**
+ * registrationInfo の差異吸収（バージョン差対応）
+ * - パターンA: registrationInfo.credentialPublicKey / counter
+ * - パターンB: registrationInfo.credential.publicKey / counter
+ */
+function pickRegistrationKey(
+  regInfo: any
+): { publicKey: Uint8Array; counter: number } | null {
+  if (!regInfo) return null;
+
+  // A
+  const aKey = toUint8(regInfo.credentialPublicKey);
+  if (aKey) {
+    const c = typeof regInfo.counter === "number" ? regInfo.counter : 0;
+    return { publicKey: aKey, counter: c };
+  }
+
+  // B
+  const bKey = toUint8(regInfo.credential?.publicKey);
+  if (bKey) {
+    const c = typeof regInfo.credential?.counter === "number" ? regInfo.credential.counter : 0;
+    return { publicKey: bKey, counter: c };
+  }
+
+  return null;
+}
+
+function isBase64url(s: string): boolean {
+  // '=' は付かない前提（browser JSON は base64url）
+  return typeof s === "string" && /^[A-Za-z0-9\-_]+$/.test(s) && s.length > 0;
 }
 
 export async function POST(req: Request) {
@@ -161,7 +203,10 @@ export async function POST(req: Request) {
     const { attestation: attestationRaw, challengeId } = body || {};
 
     if (!attestationRaw) {
-      return NextResponse.json({ error: "attestation is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "attestation is required" },
+        { status: 400 }
+      );
     }
 
     const attestation = normalizeAttestation(attestationRaw);
@@ -178,7 +223,10 @@ export async function POST(req: Request) {
       const extracted = pickChallengeFromClientDataJSON(attestation);
       if (!extracted) {
         return NextResponse.json(
-          { error: "challenge not found (missing challengeId and cannot extract challenge)" },
+          {
+            error:
+              "challenge not found (missing challengeId and cannot extract challenge)",
+          },
           { status: 400 }
         );
       }
@@ -186,7 +234,10 @@ export async function POST(req: Request) {
     }
 
     if (!ch) {
-      return NextResponse.json({ error: "challenge not found" }, { status: 400 });
+      return NextResponse.json(
+        { error: "challenge not found" },
+        { status: 400 }
+      );
     }
 
     const verification = await verifyRegistrationResponse({
@@ -198,10 +249,13 @@ export async function POST(req: Request) {
     });
 
     if (!verification.verified || !verification.registrationInfo) {
-      return NextResponse.json({ error: "registration not verified" }, { status: 400 });
+      return NextResponse.json(
+        { error: "registration not verified" },
+        { status: 400 }
+      );
     }
 
-    // ★ ここが本丸：公開鍵の取り出しをバージョン差で吸収
+    // ★ 公開鍵（COSE bytes）を確実に Uint8Array で取り出す
     const picked = pickRegistrationKey(verification.registrationInfo);
     if (!picked?.publicKey?.length) {
       return NextResponse.json(
@@ -211,13 +265,17 @@ export async function POST(req: Request) {
     }
 
     // ★ browserから来た id（base64url string）をDBキーとして正にする
-    const credentialID = String(attestation.id);
-    if (!credentialID) {
-      return NextResponse.json({ error: "invalid credential id" }, { status: 400 });
+    const credentialID = String(attestation.id ?? "");
+    if (!isBase64url(credentialID)) {
+      return NextResponse.json(
+        { error: "invalid credential id (not base64url)" },
+        { status: 400 }
+      );
     }
 
     const { publicKey, counter } = picked;
 
+    // ★ ここが本丸：JSON化などせず、COSE bytes をそのまま bytea に保存
     const { error: upsertErr } = await supabaseAdmin
       .from("admin_webauthn_credentials")
       .upsert(
@@ -240,6 +298,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "verify error" }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message || "verify error" },
+      { status: 500 }
+    );
   }
 }
