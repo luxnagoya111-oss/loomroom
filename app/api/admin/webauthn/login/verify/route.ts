@@ -22,13 +22,10 @@ function safeNext(next: string | null) {
 
 /* =========================================================
  * base64url strict
- * - 文字集合: A-Z a-z 0-9 - _
- * - 長さ % 4 === 1 は base64 として不正
  * ========================================================= */
 function isBase64url(s: string): boolean {
   return /^[A-Za-z0-9\-_]+$/.test(s);
 }
-
 function base64urlToBufferStrict(s: string): Buffer {
   if (typeof s !== "string") throw new Error("not a string");
   if (!isBase64url(s)) throw new Error("contains non-base64url chars");
@@ -37,7 +34,6 @@ function base64urlToBufferStrict(s: string): Buffer {
   const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
   return Buffer.from(b64 + pad, "base64");
 }
-
 function validateFieldBase64url(obj: any, path: string, allowNull = false) {
   const value = path.split(".").reduce((acc, k) => acc?.[k], obj);
 
@@ -56,15 +52,51 @@ function validateFieldBase64url(obj: any, path: string, allowNull = false) {
   }
 }
 
-function decodeClientDataJSON(clientDataJSON_b64url: string) {
-  const buf = base64urlToBufferStrict(clientDataJSON_b64url);
-  const jsonText = buf.toString("utf8");
-  const parsed = JSON.parse(jsonText);
-  return parsed as any;
+/* =========================================================
+ * DB credential_id を「確実に base64url 文字列」にする
+ * - text でも bytea(Buffer) でも吸収
+ * ========================================================= */
+function toBase64urlFromBytes(bytes: Uint8Array): string {
+  const b64 = Buffer.from(bytes).toString("base64");
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function normalizeCredentialIdFromDb(v: any): string {
+  if (!v) return "";
+
+  // 既に文字列ならそのまま（ただし余計な空白は除去）
+  if (typeof v === "string") return v.trim();
+
+  // Buffer(bytea)
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(v)) {
+    return toBase64urlFromBytes(new Uint8Array(v));
+  }
+
+  // Uint8Array
+  if (v instanceof Uint8Array) {
+    return toBase64urlFromBytes(v);
+  }
+
+  // { type:"Buffer", data:number[] } 形式
+  if (typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) {
+    return toBase64urlFromBytes(Uint8Array.from(v.data));
+  }
+
+  // postgrest が "\\x..." を返すケース
+  if (typeof v === "object" && typeof v?.toString === "function") {
+    const s = String(v);
+    if (s.startsWith("\\x")) {
+      const buf = Buffer.from(s.slice(2), "hex");
+      return toBase64urlFromBytes(new Uint8Array(buf));
+    }
+    return s.trim();
+  }
+
+  return String(v).trim();
 }
 
 /* =========================================================
- * bytea -> Uint8Array<ArrayBuffer固定) (public_key用)
+ * bytea -> Uint8Array<ArrayBuffer固定> (public_key用)
  * ========================================================= */
 function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
   const ab = new ArrayBuffer(buf.length);
@@ -72,10 +104,8 @@ function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
   view.set(buf);
   return view;
 }
-
 function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
   if (!v) return new Uint8Array(new ArrayBuffer(0));
-
   if (Buffer.isBuffer(v)) return bufferToStrictUint8(v);
   if (v instanceof Uint8Array) return bufferToStrictUint8(Buffer.from(v));
 
@@ -111,7 +141,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const assertion: any = body?.assertion; // ★加工しない
+    const assertion: any = body?.assertion;
     const challengeId: string | undefined = body?.challengeId;
     const next: string | null = body?.next ?? null;
 
@@ -122,7 +152,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 0) 形だけのチェック（decodeはしない）
+    // assertion最低限
     if (!isNonEmptyString(assertion?.id) || !isNonEmptyString(assertion?.rawId)) {
       return NextResponse.json({ error: "assertion.id/rawId is required" }, { status: 400 });
     }
@@ -142,14 +172,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "stored challenge is invalid" }, { status: 500 });
     }
 
-    // 2) assertion base64url 妥当性チェック（どこが壊れてるか確定させる）
+    // 2) assertion の base64url 妥当性チェック
     const checks = [
       { field: "id", path: "id", allowNull: false },
       { field: "rawId", path: "rawId", allowNull: false },
       { field: "response.clientDataJSON", path: "response.clientDataJSON", allowNull: false },
       { field: "response.authenticatorData", path: "response.authenticatorData", allowNull: false },
       { field: "response.signature", path: "response.signature", allowNull: false },
-      { field: "response.userHandle", path: "response.userHandle", allowNull: true }, // null OK
+      { field: "response.userHandle", path: "response.userHandle", allowNull: true },
     ] as const;
 
     const bad: Array<{ field: string; reason: string }> = [];
@@ -159,62 +189,14 @@ export async function POST(req: Request) {
       if (!r.ok) bad.push({ field: c.field, reason: r.reason });
       else if (typeof (r as any).bytes === "number") sizes[c.field] = (r as any).bytes;
     }
-
     if (bad.length) {
       return NextResponse.json(
-        {
-          error: "assertion contains invalid base64url field(s)",
-          details: bad,
-          hint:
-            "One or more fields contain non-base64url chars, '=' padding, or invalid length. Return these details and we will fix the exact field.",
-        },
+        { error: "assertion contains invalid base64url field(s)", details: bad },
         { status: 400 }
       );
     }
 
-    // 3) clientDataJSON の中身も先に検証（verifyより前に差分が分かる）
-    let cd: any;
-    try {
-      cd = decodeClientDataJSON(assertion.response.clientDataJSON);
-    } catch (e: any) {
-      return NextResponse.json(
-        { error: "clientDataJSON is not valid JSON", details: e?.message || "parse failed" },
-        { status: 400 }
-      );
-    }
-
-    const cdType = cd?.type;
-    const cdOrigin = cd?.origin;
-    const cdChallenge = cd?.challenge;
-
-    // type
-    if (cdType !== "webauthn.get") {
-      return NextResponse.json(
-        { error: "clientDataJSON.type mismatch", got: cdType, expected: "webauthn.get" },
-        { status: 400 }
-      );
-    }
-    // origin
-    if (cdOrigin !== ADMIN_ORIGIN) {
-      return NextResponse.json(
-        { error: "clientDataJSON.origin mismatch", got: cdOrigin, expected: ADMIN_ORIGIN },
-        { status: 400 }
-      );
-    }
-    // challenge（ここがズレてたら絶対にverify失敗）
-    if (!isNonEmptyString(cdChallenge) || cdChallenge !== ch.challenge) {
-      return NextResponse.json(
-        {
-          error: "clientDataJSON.challenge mismatch",
-          got: cdChallenge,
-          expected: ch.challenge,
-          hint: "If challenge mismatches, options/verify pairing is wrong or the stored challenge format differs.",
-        },
-        { status: 400 }
-      );
-    }
-
-    // 4) credential 取得（登録した id と一致する想定）
+    // 3) credential 取得
     const credentialIdFromClient = String(assertion.id);
 
     const { data: cred, error } = await supabaseAdmin
@@ -232,25 +214,45 @@ export async function POST(req: Request) {
       );
     }
 
+    // ★ ここが根治ポイント：DBのcredential_idを必ずbase64urlへ
+    const credentialID = normalizeCredentialIdFromDb(cred.credential_id);
+
+    // もしここが壊れてたら即わかるように返す
+    try {
+      base64urlToBufferStrict(credentialID);
+    } catch (e: any) {
+      return NextResponse.json(
+        {
+          error: "stored credential_id is not valid base64url",
+          details: e?.message || "invalid credential_id",
+          debug: {
+            rawType: typeof cred.credential_id,
+            credentialID_preview: String(credentialID).slice(0, 60),
+            credentialID_len: credentialID.length,
+          },
+        },
+        { status: 500 }
+      );
+    }
+
     const publicKey = normalizeBytea(cred.public_key);
     if (!publicKey.length) {
       return NextResponse.json({ error: "invalid public_key" }, { status: 500 });
     }
 
-    const credentialID = String(cred.credential_id);
     const counter =
       typeof cred.counter === "number" && Number.isFinite(cred.counter) ? cred.counter : 0;
 
-    // 5) verify
+    // 4) verify
     let verification: any;
     try {
       verification = await verifyAuthenticationResponse({
         response: assertion,
-        expectedChallenge: ch.challenge, // ★string
+        expectedChallenge: ch.challenge, // string
         expectedOrigin: ADMIN_ORIGIN,
         expectedRPID: ADMIN_RP_ID,
         credential: {
-          id: credentialID,
+          id: credentialID, // ★正規化済み
           publicKey,
           counter,
         },
@@ -260,13 +262,9 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error: e?.message || "verifyAuthenticationResponse threw",
-          debug: {
-            sizes, // 各フィールドのdecode後バイト長
-            rpId: ADMIN_RP_ID,
-            origin: ADMIN_ORIGIN,
-          },
+          debug: { sizes, rpId: ADMIN_RP_ID, origin: ADMIN_ORIGIN, credentialID_len: credentialID.length },
           hint:
-            "If all base64url checks passed and challenge/origin/type match, then the issue is inside verifyAuthenticationResponse parsing. In that case we will compare library versions and credential formats next.",
+            "If this still fails, the remaining suspects are library version mismatch or an unexpected credential/publicKey format. Next step: log @simplewebauthn/server version and inspect stored public_key length.",
         },
         { status: 500 }
       );
@@ -276,7 +274,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "authentication not verified" }, { status: 401 });
     }
 
-    // 6) counter 更新
+    // 5) counter 更新
     const newCounter = verification.authenticationInfo.newCounter;
 
     await supabaseAdmin
@@ -285,7 +283,7 @@ export async function POST(req: Request) {
       .eq("admin_email", ADMIN_EMAIL)
       .eq("credential_id", cred.credential_id);
 
-    // 7) admin session + cookie
+    // 6) admin session + cookie
     const { sessionId, expiresAt } = await createAdminSession(ADMIN_EMAIL);
 
     const res = NextResponse.json({
