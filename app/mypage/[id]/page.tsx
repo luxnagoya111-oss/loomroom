@@ -60,7 +60,7 @@ const DEFAULT_PROFILE: UserProfile = {
   displayName: "あなた",
   handle: "@user",
   area: "",
-  intro: "まだ自己紹介は書かれていません。ゆっくり整えていく予定のページです。",
+  intro: "まだ自己紹介は書かれていません。",
   messagePolicy:
     "通知にすぐ気づけないこともあるので、ゆっくりペースでやりとりできたら嬉しいです。",
   accountType: "ゲスト",
@@ -674,8 +674,8 @@ const PublicMyPage: React.FC = () => {
   // counts 表示はログイン時のみ
   const canShowCounts = !!authUserId && isUuid(userId);
 
-  const followHref = `/mypage/${userId}/follows`;
-  const followerHref = `/mypage/${userId}/followers`;
+  const followHref = `/connections/${userId}?tab=follows`;
+  const followerHref = `/connections/${userId}?tab=followers`;
 
   return (
     <>
