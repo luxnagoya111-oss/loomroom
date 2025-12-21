@@ -9,7 +9,10 @@ import {
 } from "@/lib/adminConfig";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { consumeChallenge } from "../../_store";
-import { createAdminSession, applyAdminSessionCookie } from "@/lib/adminSession";
+import {
+  applyAdminSessionCookie,
+  createAdminSession,
+} from "@/lib/adminSession";
 
 export const runtime = "nodejs";
 
@@ -21,82 +24,61 @@ function safeNext(next: string | null) {
 }
 
 /* =========================================================
- * base64url strict
+ * base64url strict decode helper
  * ========================================================= */
-function isBase64url(s: string): boolean {
-  return /^[A-Za-z0-9\-_]+$/.test(s);
+function isBase64urlString(s: string): boolean {
+  return /^[A-Za-z0-9\-_]*$/.test(s);
 }
+
 function base64urlToBufferStrict(s: string): Buffer {
   if (typeof s !== "string") throw new Error("not a string");
-  if (!isBase64url(s)) throw new Error("contains non-base64url chars");
-  if (s.length % 4 === 1) throw new Error("invalid length (mod 4 === 1)");
+  if (!isBase64urlString(s)) throw new Error("contains non-base64url chars");
+  if (s.length % 4 === 1) throw new Error("invalid base64url length (mod 4 === 1)");
   const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
   const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
   return Buffer.from(b64 + pad, "base64");
 }
-function validateFieldBase64url(obj: any, path: string, allowNull = false) {
-  const value = path.split(".").reduce((acc, k) => acc?.[k], obj);
 
-  if (value == null) {
-    if (allowNull) return { ok: true as const };
-    return { ok: false as const, reason: "missing" };
-  }
-  if (typeof value !== "string") {
-    return { ok: false as const, reason: `not string (type=${typeof value})` };
-  }
-  try {
-    const buf = base64urlToBufferStrict(value);
-    return { ok: true as const, bytes: buf.length };
-  } catch (e: any) {
-    return { ok: false as const, reason: e?.message || "decode failed" };
-  }
-}
+function validateAssertionBase64url(assertion: any) {
+  const problems: Array<{ field: string; reason: string; sample?: string }> = [];
 
-/* =========================================================
- * DB credential_id を「確実に base64url 文字列」にする
- * - text でも bytea(Buffer) でも吸収
- * ========================================================= */
-function toBase64urlFromBytes(bytes: Uint8Array): string {
-  const b64 = Buffer.from(bytes).toString("base64");
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
+  const fields: Array<[string, any, boolean]> = [
+    ["id", assertion?.id, false],
+    ["rawId", assertion?.rawId, false],
+    ["response.clientDataJSON", assertion?.response?.clientDataJSON, false],
+    ["response.authenticatorData", assertion?.response?.authenticatorData, false],
+    ["response.signature", assertion?.response?.signature, false],
+    // userHandle は null のことがあるので optional 扱い
+    ["response.userHandle", assertion?.response?.userHandle, true],
+  ];
 
-function normalizeCredentialIdFromDb(v: any): string {
-  if (!v) return "";
-
-  // 既に文字列ならそのまま（ただし余計な空白は除去）
-  if (typeof v === "string") return v.trim();
-
-  // Buffer(bytea)
-  if (typeof Buffer !== "undefined" && Buffer.isBuffer(v)) {
-    return toBase64urlFromBytes(new Uint8Array(v));
-  }
-
-  // Uint8Array
-  if (v instanceof Uint8Array) {
-    return toBase64urlFromBytes(v);
-  }
-
-  // { type:"Buffer", data:number[] } 形式
-  if (typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) {
-    return toBase64urlFromBytes(Uint8Array.from(v.data));
-  }
-
-  // postgrest が "\\x..." を返すケース
-  if (typeof v === "object" && typeof v?.toString === "function") {
-    const s = String(v);
-    if (s.startsWith("\\x")) {
-      const buf = Buffer.from(s.slice(2), "hex");
-      return toBase64urlFromBytes(new Uint8Array(buf));
+  for (const [name, value, optional] of fields) {
+    if (value == null) {
+      if (!optional) problems.push({ field: name, reason: "missing" });
+      continue;
     }
-    return s.trim();
+    if (typeof value !== "string") {
+      problems.push({ field: name, reason: `not string (${typeof value})` });
+      continue;
+    }
+    try {
+      const buf = base64urlToBufferStrict(value);
+      // デコード後のバイト長だけ返せるようにする（秘密情報は出さない）
+      void buf.length;
+    } catch (e: any) {
+      problems.push({
+        field: name,
+        reason: e?.message || "decode failed",
+        sample: value.slice(0, 12), // 先頭だけ（漏洩対策）
+      });
+    }
   }
 
-  return String(v).trim();
+  return problems;
 }
 
 /* =========================================================
- * bytea -> Uint8Array<ArrayBuffer固定> (public_key用)
+ * bytea -> Uint8Array(ArrayBuffer固定) for public_key
  * ========================================================= */
 function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
   const ab = new ArrayBuffer(buf.length);
@@ -104,14 +86,19 @@ function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
   view.set(buf);
   return view;
 }
+
 function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
   if (!v) return new Uint8Array(new ArrayBuffer(0));
+
   if (Buffer.isBuffer(v)) return bufferToStrictUint8(v);
+
   if (v instanceof Uint8Array) return bufferToStrictUint8(Buffer.from(v));
 
   if (typeof v === "string") {
     try {
-      if (v.startsWith("\\x")) return bufferToStrictUint8(Buffer.from(v.slice(2), "hex"));
+      if (v.startsWith("\\x")) {
+        return bufferToStrictUint8(Buffer.from(v.slice(2), "hex"));
+      }
       const s = v.replace(/-/g, "+").replace(/_/g, "/");
       const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
       return bufferToStrictUint8(Buffer.from(s + pad, "base64"));
@@ -127,8 +114,17 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
   return new Uint8Array(new ArrayBuffer(0));
 }
 
-function isNonEmptyString(v: any): v is string {
-  return typeof v === "string" && v.length > 0;
+/* =========================================================
+ * runtime version logger (Vercelで実際に動いているversion確認)
+ * ========================================================= */
+function getPkgVersionSafe(name: string): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const pkg = require(`${name}/package.json`);
+    return pkg?.version ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function POST(req: Request) {
@@ -152,13 +148,18 @@ export async function POST(req: Request) {
       );
     }
 
-    // assertion最低限
-    if (!isNonEmptyString(assertion?.id) || !isNonEmptyString(assertion?.rawId)) {
-      return NextResponse.json({ error: "assertion.id/rawId is required" }, { status: 400 });
-    }
-    if (assertion?.type !== "public-key") {
+    // A) まず assertion の base64url 形式を厳密チェック
+    const bad = validateAssertionBase64url(assertion);
+    if (bad.length) {
       return NextResponse.json(
-        { error: "assertion.type must be public-key", got: assertion?.type },
+        {
+          error: "assertion has invalid base64url field(s)",
+          details: bad,
+          debug: {
+            serverVersion: getPkgVersionSafe("@simplewebauthn/server"),
+            browserVersion: getPkgVersionSafe("@simplewebauthn/browser"),
+          },
+        },
         { status: 400 }
       );
     }
@@ -168,91 +169,78 @@ export async function POST(req: Request) {
     if (!ch || ch.purpose !== "login") {
       return NextResponse.json({ error: "challenge not found" }, { status: 400 });
     }
-    if (!isNonEmptyString(ch.challenge)) {
-      return NextResponse.json({ error: "stored challenge is invalid" }, { status: 500 });
-    }
 
-    // 2) assertion の base64url 妥当性チェック
-    const checks = [
-      { field: "id", path: "id", allowNull: false },
-      { field: "rawId", path: "rawId", allowNull: false },
-      { field: "response.clientDataJSON", path: "response.clientDataJSON", allowNull: false },
-      { field: "response.authenticatorData", path: "response.authenticatorData", allowNull: false },
-      { field: "response.signature", path: "response.signature", allowNull: false },
-      { field: "response.userHandle", path: "response.userHandle", allowNull: true },
-    ] as const;
-
-    const bad: Array<{ field: string; reason: string }> = [];
-    const sizes: Record<string, number> = {};
-    for (const c of checks) {
-      const r = validateFieldBase64url(assertion, c.path, c.allowNull);
-      if (!r.ok) bad.push({ field: c.field, reason: r.reason });
-      else if (typeof (r as any).bytes === "number") sizes[c.field] = (r as any).bytes;
-    }
-    if (bad.length) {
+    if (typeof ch.challenge !== "string") {
       return NextResponse.json(
-        { error: "assertion contains invalid base64url field(s)", details: bad },
-        { status: 400 }
+        { error: "stored challenge is not string" },
+        { status: 500 }
+      );
+    }
+    // challenge 自体も base64url として妥当かチェック
+    try {
+      base64urlToBufferStrict(ch.challenge);
+    } catch (e: any) {
+      return NextResponse.json(
+        { error: "stored challenge invalid", details: e?.message || "invalid" },
+        { status: 500 }
       );
     }
 
-    // 3) credential 取得
+    // 2) credential 取得
     const credentialIdFromClient = String(assertion.id);
 
-    const { data: cred, error } = await supabaseAdmin
+    const { data: cred, error: credErr } = await supabaseAdmin
       .from("admin_webauthn_credentials")
       .select("credential_id, public_key, counter")
       .eq("admin_email", ADMIN_EMAIL)
       .eq("credential_id", credentialIdFromClient)
       .maybeSingle();
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (credErr) {
+      return NextResponse.json({ error: credErr.message }, { status: 500 });
+    }
     if (!cred) {
-      return NextResponse.json(
-        { error: "credential not found (id mismatch)", credentialIdFromClient },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "credential not found" }, { status: 400 });
     }
 
-    // ★ ここが根治ポイント：DBのcredential_idを必ずbase64urlへ
-    const credentialID = normalizeCredentialIdFromDb(cred.credential_id);
+    const publicKey = normalizeBytea(cred.public_key);
 
-    // もしここが壊れてたら即わかるように返す
-    try {
-      base64urlToBufferStrict(credentialID);
-    } catch (e: any) {
+    // B) public_key の実体チェック（ここが壊れてるケースが多い）
+    if (!publicKey.length) {
       return NextResponse.json(
         {
-          error: "stored credential_id is not valid base64url",
-          details: e?.message || "invalid credential_id",
+          error: "invalid public_key (empty after normalize)",
           debug: {
-            rawType: typeof cred.credential_id,
-            credentialID_preview: String(credentialID).slice(0, 60),
-            credentialID_len: credentialID.length,
+            storedType: typeof cred.public_key,
+            isBuffer: Buffer.isBuffer(cred.public_key),
+            hasTypeBufferShape: cred.public_key?.type === "Buffer",
+            storedStringPrefix:
+              typeof cred.public_key === "string"
+                ? cred.public_key.slice(0, 12)
+                : null,
+            publicKeyLen: publicKey.length,
+            serverVersion: getPkgVersionSafe("@simplewebauthn/server"),
+            browserVersion: getPkgVersionSafe("@simplewebauthn/browser"),
           },
         },
         { status: 500 }
       );
     }
 
-    const publicKey = normalizeBytea(cred.public_key);
-    if (!publicKey.length) {
-      return NextResponse.json({ error: "invalid public_key" }, { status: 500 });
-    }
-
+    const credentialID = String(cred.credential_id);
     const counter =
       typeof cred.counter === "number" && Number.isFinite(cred.counter) ? cred.counter : 0;
 
-    // 4) verify
+    // 3) verify（ここで落ちるなら version mismatch or assertion transform）
     let verification: any;
     try {
       verification = await verifyAuthenticationResponse({
         response: assertion,
-        expectedChallenge: ch.challenge, // string
+        expectedChallenge: ch.challenge, // ★ expectedChallenge は string
         expectedOrigin: ADMIN_ORIGIN,
         expectedRPID: ADMIN_RP_ID,
         credential: {
-          id: credentialID, // ★正規化済み
+          id: credentialID,
           publicKey,
           counter,
         },
@@ -262,9 +250,32 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error: e?.message || "verifyAuthenticationResponse threw",
-          debug: { sizes, rpId: ADMIN_RP_ID, origin: ADMIN_ORIGIN, credentialID_len: credentialID.length },
+          debug: {
+            sizes: {
+              id: base64urlToBufferStrict(String(assertion.id)).length,
+              rawId: base64urlToBufferStrict(String(assertion.rawId)).length,
+              "response.clientDataJSON": base64urlToBufferStrict(
+                String(assertion.response.clientDataJSON)
+              ).length,
+              "response.authenticatorData": base64urlToBufferStrict(
+                String(assertion.response.authenticatorData)
+              ).length,
+              "response.signature": base64urlToBufferStrict(
+                String(assertion.response.signature)
+              ).length,
+              "response.userHandle": assertion.response.userHandle
+                ? base64urlToBufferStrict(String(assertion.response.userHandle)).length
+                : null,
+            },
+            rpId: ADMIN_RP_ID,
+            origin: ADMIN_ORIGIN,
+            credentialID_len: credentialID.length,
+            publicKeyLen: publicKey.length,
+            serverVersion: getPkgVersionSafe("@simplewebauthn/server"),
+            browserVersion: getPkgVersionSafe("@simplewebauthn/browser"),
+          },
           hint:
-            "If this still fails, the remaining suspects are library version mismatch or an unexpected credential/publicKey format. Next step: log @simplewebauthn/server version and inspect stored public_key length.",
+            "If base64url checks & challenge/origin/rpId are OK, remaining suspects are (1) @simplewebauthn/server vs browser major version mismatch, or (2) stored public_key is not the expected COSE public key bytes.",
         },
         { status: 500 }
       );
@@ -274,22 +285,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "authentication not verified" }, { status: 401 });
     }
 
-    // 5) counter 更新
+    // 4) counter 更新
     const newCounter = verification.authenticationInfo.newCounter;
-
     await supabaseAdmin
       .from("admin_webauthn_credentials")
       .update({ counter: newCounter, last_used_at: new Date().toISOString() })
       .eq("admin_email", ADMIN_EMAIL)
       .eq("credential_id", cred.credential_id);
 
-    // 6) admin session + cookie
+    // 5) admin session（Cookieは NextResponse に付ける）
     const { sessionId, expiresAt } = await createAdminSession(ADMIN_EMAIL);
-
-    const res = NextResponse.json({
-      ok: true,
-      redirectTo: safeNext(next),
-    });
+    const res = NextResponse.json({ ok: true, redirectTo: safeNext(next) });
     applyAdminSessionCookie(res, sessionId, expiresAt);
     return res;
   } catch (e: any) {
