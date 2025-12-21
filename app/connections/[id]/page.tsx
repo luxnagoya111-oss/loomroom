@@ -29,7 +29,7 @@ function isUuid(v: string | null | undefined): v is string {
   return !!v && UUID_REGEX.test(v);
 }
 
-type TabKey = "followers" | "following";
+type TabKey = "following" | "followers";
 
 /**
  * URL tab のゆれを吸収して内部は必ず followers/following に統一
@@ -38,11 +38,19 @@ type TabKey = "followers" | "following";
  */
 function normalizeTab(v: string | null): TabKey {
   const s = (v ?? "").toLowerCase().trim();
-  if (s === "following" || s === "followings" || s === "follows" || s === "follow") {
+  if (
+    s === "following" ||
+    s === "followings" ||
+    s === "follows" ||
+    s === "follow"
+  ) {
     return "following";
   }
   return "followers";
 }
+
+// ★ relations.type 互換読み取り（過去の "following" を吸収）
+const FOLLOW_TYPES = ["follow", "following"] as const;
 
 // ===== Avatar URL 正規化（既存方針と同じ）=====
 const AVATAR_BUCKET = "avatars";
@@ -90,7 +98,7 @@ type ConnectionUser = {
   role: "user" | "therapist" | "store";
   displayName: string;
   handle: string;
-  intro: string; // users.description / therapists.profile / stores.description を統一表示
+  intro: string;
   area?: string | null;
   avatar_url?: string | null; // raw
   isFollowing: boolean; // viewer目線
@@ -169,7 +177,6 @@ function ConnectionRow(props: {
         onClick={() => onOpenProfile(item.userId)}
         aria-label="プロフィールを開く"
       >
-        {/* 左：アバター（2行相当） */}
         <div className="avatar-col">
           <AvatarCircle
             size={56}
@@ -179,7 +186,6 @@ function ConnectionRow(props: {
           />
         </div>
 
-        {/* 中央：名前/ハンドル/ロール + 自己紹介 */}
         <div className="mid-col">
           <div className="topline">
             <div className="name">{item.displayName}</div>
@@ -196,7 +202,6 @@ function ConnectionRow(props: {
         </div>
       </button>
 
-      {/* 右：ボタン（RelationActions に統一。…メニューはCSSで非表示） */}
       <div className="right-col">
         <RelationActions
           className="conn-follow-actions"
@@ -294,27 +299,25 @@ function ConnectionRow(props: {
           line-height: 1.55;
           color: var(--text-main);
           display: -webkit-box;
-          -webkit-line-clamp: 2; /* 2行 */
+          -webkit-line-clamp: 2;
           -webkit-box-orient: vertical;
           overflow: hidden;
         }
 
         .right-col {
-          width: 102px; /* 2行相当の存在感 */
+          width: 102px;
           flex-shrink: 0;
           display: flex;
           align-items: center;
           justify-content: flex-end;
         }
 
-        /* RelationActions をこのセルサイズに馴染ませる */
         :global(.conn-follow-actions) {
           margin-top: 0;
         }
         :global(.conn-follow-actions .relation-actions-row) {
           margin-top: 0;
         }
-        /* …メニューは connections では不要（Xの一覧と同じでフォローだけ） */
         :global(.conn-follow-actions .relation-more) {
           display: none;
         }
@@ -350,7 +353,7 @@ const ConnectionsPage: React.FC = () => {
 
   // refs for stable sync
   const pagerRef = useRef<HTMLDivElement | null>(null);
-  const isSyncingRef = useRef<boolean>(true); // 初期/プログラム同期中ガード
+  const isSyncingRef = useRef<boolean>(true);
   const activeTabRef = useRef<TabKey>(initialTab);
 
   // data
@@ -385,11 +388,10 @@ const ConnectionsPage: React.FC = () => {
     };
   }, []);
 
-  // ログイン必須
   const isLoggedIn = !!authUserId;
 
   // ------------------------------
-  // URL tab を正規化して固定（follows等を残さない）
+  // URL tab を正規化して固定
   // ------------------------------
   useEffect(() => {
     if (!isValidTarget || !targetUserId) return;
@@ -397,7 +399,6 @@ const ConnectionsPage: React.FC = () => {
     const raw = searchParams.get("tab");
     const normalized = normalizeTab(raw);
 
-    // raw が null の場合も tab=followers を付けて「初回同期」を安定させる
     const shouldReplace = raw !== normalized;
 
     if (shouldReplace) {
@@ -410,6 +411,7 @@ const ConnectionsPage: React.FC = () => {
 
   // ------------------------------
   // pager snap helpers
+  // ★ pagerの1枚目=following, 2枚目=followers に統一
   // ------------------------------
   const snapPagerToTab = useCallback((tab: TabKey, behavior: ScrollBehavior) => {
     const el = pagerRef.current;
@@ -421,10 +423,9 @@ const ConnectionsPage: React.FC = () => {
 
       isSyncingRef.current = true;
 
-      const left = tab === "followers" ? 0 : width;
+      const left = tab === "following" ? 0 : width;
       el.scrollTo({ left, behavior });
 
-      // 2フレーム吸収（初期のscroll / 慣性 / smooth開始直後のscrollイベント対策）
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           isSyncingRef.current = false;
@@ -434,19 +435,17 @@ const ConnectionsPage: React.FC = () => {
       return true;
     };
 
-    // width 確定待ち
     requestAnimationFrame(() => {
       if (doSnap()) return;
       requestAnimationFrame(() => {
         if (doSnap()) return;
-        // 最後の保険：ガード解除だけはする（無限ガードを避ける）
         isSyncingRef.current = false;
       });
     });
   }, []);
 
   // ------------------------------
-  // URL -> state 同期（URL tab が変わったら activeTab を更新し、pager を強制一致）
+  // URL -> state 同期
   // ------------------------------
   useEffect(() => {
     const next = normalizeTab(searchParams.get("tab"));
@@ -456,12 +455,12 @@ const ConnectionsPage: React.FC = () => {
       setActiveTab(next);
     }
 
-    // 初回表示ズレの根治：URLに合わせて pager を即スナップ（smooth禁止）
     snapPagerToTab(next, "auto");
   }, [searchParams, snapPagerToTab]);
 
   // ------------------------------
-  // scroll -> state/URL 同期（スワイプでタブ更新）
+  // scroll -> state/URL 同期
+  // ★ 0ページ=following, 1ページ=followers
   // ------------------------------
   useEffect(() => {
     const el = pagerRef.current;
@@ -476,7 +475,7 @@ const ConnectionsPage: React.FC = () => {
       raf = requestAnimationFrame(() => {
         const width = el.clientWidth || 1;
         const idx = Math.round(el.scrollLeft / width);
-        const next: TabKey = idx <= 0 ? "followers" : "following";
+        const next: TabKey = idx <= 0 ? "following" : "followers";
 
         if (activeTabRef.current === next) return;
 
@@ -497,7 +496,7 @@ const ConnectionsPage: React.FC = () => {
   }, [router, isValidTarget, targetUserId]);
 
   // ------------------------------
-  // tab click handler（state/URL更新 + smooth スクロール）
+  // tab click handler
   // ------------------------------
   const goTab = useCallback(
     (tab: TabKey) => {
@@ -507,8 +506,6 @@ const ConnectionsPage: React.FC = () => {
       setActiveTab(tab);
 
       router.replace(`/connections/${targetUserId}?tab=${tab}`);
-
-      // ユーザー操作のときだけ smooth
       snapPagerToTab(tab, "smooth");
     },
     [router, isValidTarget, targetUserId, snapPagerToTab]
@@ -521,7 +518,6 @@ const ConnectionsPage: React.FC = () => {
     idsInOrder: string[],
     viewerId: string
   ): Promise<ConnectionUser[]> {
-    // 1) users（正）
     const { data: users, error: uErr } = await supabase
       .from("users")
       .select("id, name, role, avatar_url, area, description")
@@ -533,7 +529,6 @@ const ConnectionsPage: React.FC = () => {
     const userMap = new Map<string, DbUserRow>();
     userRows.forEach((u) => userMap.set(u.id, u));
 
-    // 2) rolesごとの補完をまとめて取得
     const therapistUserIds: string[] = [];
     const storeOwnerIds: string[] = [];
 
@@ -570,12 +565,12 @@ const ConnectionsPage: React.FC = () => {
       );
     }
 
-    // 3) viewer の follow 状態（一括）
+    // ★ viewer の follow 状態（一括）互換対応
     const { data: myFollows, error: fErr } = await supabase
       .from("relations")
       .select("target_id")
       .eq("user_id", viewerId)
-      .eq("type", "follow")
+      .in("type", FOLLOW_TYPES as any)
       .in("target_id", idsInOrder);
 
     if (fErr) throw fErr;
@@ -584,7 +579,6 @@ const ConnectionsPage: React.FC = () => {
       (myFollows ?? []).map((r: any) => r.target_id).filter(Boolean)
     );
 
-    // 4) idsInOrder の順番で ConnectionUser を構築
     const result: ConnectionUser[] = idsInOrder.map((id) => {
       const u = userMap.get(id);
 
@@ -615,8 +609,10 @@ const ConnectionsPage: React.FC = () => {
             area = normalizeFreeText(t.area);
           if (!baseIntro && normalizeFreeText(t.profile))
             intro = normalizeFreeText(t.profile);
-          // users.avatar_url が無いときだけ補完
-          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(t.avatar_url))
+          if (
+            !looksValidAvatarUrl(avatarRaw) &&
+            looksValidAvatarUrl(t.avatar_url)
+          )
             avatarRaw = t.avatar_url;
         }
       }
@@ -630,7 +626,10 @@ const ConnectionsPage: React.FC = () => {
             area = normalizeFreeText(s.area);
           if (!baseIntro && normalizeFreeText(s.description))
             intro = normalizeFreeText(s.description);
-          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(s.avatar_url))
+          if (
+            !looksValidAvatarUrl(avatarRaw) &&
+            looksValidAvatarUrl(s.avatar_url)
+          )
             avatarRaw = s.avatar_url;
         }
       }
@@ -651,7 +650,7 @@ const ConnectionsPage: React.FC = () => {
   }
 
   // ------------------------------
-  // Fetch followers / following (newest first)
+  // Fetch followers / following
   // ------------------------------
   useEffect(() => {
     let cancelled = false;
@@ -662,11 +661,10 @@ const ConnectionsPage: React.FC = () => {
       setErrorMsg(null);
 
       try {
-        // フォロワー：target_id = targetUserId をフォローしている user_id
         const { data, error } = await supabase
           .from("relations")
           .select("user_id, target_id, type, created_at")
-          .eq("type", "follow")
+          .in("type", FOLLOW_TYPES as any)
           .eq("target_id", targetUserId)
           .order("created_at", { ascending: false });
 
@@ -677,7 +675,6 @@ const ConnectionsPage: React.FC = () => {
           .map((r) => r.user_id)
           .filter((x): x is string => !!x);
 
-        // 重複排除（順序維持）
         const seen = new Set<string>();
         const uniqIds = idsInOrder.filter((id) =>
           seen.has(id) ? false : (seen.add(id), true)
@@ -713,11 +710,10 @@ const ConnectionsPage: React.FC = () => {
       setErrorMsg(null);
 
       try {
-        // フォロー中：user_id = targetUserId がフォローしている target_id
         const { data, error } = await supabase
           .from("relations")
           .select("user_id, target_id, type, created_at")
-          .eq("type", "follow")
+          .in("type", FOLLOW_TYPES as any)
           .eq("user_id", targetUserId)
           .order("created_at", { ascending: false });
 
@@ -765,27 +761,33 @@ const ConnectionsPage: React.FC = () => {
     if (!authUserId) return;
     if (!isUuid(authUserId) || !isUuid(targetId)) return;
 
-    // optimistic update
     setFollowers((prev) =>
-      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
+      prev.map((x) =>
+        x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x
+      )
     );
     setFollows((prev) =>
-      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
+      prev.map((x) =>
+        x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x
+      )
     );
 
     const ok = await setRelationOnServer({
       userId: authUserId as UserId,
       targetId: targetId as UserId,
-      type: nextEnabled ? "follow" : null,
+      type: nextEnabled ? "follow" : null, // ★書き込みは follow で統一
     });
 
     if (!ok) {
-      // rollback
       setFollowers((prev) =>
-        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
+        prev.map((x) =>
+          x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x
+        )
       );
       setFollows((prev) =>
-        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
+        prev.map((x) =>
+          x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x
+        )
       );
     }
   };
@@ -881,7 +883,7 @@ const ConnectionsPage: React.FC = () => {
       <AppHeader title="つながり" subtitle={targetHandle} showBack />
 
       <main className="app-main connections-main">
-        {/* X風：上部タブ（下にインジケータ） */}
+        {/* タブ順：左=フォロー中 / 右=フォロワー */}
         <div className="tabs">
           <button
             className={`tab ${activeTab === "following" ? "active" : ""}`}
@@ -906,28 +908,8 @@ const ConnectionsPage: React.FC = () => {
           </div>
         )}
 
-        {/* Swipe pager */}
+        {/* Swipe pager：1枚目=following / 2枚目=followers */}
         <div className="pager" ref={pagerRef}>
-          {/* followers */}
-          <section className="page">
-            {loadingFollowers ? (
-              <div className="empty">読み込んでいます…</div>
-            ) : followers.length === 0 ? (
-              <div className="empty">フォロワーはまだいません。</div>
-            ) : (
-              <div className="list">
-                {followers.map((u) => (
-                  <ConnectionRow
-                    key={`followers:${u.userId}`}
-                    item={u}
-                    onOpenProfile={openProfile}
-                    onToggleFollow={toggleFollow}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-
           {/* following */}
           <section className="page">
             {loadingFollows ? (
@@ -947,10 +929,31 @@ const ConnectionsPage: React.FC = () => {
               </div>
             )}
           </section>
+
+          {/* followers */}
+          <section className="page">
+            {loadingFollowers ? (
+              <div className="empty">読み込んでいます…</div>
+            ) : followers.length === 0 ? (
+              <div className="empty">フォロワーはまだいません。</div>
+            ) : (
+              <div className="list">
+                {followers.map((u) => (
+                  <ConnectionRow
+                    key={`followers:${u.userId}`}
+                    item={u}
+                    onOpenProfile={openProfile}
+                    onToggleFollow={toggleFollow}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       </main>
 
       <BottomNav />
+
       <style jsx>{`
         .connections-main {
           padding: 0 16px 120px;
@@ -1019,7 +1022,6 @@ const ConnectionsPage: React.FC = () => {
           line-height: 1.6;
         }
 
-        /* pager (X風スワイプ) */
         .pager {
           display: flex;
           overflow-x: auto;
