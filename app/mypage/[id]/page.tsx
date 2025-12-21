@@ -209,6 +209,11 @@ const PublicMyPage: React.FC = () => {
     blocked: false,
   });
 
+  // ===== Step 1: follow/follower counts（ログイン時のみ）=====
+  const [followCount, setFollowCount] = useState<number | null>(null);
+  const [followerCount, setFollowerCount] = useState<number | null>(null);
+  const [loadingCounts, setLoadingCounts] = useState<boolean>(false);
+
   // viewer id 初期化（guest + auth）
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -411,6 +416,66 @@ const PublicMyPage: React.FC = () => {
     };
   }, [userId, storageKey]);
 
+  // ===== Step 1: follow/follower counts（ログイン時のみ）=====
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchCounts() {
+      // ログインしてないなら表示しない（–）
+      if (!authUserId) {
+        setFollowCount(null);
+        setFollowerCount(null);
+        return;
+      }
+
+      // /mypage/[id] の対象が uuid じゃないなら（ゲスト互換）まだ数えない
+      if (!isUuid(userId)) {
+        setFollowCount(null);
+        setFollowerCount(null);
+        return;
+      }
+
+      setLoadingCounts(true);
+
+      try {
+        // フォロー数：user_id = owner
+        const { count: c1, error: e1 } = await supabase
+          .from("relations")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .eq("type", "follow");
+
+        if (cancelled) return;
+        if (e1) throw e1;
+
+        // フォロワー数：target_id = owner
+        const { count: c2, error: e2 } = await supabase
+          .from("relations")
+          .select("id", { count: "exact", head: true })
+          .eq("target_id", userId)
+          .eq("type", "follow");
+
+        if (cancelled) return;
+        if (e2) throw e2;
+
+        setFollowCount(typeof c1 === "number" ? c1 : 0);
+        setFollowerCount(typeof c2 === "number" ? c2 : 0);
+      } catch (e: any) {
+        // RLS / policy 未整備でも UI が壊れないようにする（ログに出すだけ）
+        console.warn("[PublicMyPage] follow count fetch failed:", e);
+        setFollowCount(null);
+        setFollowerCount(null);
+      } finally {
+        if (!cancelled) setLoadingCounts(false);
+      }
+    }
+
+    void fetchCounts();
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, userId]);
+
   // relations 復元（uuid同士はサーバー / それ以外はlocalStorage）
   useEffect(() => {
     const viewerId = authUserId ?? currentUserId;
@@ -606,6 +671,12 @@ const PublicMyPage: React.FC = () => {
   const isMeByGuest = !!currentUserId && currentUserId === userId;
   const canEdit = isOwner || isMeByGuest;
 
+  // counts 表示はログイン時のみ
+  const canShowCounts = !!authUserId && isUuid(userId);
+
+  const followHref = `/mypage/${userId}/follows`;
+  const followerHref = `/mypage/${userId}/followers`;
+
   return (
     <>
       <div className="app-shell">
@@ -681,11 +752,31 @@ const PublicMyPage: React.FC = () => {
                   <span>
                     投稿 <strong>{posts.length}</strong>
                   </span>
+
                   <span>
-                    フォロー <strong>–</strong>
+                    フォロー{" "}
+                    <strong>
+                      {canShowCounts ? (
+                        <Link href={followHref} className="stats-link">
+                          {loadingCounts ? "…" : followCount ?? "–"}
+                        </Link>
+                      ) : (
+                        "–"
+                      )}
+                    </strong>
                   </span>
+
                   <span>
-                    フォロワー <strong>–</strong>
+                    フォロワー{" "}
+                    <strong>
+                      {canShowCounts ? (
+                        <Link href={followerHref} className="stats-link">
+                          {loadingCounts ? "…" : followerCount ?? "–"}
+                        </Link>
+                      ) : (
+                        "–"
+                      )}
+                    </strong>
                   </span>
                 </div>
 
@@ -893,6 +984,15 @@ const PublicMyPage: React.FC = () => {
           color: var(--text-sub);
           display: flex;
           gap: 10px;
+        }
+
+        .stats-link {
+          color: inherit;
+          text-decoration: none;
+          border-bottom: 1px solid rgba(0, 0, 0, 0.18);
+        }
+        .stats-link:hover {
+          border-bottom-color: rgba(0, 0, 0, 0.35);
         }
 
         .therapist-intro {
