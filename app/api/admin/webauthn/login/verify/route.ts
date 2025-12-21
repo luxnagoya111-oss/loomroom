@@ -8,8 +8,8 @@ import {
   ADMIN_RP_ID,
 } from "@/lib/adminConfig";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { createAdminSession } from "@/lib/adminSession";
 import { consumeChallenge } from "../../_store";
+import { createAdminSession, applyAdminSessionCookie } from "@/lib/adminSession";
 
 export const runtime = "nodejs";
 
@@ -21,53 +21,8 @@ function safeNext(next: string | null) {
 }
 
 /* =========================================================
- * base64url utils
- * - validator / decoder
- * - ★ expectedChallenge を Uint8Array に戻す（本丸）
- * ========================================================= */
-function isBase64urlString(s: string): boolean {
-  return /^[A-Za-z0-9\-_]*$/.test(s);
-}
-
-function base64urlToBufferStrict(s: string): Buffer {
-  if (typeof s !== "string") throw new Error("not a string");
-  if (!isBase64urlString(s)) throw new Error("contains non-base64url chars");
-  if (s.length % 4 === 1)
-    throw new Error("invalid base64url length (mod 4 === 1)");
-
-  const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
-  return Buffer.from(b64 + pad, "base64");
-}
-
-function base64urlToUint8ArrayStrict(s: string): Uint8Array {
-  return new Uint8Array(base64urlToBufferStrict(s));
-}
-
-function assertFieldBase64url(
-  obj: any,
-  path: string
-): { ok: true } | { ok: false; reason: string } {
-  const value = path.split(".").reduce((acc, key) => acc?.[key], obj);
-
-  // userHandle は null の可能性がある（その場合はOK）
-  if (value == null) return { ok: true };
-
-  if (typeof value !== "string") {
-    return { ok: false, reason: `not string (type=${typeof value})` };
-  }
-
-  try {
-    base64urlToBufferStrict(value);
-    return { ok: true };
-  } catch (e: any) {
-    return { ok: false, reason: e?.message || "decode failed" };
-  }
-}
-
-/* =========================================================
- * bytea -> Uint8Array(ArrayBuffer固定) 変換（public_key用）
- * SharedArrayBuffer を完全排除
+ * DB bytea -> Uint8Array<ArrayBuffer固定)
+ * public_key は @simplewebauthn/server が Uint8Array を期待
  * ========================================================= */
 function bufferToStrictUint8(buf: Buffer): Uint8Array<ArrayBuffer> {
   const ab = new ArrayBuffer(buf.length);
@@ -88,7 +43,7 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
       if (v.startsWith("\\x")) {
         return bufferToStrictUint8(Buffer.from(v.slice(2), "hex"));
       }
-      // base64 / base64url の両方許容
+      // base64 / base64url 両対応
       const s = v.replace(/-/g, "+").replace(/_/g, "/");
       const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
       return bufferToStrictUint8(Buffer.from(s + pad, "base64"));
@@ -104,21 +59,13 @@ function normalizeBytea(v: any): Uint8Array<ArrayBuffer> {
   return new Uint8Array(new ArrayBuffer(0));
 }
 
-async function findCredentialForAdmin(params: {
-  adminEmail: string;
-  credentialId: string;
-}) {
-  const { adminEmail, credentialId } = params;
-
-  const { data, error } = await supabaseAdmin
-    .from("admin_webauthn_credentials")
-    .select("credential_id, public_key, counter")
-    .eq("admin_email", adminEmail)
-    .eq("credential_id", credentialId)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data ?? null;
+/* =========================================================
+ * assertion は「加工しない」(最重要)
+ * - startAuthentication() が返した JSON をそのまま verify へ渡す
+ * - ここで触ると decode が壊れて “Length not supported...” が出やすい
+ * ========================================================= */
+function isNonEmptyString(v: any): v is string {
+  return typeof v === "string" && v.length > 0;
 }
 
 export async function POST(req: Request) {
@@ -131,7 +78,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const assertion: any = body?.assertion;
+    const assertion: any = body?.assertion; // ★加工しない
     const challengeId: string | undefined = body?.challengeId;
     const next: string | null = body?.next ?? null;
 
@@ -142,26 +89,19 @@ export async function POST(req: Request) {
       );
     }
 
-    // 0) 事前に「assertion が base64url として壊れてる箇所」を特定
-    const checks = [
-      ["id", "id"],
-      ["rawId", "rawId"],
-      ["response.clientDataJSON", "response.clientDataJSON"],
-      ["response.authenticatorData", "response.authenticatorData"],
-      ["response.signature", "response.signature"],
-      ["response.userHandle", "response.userHandle"], // nullはOK
-    ] as const;
-
-    const bad: Array<{ field: string; reason: string }> = [];
-    for (const [field, path] of checks) {
-      const r = assertFieldBase64url(assertion, path);
-      if (!r.ok) bad.push({ field, reason: r.reason });
-    }
-    if (bad.length) {
+    // 0) 最低限の形だけチェック（decode/変換はしない）
+    if (
+      !isNonEmptyString(assertion?.id) ||
+      !isNonEmptyString(assertion?.rawId) ||
+      !isNonEmptyString(assertion?.type) ||
+      !isNonEmptyString(assertion?.response?.clientDataJSON) ||
+      !isNonEmptyString(assertion?.response?.authenticatorData) ||
+      !isNonEmptyString(assertion?.response?.signature)
+    ) {
       return NextResponse.json(
         {
-          error: "assertion payload contains invalid base64url field(s)",
-          details: bad,
+          error: "invalid assertion payload (non-string field detected)",
+          hint: "Do not transform assertion; send the object returned by startAuthentication() as-is.",
         },
         { status: 400 }
       );
@@ -173,45 +113,32 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "challenge not found" }, { status: 400 });
     }
 
-    // expectedChallenge の形式チェック
-    if (typeof ch.challenge !== "string") {
+    if (!isNonEmptyString(ch.challenge)) {
       return NextResponse.json(
-        { error: "stored challenge is invalid", details: "challenge not string" },
-        { status: 500 }
-      );
-    }
-    if (!isBase64urlString(ch.challenge) || ch.challenge.length % 4 === 1) {
-      return NextResponse.json(
-        { error: "stored challenge is invalid", details: "challenge invalid format" },
+        { error: "stored challenge is invalid" },
         { status: 500 }
       );
     }
 
-    // ★ 本丸：verifyAuthenticationResponse に渡す expectedChallenge は Uint8Array に戻す
-    let expectedChallenge: Uint8Array;
-    try {
-      expectedChallenge = base64urlToUint8ArrayStrict(ch.challenge);
-    } catch (e: any) {
-      return NextResponse.json(
-        {
-          error: "stored challenge decode failed",
-          details: e?.message || "decode failed",
-        },
-        { status: 500 }
-      );
-    }
-
-    // 2) credential 取得（登録した id と一致するはず）
+    // 2) credential 取得（登録した id 文字列と一致する想定）
     const credentialIdFromClient = String(assertion.id);
 
-    const cred = await findCredentialForAdmin({
-      adminEmail: ADMIN_EMAIL,
-      credentialId: credentialIdFromClient,
-    });
+    const { data: cred, error } = await supabaseAdmin
+      .from("admin_webauthn_credentials")
+      .select("credential_id, public_key, counter")
+      .eq("admin_email", ADMIN_EMAIL)
+      .eq("credential_id", credentialIdFromClient)
+      .maybeSingle();
 
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
     if (!cred) {
       return NextResponse.json(
-        { error: "credential not found (id mismatch)" },
+        {
+          error: "credential not found (id mismatch)",
+          hint: "If you recently changed how credential_id is stored, clear old rows and re-register once.",
+        },
         { status: 400 }
       );
     }
@@ -227,18 +154,12 @@ export async function POST(req: Request) {
         ? cred.counter
         : 0;
 
-    // 3) verify
+    // 3) verify（ここで “Length not supported...” が出るなら assertion の中身が壊れてる）
     let verification: any;
     try {
       verification = await verifyAuthenticationResponse({
         response: assertion,
-
-        // ✅ ここが正しい：関数で比較（内部のデコード処理を回避できる）
-        expectedChallenge: (challengeFromClient: string) => {
-          // DBに保存してある challenge（string）と一致するか
-          return challengeFromClient === String(ch.challenge);
-        },
-
+        expectedChallenge: ch.challenge, // ★ string のまま
         expectedOrigin: ADMIN_ORIGIN,
         expectedRPID: ADMIN_RP_ID,
         credential: {
@@ -253,11 +174,11 @@ export async function POST(req: Request) {
         {
           error: e?.message || "verifyAuthenticationResponse threw",
           hint:
-            "expectedChallenge must be a string or a predicate function. This implementation compares the client-provided challenge string to the stored challenge string.",
+            "This almost always means one of clientDataJSON/authenticatorData/signature is not valid base64url. Ensure LoginClient uses startAuthentication({ optionsJSON }) and sends the returned assertion without any modifications.",
         },
         { status: 500 }
       );
-    }   
+    }
 
     if (!verification.verified) {
       return NextResponse.json(
@@ -278,13 +199,16 @@ export async function POST(req: Request) {
       .eq("admin_email", ADMIN_EMAIL)
       .eq("credential_id", cred.credential_id);
 
-    // 5) admin session
-    await createAdminSession(ADMIN_EMAIL);
+    // 5) admin session（DBに作成）
+    const { sessionId, expiresAt } = await createAdminSession(ADMIN_EMAIL);
 
-    return NextResponse.json({
+    // ★ Cookie set は NextResponse 側で行う（next/headers cookies().set は世代差がある）
+    const res = NextResponse.json({
       ok: true,
       redirectTo: safeNext(next),
     });
+    applyAdminSessionCookie(res, sessionId, expiresAt);
+    return res;
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message || "verify error" },
