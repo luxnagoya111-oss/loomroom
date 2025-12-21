@@ -141,8 +141,7 @@ const StoreProfilePage: React.FC = () => {
   const storeId = (params?.id as string) || "store";
 
   // slug時代のフォールバック（表示だけ）
-  const fallbackSlug =
-    storeId === "lux" || storeId === "loomroom" ? storeId : "lux";
+  const fallbackSlug = storeId === "lux" || storeId === "loomroom" ? storeId : "lux";
 
   const initialStoreName =
     fallbackSlug === "lux"
@@ -151,8 +150,7 @@ const StoreProfilePage: React.FC = () => {
       ? "LRoom"
       : "LRoom 提携サロン";
 
-  const initialAreaLabel =
-    AREA_LABEL_MAP[fallbackSlug] || "全国（オンライン案内中心）";
+  const initialAreaLabel = AREA_LABEL_MAP[fallbackSlug] || "全国（オンライン案内中心）";
 
   // ==============================
   // state
@@ -204,6 +202,7 @@ const StoreProfilePage: React.FC = () => {
   // ★ connections 用のカウント（mypage と同一：表示対象 users.id を正）
   const [followingCount, setFollowingCount] = useState<number>(0);
   const [followersCount, setFollowersCount] = useState<number>(0);
+  const [loadingCounts, setLoadingCounts] = useState<boolean>(false);
 
   // 在籍セラピスト（DB）
   const [therapists, setTherapists] = useState<TherapistHit[]>([]);
@@ -263,11 +262,14 @@ const StoreProfilePage: React.FC = () => {
         if (!cancelled) {
           setFollowingCount(0);
           setFollowersCount(0);
+          setLoadingCounts(false);
         }
         return;
       }
 
       try {
+        if (!cancelled) setLoadingCounts(true);
+
         const followingReq = supabase
           .from("relations")
           .select("target_id", { count: "exact", head: true })
@@ -280,10 +282,7 @@ const StoreProfilePage: React.FC = () => {
           .eq("target_id", userId)
           .in("type", FOLLOW_TYPES as any);
 
-        const [followingRes, followersRes] = await Promise.all([
-          followingReq,
-          followersReq,
-        ]);
+        const [followingRes, followersRes] = await Promise.all([followingReq, followersReq]);
 
         if (cancelled) return;
 
@@ -301,6 +300,8 @@ const StoreProfilePage: React.FC = () => {
         console.error("[StoreProfile] count unexpected error:", e);
         setFollowingCount(0);
         setFollowersCount(0);
+      } finally {
+        if (!cancelled) setLoadingCounts(false);
       }
     };
 
@@ -309,18 +310,13 @@ const StoreProfilePage: React.FC = () => {
     } else {
       setFollowingCount(0);
       setFollowersCount(0);
+      setLoadingCounts(false);
     }
 
     return () => {
       cancelled = true;
     };
   }, [storeOwnerUserId]);
-
-  // ★ connections に飛ばす（mypage と同一：users.id を正）
-  const openConnections = (tab: "following" | "followers") => {
-    if (!storeOwnerUserId || !isUuid(storeOwnerUserId)) return;
-    router.push(`/connections/${storeOwnerUserId}?tab=${tab}`);
-  };
 
   // 在籍申請ボタン表示判定（uuid会員の therapist のみ）
   useEffect(() => {
@@ -487,9 +483,7 @@ const StoreProfilePage: React.FC = () => {
 
         if (sError) {
           console.error("[StoreProfile] store fetch error:", sError);
-          setProfileError(
-            (sError as any)?.message ?? "店舗プロフィールの取得に失敗しました。"
-          );
+          setProfileError((sError as any)?.message ?? "店舗プロフィールの取得に失敗しました。");
           return;
         }
         if (!storeRow) {
@@ -569,12 +563,8 @@ const StoreProfilePage: React.FC = () => {
       } catch (e: any) {
         if (cancelled) return;
         console.error("[StoreProfile] unexpected error:", e);
-        setProfileError(
-          e?.message ?? "店舗プロフィールの取得中に不明なエラーが発生しました。"
-        );
-        setPostsError(
-          e?.message ?? "お店の投稿の取得中に不明なエラーが発生しました。"
-        );
+        setProfileError(e?.message ?? "店舗プロフィールの取得中に不明なエラーが発生しました。");
+        setPostsError(e?.message ?? "お店の投稿の取得中に不明なエラーが発生しました。");
         setPosts([]);
       } finally {
         if (!cancelled) {
@@ -608,9 +598,7 @@ const StoreProfilePage: React.FC = () => {
           const raw = (t as DbTherapistRow).avatar_url ?? null;
           const resolved = looksValidAvatarUrl(raw) ? resolveAvatarUrl(raw) : null;
 
-          const displayName =
-            ((t as DbTherapistRow).display_name ?? "").trim() || "セラピスト";
-
+          const displayName = ((t as DbTherapistRow).display_name ?? "").trim() || "セラピスト";
           const userId = (t as DbTherapistRow).user_id ?? null;
 
           return {
@@ -645,15 +633,17 @@ const StoreProfilePage: React.FC = () => {
   };
 
   // ★ Relation UI は uuid会員同士 + 自分以外 のときだけ
-  const canShowRelationUi =
-    !isOwner && isUuid(authUserId) && isUuid(storeOwnerUserId);
+  const canShowRelationUi = !isOwner && isUuid(authUserId) && isUuid(storeOwnerUserId);
 
   // ★ DM は uuidログイン済み + 相手uuid + 自分以外 + ブロックしてない ときだけ
-  const canShowDmButton =
-    !isOwner &&
-    !relations.blocked &&
-    isUuid(authUserId) &&
-    isUuid(storeOwnerUserId);
+  const canShowDmButton = !isOwner && !relations.blocked && isUuid(authUserId) && isUuid(storeOwnerUserId);
+
+  // counts 表示は「対象がuuidなら表示」（ログイン不要）
+  const canShowCounts = isUuid(storeOwnerUserId);
+
+  // Link の href（storeOwnerUserId を正として connections を開く）
+  const followingHref = canShowCounts ? `/connections/${storeOwnerUserId}?tab=following` : "#";
+  const followersHref = canShowCounts ? `/connections/${storeOwnerUserId}?tab=followers` : "#";
 
   return (
     <div className="app-shell">
@@ -708,35 +698,41 @@ const StoreProfilePage: React.FC = () => {
                 <span>対応エリア：{areaLabel}</span>
               </div>
 
-              {/* ★ mypage と同一：フォロー中/フォロワーを表示、押したら connections */}
+              {/* ★ mypage と同じ：数字部分がリンク */}
               <div className="store-stats-row">
                 <span>
                   投稿 <strong>{posts.length}</strong>
                 </span>
 
                 <span>
-                  在籍セラピスト <strong>{therapists.length}</strong>
+                  在籍 <strong>{therapists.length}</strong>
                 </span>
 
-                <button
-                  type="button"
-                  className="stat-link"
-                  onClick={() => openConnections("following")}
-                  disabled={!isUuid(storeOwnerUserId)}
-                  aria-label="フォロー中一覧を見る"
-                >
-                  フォロー中 <strong>{followingCount}</strong>
-                </button>
+                <span>
+                  フォロー中{" "}
+                  <strong>
+                    {canShowCounts ? (
+                      <Link href={followingHref} className="stat-link">
+                        {loadingCounts ? "…" : followingCount}
+                      </Link>
+                    ) : (
+                      "–"
+                    )}
+                  </strong>
+                </span>
 
-                <button
-                  type="button"
-                  className="stat-link"
-                  onClick={() => openConnections("followers")}
-                  disabled={!isUuid(storeOwnerUserId)}
-                  aria-label="フォロワー一覧を見る"
-                >
-                  フォロワー <strong>{followersCount}</strong>
-                </button>
+                <span>
+                  フォロワー{" "}
+                  <strong>
+                    {canShowCounts ? (
+                      <Link href={followersHref} className="stat-link">
+                        {loadingCounts ? "…" : followersCount}
+                      </Link>
+                    ) : (
+                      "–"
+                    )}
+                  </strong>
+                </span>
               </div>
 
               {canShowRelationUi && (
@@ -770,11 +766,7 @@ const StoreProfilePage: React.FC = () => {
                       cursor: applyDone ? "default" : "pointer",
                     }}
                   >
-                    {applyDone
-                      ? "在籍申請済み"
-                      : applyLoading
-                      ? "申請中…"
-                      : "この店舗に在籍申請する"}
+                    {applyDone ? "在籍申請済み" : applyLoading ? "申請中…" : "この店舗に在籍申請する"}
                   </button>
                 </div>
               )}
@@ -800,17 +792,12 @@ const StoreProfilePage: React.FC = () => {
           <h2 className="store-section-title">在籍セラピスト</h2>
 
           {therapists.length === 0 ? (
-            <p className="store-caption">
-              まだ LRoom 上では在籍セラピストが登録されていません。
-            </p>
+            <p className="store-caption">まだ LRoom 上では在籍セラピストが登録されていません。</p>
           ) : (
             <ul className="therapist-list">
               {therapists.map((t) => (
                 <li key={t.id} className="therapist-item">
-                  <Link
-                    href={`/therapist/${t.id}`}
-                    className="therapist-link no-link-style"
-                  >
+                  <Link href={`/therapist/${t.id}`} className="therapist-link no-link-style">
                     <AvatarCircle
                       className="therapist-avatar"
                       size={40}
@@ -836,12 +823,7 @@ const StoreProfilePage: React.FC = () => {
 
           <div className="store-links">
             {websiteUrl && (
-              <a
-                href={websiteUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="store-link-btn"
-              >
+              <a href={websiteUrl} target="_blank" rel="noopener noreferrer" className="store-link-btn">
                 公式サイトを見る
               </a>
             )}
@@ -945,18 +927,14 @@ const StoreProfilePage: React.FC = () => {
 
                         <div className="post-body">
                           {p.body.split("\n").map((line: string, idx: number) => (
-                            <p key={idx}>
-                              {line || <span style={{ opacity: 0.3 }}>　</span>}
-                            </p>
+                            <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
                           ))}
                         </div>
 
                         <div className="post-actions">
                           <button
                             type="button"
-                            className={
-                              "post-like-btn" + (liked ? " post-like-btn--liked" : "")
-                            }
+                            className={"post-like-btn" + (liked ? " post-like-btn--liked" : "")}
                             onClick={(e) => {
                               e.stopPropagation();
                               toggleLike(p.id);
@@ -1037,27 +1015,11 @@ const StoreProfilePage: React.FC = () => {
           align-items: center;
         }
 
-        /* ★ mypage と同じ「押せる」見た目 */
+        /* Link版：マイページと同じ押せる見た目 */
         .stat-link {
-          border: none;
-          background: none;
-          padding: 0;
-          margin: 0;
           color: var(--text-sub);
-          font-size: 11px;
-          cursor: pointer;
           text-decoration: underline;
           text-underline-offset: 3px;
-        }
-        .stat-link strong {
-          color: var(--text-main);
-          font-weight: 700;
-          margin-left: 2px;
-        }
-        .stat-link:disabled {
-          cursor: default;
-          opacity: 0.5;
-          text-decoration: none;
         }
 
         .store-hero-lead {

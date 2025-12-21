@@ -9,9 +9,10 @@ import AvatarCircle from "@/components/AvatarCircle";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 
-import { getCurrentUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
+import { getCurrentUserId } from "@/lib/auth";
 import { timeAgo } from "@/lib/timeAgo";
+
 import {
   getRelation,
   setRelation as setRelationOnServer,
@@ -60,7 +61,6 @@ function looksValidAvatarUrl(v: string | null | undefined): boolean {
   if (s.includes("/storage/v1/object/public/avatars")) {
     if (/\/public\/avatars\/?$/i.test(s)) return false;
   }
-
   return true;
 }
 
@@ -87,12 +87,12 @@ type TherapistProfile = {
   displayName: string;
 
   /**
-   * ★ 表示ハンドルは統一：users.id(uuid) から @xxxxxx（先頭6桁）
+   * 表示ハンドルは統一：users.id(uuid) から @xxxxxx（先頭6桁）
    */
   handle: string;
 
   /**
-   * ★ 対応エリアは自由入力（string）
+   * 対応エリアは自由入力（string）
    */
   area: string;
 
@@ -121,11 +121,12 @@ type LinkedStoreInfo = {
 
 const TherapistProfilePage: React.FC = () => {
   const router = useRouter();
-
   const params = useParams<{ id: string }>();
   const therapistId = (params?.id as string) || ""; // therapists.id
 
+  // viewer（ゲスト含む）
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  // Supabase Auth（uuid会員）
   const [authUserId, setAuthUserId] = useState<string | null>(null);
 
   // therapists.user_id（= users.id / uuid）
@@ -140,7 +141,7 @@ const TherapistProfilePage: React.FC = () => {
   const [loadingStore, setLoadingStore] = useState(false);
   const [storeError, setStoreError] = useState<string | null>(null);
 
-  // ★「自分のページ」判定は Supabase Auth uuid を正とする
+  // 「自分のページ」判定は Supabase Auth uuid を正とする
   const isOwner =
     !!authUserId &&
     !!therapistUserId &&
@@ -173,11 +174,12 @@ const TherapistProfilePage: React.FC = () => {
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
 
-  // ★ connections 用のカウント（mypage と同一思想：表示対象 users.id を正）
-  const [followingCount, setFollowingCount] = useState<number>(0);
-  const [followersCount, setFollowersCount] = useState<number>(0);
+  // ===== counts（mypage と同一思想：集計対象は users.id(uuid)）=====
+  const [followingCount, setFollowingCount] = useState<number | null>(null);
+  const [followersCount, setFollowersCount] = useState<number | null>(null);
+  const [loadingCounts, setLoadingCounts] = useState<boolean>(false);
 
-  // currentUserId / authUserId を初期化
+  // currentUserId / authUserId 初期化
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -189,7 +191,7 @@ const TherapistProfilePage: React.FC = () => {
       .catch(() => setAuthUserId(null));
   }, []);
 
-  // relation の復元（uuid会員同士のみ / 自分のページは無効）
+  // relation 復元（uuid会員同士のみ / 自分のページは無効）
   useEffect(() => {
     if (isOwner) {
       setRelations({ following: false, muted: false, blocked: false });
@@ -231,9 +233,9 @@ const TherapistProfilePage: React.FC = () => {
 
     setRelations({ following: nextEnabled, muted: false, blocked: false });
 
-    // ★ mypage と同じ体感：楽観更新（外れても後続再集計で整合）
-    // 自分(authUserId)が therapistUserId を follow するので、対象の followers が増減
+    // counts の体感を揃える：楽観更新（後続の再集計で整合）
     setFollowersCount((prev) => {
+      if (typeof prev !== "number") return prev;
       const next = nextEnabled ? prev + 1 : prev - 1;
       return next < 0 ? 0 : next;
     });
@@ -278,7 +280,7 @@ const TherapistProfilePage: React.FC = () => {
     setRelations({ following: false, muted: false, blocked: nextEnabled });
   };
 
-  // ▼ Supabase から therapists / users / posts を取得
+  // ===== therapists / users / posts を取得 =====
   useEffect(() => {
     let cancelled = false;
 
@@ -309,15 +311,11 @@ const TherapistProfilePage: React.FC = () => {
           setProfileError(
             (tError as any)?.message ?? "セラピスト情報の取得に失敗しました。"
           );
-          setLoadingProfile(false);
-          setLoadingPosts(false);
           return;
         }
 
         if (!therapist) {
           setProfileError("セラピスト情報が見つかりませんでした。");
-          setLoadingProfile(false);
-          setLoadingPosts(false);
           return;
         }
 
@@ -350,10 +348,9 @@ const TherapistProfilePage: React.FC = () => {
             ? (therapist as any).display_name
             : "セラピスト";
 
-        // ★ handle統一：users.id(uuid) → @xxxxxx（先頭6桁）
-        const handle = toPublicHandleFromUserId(tuid) ?? "";
+        // handle統一：users.id(uuid) → @xxxxxx
+        const handle = tuid ? toPublicHandleFromUserId(tuid) ?? "" : "";
 
-        // ★ 自由入力エリア（string）
         const area =
           typeof (therapist as any).area === "string"
             ? (therapist as any).area.trim()
@@ -381,9 +378,7 @@ const TherapistProfilePage: React.FC = () => {
           avatarUrl,
         }));
 
-        setLoadingProfile(false);
-
-        // 3) posts（このページの投稿は「users.id（uuid）」で author_id を持つ前提）
+        // 3) posts（posts.author_id = users.id(uuid) 前提）
         if (tuid) {
           const { data: postRows, error: pError } = await supabase
             .from("posts")
@@ -421,6 +416,7 @@ const TherapistProfilePage: React.FC = () => {
           e?.message ??
             "投稿の取得中に不明なエラーが発生しました。時間をおいて再度お試しください。"
         );
+        setPosts([]);
       } finally {
         if (!cancelled) {
           setLoadingPosts(false);
@@ -430,13 +426,12 @@ const TherapistProfilePage: React.FC = () => {
     };
 
     void fetchProfileAndPosts();
-
     return () => {
       cancelled = true;
     };
   }, [therapistId]);
 
-  // ★ store_id がある場合のみ stores を取得（在籍表示用）
+  // ===== store_id がある場合のみ stores を取得（在籍表示用）=====
   useEffect(() => {
     let cancelled = false;
 
@@ -501,32 +496,31 @@ const TherapistProfilePage: React.FC = () => {
   }, [linkedStoreId]);
 
   /**
-   * ★ フォロー中 / フォロワー数の取得
-   * mypage と同一思想：表示対象 users.id を正として集計
+   * ===== フォロー中 / フォロワー数（mypageと同一）=====
+   * 表示対象は users.id(uuid) = therapistUserId
    */
   useEffect(() => {
     let cancelled = false;
 
-    const loadCounts = async (userId: string) => {
-      if (!isUuid(userId)) {
-        if (!cancelled) {
-          setFollowingCount(0);
-          setFollowersCount(0);
-        }
+    async function loadCounts(uid: string) {
+      if (!isUuid(uid)) {
+        setFollowingCount(null);
+        setFollowersCount(null);
         return;
       }
 
+      setLoadingCounts(true);
       try {
         const followingReq = supabase
           .from("relations")
           .select("target_id", { count: "exact", head: true })
-          .eq("user_id", userId)
+          .eq("user_id", uid)
           .in("type", FOLLOW_TYPES as any);
 
         const followersReq = supabase
           .from("relations")
           .select("user_id", { count: "exact", head: true })
-          .eq("target_id", userId)
+          .eq("target_id", uid)
           .in("type", FOLLOW_TYPES as any);
 
         const [followingRes, followersRes] = await Promise.all([
@@ -537,27 +531,34 @@ const TherapistProfilePage: React.FC = () => {
         if (cancelled) return;
 
         if (followingRes.error) {
-          console.error("[TherapistProfile] following count error:", followingRes.error);
+          console.error(
+            "[TherapistProfile] following count error:",
+            followingRes.error
+          );
         }
         if (followersRes.error) {
-          console.error("[TherapistProfile] followers count error:", followersRes.error);
+          console.error(
+            "[TherapistProfile] followers count error:",
+            followersRes.error
+          );
         }
 
-        setFollowingCount(followingRes.count ?? 0);
-        setFollowersCount(followersRes.count ?? 0);
+        setFollowingCount(typeof followingRes.count === "number" ? followingRes.count : 0);
+        setFollowersCount(typeof followersRes.count === "number" ? followersRes.count : 0);
       } catch (e) {
         if (cancelled) return;
         console.error("[TherapistProfile] count unexpected error:", e);
         setFollowingCount(0);
         setFollowersCount(0);
+      } finally {
+        if (!cancelled) setLoadingCounts(false);
       }
-    };
+    }
 
-    if (therapistUserId) {
-      void loadCounts(therapistUserId);
-    } else {
-      setFollowingCount(0);
-      setFollowersCount(0);
+    if (therapistUserId) void loadCounts(therapistUserId);
+    else {
+      setFollowingCount(null);
+      setFollowersCount(null);
     }
 
     return () => {
@@ -565,9 +566,20 @@ const TherapistProfilePage: React.FC = () => {
     };
   }, [therapistUserId]);
 
-  // ★ Relation UI は uuid会員同士 + 自分以外 のときだけ
-  const canShowRelationUi =
-    !isOwner && isUuid(authUserId) && isUuid(therapistUserId);
+  // counts 表示可否（対象がuuidなら表示）
+  const canShowCounts = isUuid(therapistUserId);
+
+  const followingHref =
+    therapistUserId && isUuid(therapistUserId)
+      ? `/connections/${therapistUserId}?tab=following`
+      : "#";
+  const followerHref =
+    therapistUserId && isUuid(therapistUserId)
+      ? `/connections/${therapistUserId}?tab=followers`
+      : "#";
+
+  // Relation UI は uuid会員同士 + 自分以外 のときだけ
+  const canShowRelationUi = !isOwner && isUuid(authUserId) && isUuid(therapistUserId);
 
   // DMボタンは「店舗に紐づいていて」「会員ログイン済み」「相手uuid」「自分ではなく」「ブロックしていない」場合のみ
   const canShowDmButton =
@@ -577,16 +589,8 @@ const TherapistProfilePage: React.FC = () => {
     isUuid(authUserId) &&
     isUuid(therapistUserId);
 
-  // 関連リンク（SNS）が空ならブロック自体を出さない
   const showSnsBlock = !!(profile.snsX || profile.snsLine || profile.snsOther);
-
   const areaLabel = profile.area?.trim() ? profile.area.trim() : "未設定";
-
-  // ★ connections に飛ばす（mypage と同一：users.id を正）
-  const openConnections = (tab: "following" | "followers") => {
-    if (!therapistUserId || !isUuid(therapistUserId)) return;
-    router.push(`/connections/${therapistUserId}?tab=${tab}`);
-  };
 
   return (
     <>
@@ -636,45 +640,45 @@ const TherapistProfilePage: React.FC = () => {
                 </div>
 
                 <div className="profile-meta-row">
-                  <span className="profile-meta-item">
-                    アカウント種別：セラピスト
-                  </span>
-                  <span className="profile-meta-item">
-                    対応エリア：{areaLabel}
-                  </span>
+                  <span className="profile-meta-item">アカウント種別：セラピスト</span>
+                  <span className="profile-meta-item">対応エリア：{areaLabel}</span>
 
                   {!isStoreLinked && (
-                    <span className="profile-tag">
-                      テスト参加中（店舗と紐づけ前）
-                    </span>
+                    <span className="profile-tag">テスト参加中（店舗と紐づけ前）</span>
                   )}
                 </div>
 
-                {/* ★ mypage と同じ：押したら connections */}
+                {/* フォロー統一（mypageと同じ：users.id を正に connections へ） */}
                 <div className="profile-stats-row">
                   <span>
                     投稿 <strong>{posts.length}</strong>
                   </span>
 
-                  <button
-                    type="button"
-                    className="stat-link"
-                    onClick={() => openConnections("following")}
-                    disabled={!isUuid(therapistUserId)}
-                    aria-label="フォロー中一覧を見る"
-                  >
-                    フォロー中 <strong>{followingCount}</strong>
-                  </button>
+                  <span>
+                    フォロー中{" "}
+                    <strong>
+                      {canShowCounts ? (
+                        <Link href={followingHref} className="stats-link">
+                          {loadingCounts ? "…" : followingCount ?? "–"}
+                        </Link>
+                      ) : (
+                        "–"
+                      )}
+                    </strong>
+                  </span>
 
-                  <button
-                    type="button"
-                    className="stat-link"
-                    onClick={() => openConnections("followers")}
-                    disabled={!isUuid(therapistUserId)}
-                    aria-label="フォロワー一覧を見る"
-                  >
-                    フォロワー <strong>{followersCount}</strong>
-                  </button>
+                  <span>
+                    フォロワー{" "}
+                    <strong>
+                      {canShowCounts ? (
+                        <Link href={followerHref} className="stats-link">
+                          {loadingCounts ? "…" : followersCount ?? "–"}
+                        </Link>
+                      ) : (
+                        "–"
+                      )}
+                    </strong>
+                  </span>
                 </div>
 
                 {canShowRelationUi && (
@@ -748,7 +752,7 @@ const TherapistProfilePage: React.FC = () => {
               </div>
             )}
 
-            {/* ★ 在籍店舗 */}
+            {/* 在籍店舗 */}
             {isStoreLinked && (
               <div className="linked-store-block">
                 <div className="linked-store-title">在籍店舗</div>
@@ -954,27 +958,14 @@ const TherapistProfilePage: React.FC = () => {
           flex-wrap: wrap;
         }
 
-        /* ★ マイページ同様に「押せる」見た目にする */
-        .stat-link {
-          border: none;
-          background: none;
-          padding: 0;
-          margin: 0;
-          color: var(--text-sub);
-          font-size: 11px;
-          cursor: pointer;
-          text-decoration: underline;
-          text-underline-offset: 3px;
-        }
-        .stat-link strong {
-          color: var(--text-main);
-          font-weight: 700;
-          margin-left: 2px;
-        }
-        .stat-link:disabled {
-          cursor: default;
-          opacity: 0.5;
+        /* ★ 下線いらない：リンクっぽく見せない */
+        .stats-link {
+          color: inherit;
           text-decoration: none;
+        }
+        .stats-link:hover {
+          text-decoration: none;
+          opacity: 0.9;
         }
 
         .profile-intro {
