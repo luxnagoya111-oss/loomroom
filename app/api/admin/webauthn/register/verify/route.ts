@@ -1,4 +1,3 @@
-// app/api/admin/webauthn/register/verify/route.ts
 import { NextResponse } from "next/server";
 import { verifyRegistrationResponse } from "@simplewebauthn/server";
 import {
@@ -38,7 +37,9 @@ function pickChallengeFromClientDataJSON(attestation: any): string | null {
 
   try {
     const buf =
-      cd instanceof ArrayBuffer ? Buffer.from(cd) : Buffer.from(cd?.buffer ?? cd);
+      cd instanceof ArrayBuffer
+        ? Buffer.from(cd)
+        : Buffer.from(cd?.buffer ?? cd);
     const json = JSON.parse(buf.toString("utf8"));
     return typeof json?.challenge === "string" ? json.challenge : null;
   } catch {
@@ -47,7 +48,7 @@ function pickChallengeFromClientDataJSON(attestation: any): string | null {
 }
 
 /* =========================================================
- * challenge 文字列でDB照会して消費（challengeIdが無い場合の救済）
+ * challenge 文字列でDB照会して消費
  * ========================================================= */
 async function consumeChallengeByValue(
   purpose: "register" | "login",
@@ -65,16 +66,23 @@ async function consumeChallengeByValue(
   if (error) throw error;
   if (!data) return null;
 
-  await supabaseAdmin.from("admin_webauthn_challenges").delete().eq("id", data.id);
-  return data as any;
+  await supabaseAdmin
+    .from("admin_webauthn_challenges")
+    .delete()
+    .eq("id", data.id);
+
+  return data;
 }
 
 /* =========================================================
  * attestation の base64url 正規化
  * ========================================================= */
 function bytesToBase64url(bytes: Uint8Array): string {
-  const b64 = Buffer.from(bytes).toString("base64");
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return Buffer.from(bytes)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function coerceToBase64url(v: any): string | undefined {
@@ -101,95 +109,63 @@ function coerceToBase64url(v: any): string | undefined {
 function normalizeAttestation(input: any) {
   const a = input ?? {};
 
-  const id = coerceToBase64url(a.id) ?? a.id;
-  const rawId = coerceToBase64url(a.rawId) ?? a.rawId;
-
-  const clientDataJSON =
-    coerceToBase64url(a?.response?.clientDataJSON) ?? a?.response?.clientDataJSON;
-
-  const attestationObject =
-    coerceToBase64url(a?.response?.attestationObject) ??
-    a?.response?.attestationObject;
-
-  const transports = Array.isArray(a?.response?.transports)
-    ? a.response.transports
-    : undefined;
-
   return {
     ...a,
-    id,
-    rawId,
+    id: coerceToBase64url(a.id) ?? a.id,
+    rawId: coerceToBase64url(a.rawId) ?? a.rawId,
     response: {
-      ...a?.response,
-      clientDataJSON,
-      attestationObject,
-      ...(transports ? { transports } : {}),
+      ...a.response,
+      clientDataJSON:
+        coerceToBase64url(a?.response?.clientDataJSON) ??
+        a?.response?.clientDataJSON,
+      attestationObject:
+        coerceToBase64url(a?.response?.attestationObject) ??
+        a?.response?.attestationObject,
+      ...(Array.isArray(a?.response?.transports)
+        ? { transports: a.response.transports }
+        : {}),
     },
   };
 }
 
 /* =========================================================
- * publicKey（COSE bytes）を「必ず Uint8Array」に正規化
- * - バージョン差 / 実装差 / JSON化事故を全部吸収
+ * Uint8Array 正規化
  * ========================================================= */
 function toUint8(v: any): Uint8Array | null {
   if (!v) return null;
-
   if (v instanceof Uint8Array) return v;
-
-  if (typeof Buffer !== "undefined" && Buffer.isBuffer(v)) {
-    return new Uint8Array(v);
-  }
-
-  if (v instanceof ArrayBuffer) {
-    return new Uint8Array(v);
-  }
-
-  // JSON化された Buffer: { type:"Buffer", data:number[] }
+  if (Buffer.isBuffer(v)) return new Uint8Array(v);
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
   if (typeof v === "object" && v.type === "Buffer" && Array.isArray(v.data)) {
     return Uint8Array.from(v.data);
   }
-
-  // number[]
   if (Array.isArray(v) && v.every((n) => typeof n === "number")) {
     return Uint8Array.from(v);
   }
-
   return null;
 }
 
-/**
- * registrationInfo の差異吸収（バージョン差対応）
- * - パターンA: registrationInfo.credentialPublicKey / counter
- * - パターンB: registrationInfo.credential.publicKey / counter
- */
 function pickRegistrationKey(
   regInfo: any
 ): { publicKey: Uint8Array; counter: number } | null {
   if (!regInfo) return null;
 
-  // A
-  const aKey = toUint8(regInfo.credentialPublicKey);
-  if (aKey) {
-    const c = typeof regInfo.counter === "number" ? regInfo.counter : 0;
-    return { publicKey: aKey, counter: c };
-  }
+  const a = toUint8(regInfo.credentialPublicKey);
+  if (a) return { publicKey: a, counter: regInfo.counter ?? 0 };
 
-  // B
-  const bKey = toUint8(regInfo.credential?.publicKey);
-  if (bKey) {
-    const c = typeof regInfo.credential?.counter === "number" ? regInfo.credential.counter : 0;
-    return { publicKey: bKey, counter: c };
-  }
+  const b = toUint8(regInfo.credential?.publicKey);
+  if (b) return { publicKey: b, counter: regInfo.credential?.counter ?? 0 };
 
   return null;
 }
 
 function isBase64url(s: string): boolean {
-  // '=' は付かない前提（browser JSON は base64url）
   return typeof s === "string" && /^[A-Za-z0-9\-_]+$/.test(s) && s.length > 0;
 }
 
+/* =========================================================
+ * POST
+ * ========================================================= */
 export async function POST(req: Request) {
   try {
     if (!ADMIN_EMAIL) {
@@ -199,45 +175,26 @@ export async function POST(req: Request) {
       );
     }
 
-    const body = await req.json().catch(() => ({}));
-    const { attestation: attestationRaw, challengeId } = body || {};
-
-    if (!attestationRaw) {
+    const { attestation: raw, challengeId } = await req.json();
+    if (!raw) {
       return NextResponse.json(
         { error: "attestation is required" },
         { status: 400 }
       );
     }
 
-    const attestation = normalizeAttestation(attestationRaw);
+    const attestation = normalizeAttestation(raw);
 
-    // 1) challenge 取得（challengeId優先、無ければclientDataJSONから抽出）
-    let ch: any = null;
-
-    if (challengeId) {
-      ch = await consumeChallenge(challengeId);
-      if (ch && ch.purpose !== "register") ch = null;
-    }
-
+    let ch = challengeId ? await consumeChallenge(challengeId) : null;
     if (!ch) {
       const extracted = pickChallengeFromClientDataJSON(attestation);
       if (!extracted) {
         return NextResponse.json(
-          {
-            error:
-              "challenge not found (missing challengeId and cannot extract challenge)",
-          },
+          { error: "challenge not found" },
           { status: 400 }
         );
       }
       ch = await consumeChallengeByValue("register", extracted);
-    }
-
-    if (!ch) {
-      return NextResponse.json(
-        { error: "challenge not found" },
-        { status: 400 }
-      );
     }
 
     const verification = await verifyRegistrationResponse({
@@ -255,51 +212,38 @@ export async function POST(req: Request) {
       );
     }
 
-    // ★ 公開鍵（COSE bytes）を確実に Uint8Array で取り出す
     const picked = pickRegistrationKey(verification.registrationInfo);
-    if (!picked?.publicKey?.length) {
+    if (!picked) {
       return NextResponse.json(
-        { error: "registrationInfo does not contain a valid public key" },
+        { error: "public key missing" },
         { status: 400 }
       );
     }
 
-    // ★ browserから来た id（base64url string）をDBキーとして正にする
-    const credentialID = String(attestation.id ?? "");
+    const credentialID = String(attestation.id);
     if (!isBase64url(credentialID)) {
       return NextResponse.json(
-        { error: "invalid credential id (not base64url)" },
+        { error: "invalid credential id" },
         { status: 400 }
       );
     }
 
-    const { publicKey, counter } = picked;
-
-    // ★ ここが本丸：JSON化などせず、COSE bytes をそのまま bytea に保存
-    const { error: upsertErr } = await supabaseAdmin
-      .from("admin_webauthn_credentials")
-      .upsert(
-        {
-          admin_email: ADMIN_EMAIL,
-          credential_id: credentialID,
-          public_key: Buffer.from(publicKey),
-          counter,
-          last_used_at: new Date().toISOString(),
-        },
-        { onConflict: "admin_email,credential_id" }
-      );
-
-    if (upsertErr) {
-      return NextResponse.json(
-        { error: upsertErr.message || "credential save failed" },
-        { status: 500 }
-      );
-    }
+    await supabaseAdmin.from("admin_webauthn_credentials").upsert(
+      {
+        admin_email: ADMIN_EMAIL,
+        credential_id: credentialID,
+        // ★★★ ここが決定打 ★★★
+        public_key: Buffer.from(picked.publicKey.buffer),
+        counter: picked.counter,
+        last_used_at: new Date().toISOString(),
+      },
+      { onConflict: "admin_email,credential_id" }
+    );
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     return NextResponse.json(
-      { error: e?.message || "verify error" },
+      { error: e?.message ?? "verify error" },
       { status: 500 }
     );
   }
