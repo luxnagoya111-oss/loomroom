@@ -355,7 +355,7 @@ const ConnectionsPage: React.FC = () => {
 
   // data
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
-  const [follows, setFollows] = useState<ConnectionUser[]>([]);
+  const [following, setFollows] = useState<ConnectionUser[]>([]);
 
   const [loadingFollowers, setLoadingFollowers] = useState(false);
   const [loadingFollows, setLoadingFollows] = useState(false);
@@ -651,7 +651,7 @@ const ConnectionsPage: React.FC = () => {
   }
 
   // ------------------------------
-  // Fetch followers / follows (newest first)
+  // Fetch followers / following (newest first)
   // ------------------------------
   useEffect(() => {
     let cancelled = false;
@@ -874,7 +874,7 @@ const ConnectionsPage: React.FC = () => {
   // main render
   // ==============================
   const followersCount = followers.length;
-  const followsCount = follows.length;
+  const followingCount = following.length;
 
   return (
     <div className="app-shell">
@@ -884,19 +884,19 @@ const ConnectionsPage: React.FC = () => {
         {/* X風：上部タブ（下にインジケータ） */}
         <div className="tabs">
           <button
+            className={`tab ${activeTab === "following" ? "active" : ""}`}
+            onClick={() => goTab("following")}
+          >
+            フォロー中
+            <span className="count">{followingCount}</span>
+          </button>
+
+          <button
             className={`tab ${activeTab === "followers" ? "active" : ""}`}
             onClick={() => goTab("followers")}
           >
             フォロワー
             <span className="count">{followersCount}</span>
-          </button>
-
-          <button
-            className={`tab ${activeTab === "following" ? "active" : ""}`}
-            onClick={() => goTab("following")}
-          >
-            フォロー中
-            <span className="count">{followsCount}</span>
           </button>
         </div>
 
@@ -928,17 +928,17 @@ const ConnectionsPage: React.FC = () => {
             )}
           </section>
 
-          {/* follows */}
+          {/* following */}
           <section className="page">
             {loadingFollows ? (
               <div className="empty">読み込んでいます…</div>
-            ) : follows.length === 0 ? (
+            ) : following.length === 0 ? (
               <div className="empty">フォロー中はまだありません。</div>
             ) : (
               <div className="list">
-                {follows.map((u) => (
+                {following.map((u) => (
                   <ConnectionRow
-                    key={`follows:${u.userId}`}
+                    key={`following:${u.userId}`}
                     item={u}
                     onOpenProfile={openProfile}
                     onToggleFollow={toggleFollow}

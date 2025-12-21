@@ -209,8 +209,8 @@ const PublicMyPage: React.FC = () => {
     blocked: false,
   });
 
-  // ===== follow/follower counts =====
-  const [followCount, setFollowCount] = useState<number | null>(null);
+  // ===== following/follower counts =====
+  const [followingCount, setFollowCount] = useState<number | null>(null);
   const [followerCount, setFollowerCount] = useState<number | null>(null);
   const [loadingCounts, setLoadingCounts] = useState<boolean>(false);
 
@@ -416,7 +416,7 @@ const PublicMyPage: React.FC = () => {
     };
   }, [userId, storageKey]);
 
-  // ===== follow/follower counts（公開SELECT前提で、ログイン不要で表示）=====
+  // ===== following/follower counts（公開SELECT前提で、ログイン不要で表示）=====
   useEffect(() => {
     let cancelled = false;
 
@@ -454,7 +454,7 @@ const PublicMyPage: React.FC = () => {
         setFollowCount(typeof c1 === "number" ? c1 : 0);
         setFollowerCount(typeof c2 === "number" ? c2 : 0);
       } catch (e: any) {
-        console.warn("[PublicMyPage] follow count fetch failed:", e);
+        console.warn("[PublicMyPage] following count fetch failed:", e);
         setFollowCount(null);
         setFollowerCount(null);
       } finally {
@@ -666,7 +666,7 @@ const PublicMyPage: React.FC = () => {
   // counts 表示は「対象がuuidなら表示」（ログイン不要）
   const canShowCounts = isUuid(userId);
 
-  const followHref = `/connections/${userId}?tab=following`;
+  const followingHref = `/connections/${userId}?tab=following`;
   const followerHref = `/connections/${userId}?tab=followers`;
 
   return (
@@ -749,8 +749,8 @@ const PublicMyPage: React.FC = () => {
                     フォロー{" "}
                     <strong>
                       {canShowCounts ? (
-                        <Link href={followHref} className="stats-link">
-                          {loadingCounts ? "…" : followCount ?? "–"}
+                        <Link href={followingHref} className="stats-link">
+                          {loadingCounts ? "…" : followingCount ?? "–"}
                         </Link>
                       ) : (
                         "–"
