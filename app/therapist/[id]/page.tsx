@@ -32,6 +32,9 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
+// relations.type 互換（過去の "following" を吸収）
+const FOLLOW_TYPES = ["follow", "following"] as const;
+
 // ===== Avatar URL 正規化（Home と同一思想で統一）=====
 const AVATAR_BUCKET = "avatars";
 
@@ -172,6 +175,10 @@ const TherapistProfilePage: React.FC = () => {
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
 
+  // ★ connections 用のカウント
+  const [followingCount, setFollowingCount] = useState<number>(0);
+  const [followersCount, setFollowersCount] = useState<number>(0);
+
   // currentUserId / authUserId を初期化
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -226,6 +233,10 @@ const TherapistProfilePage: React.FC = () => {
     if (!ok) return;
 
     setRelations({ following: nextEnabled, muted: false, blocked: false });
+
+    // ★ 自分の「フォロー中」一覧に入る/抜ける で followersCount も変わり得るが、
+    // ここではカウントは次の集計で整合させる（即時反映は別途でも可）
+    // 体感を上げたいなら followingCount/followersCount を楽観更新してもOK
   };
 
   const handleToggleMute = async () => {
@@ -489,6 +500,68 @@ const TherapistProfilePage: React.FC = () => {
     };
   }, [linkedStoreId]);
 
+  // ★ フォロー中 / フォロワー数の取得（tuid が確定したら）
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCounts = async (userId: string) => {
+      if (!isUuid(userId)) {
+        setFollowingCount(0);
+        setFollowersCount(0);
+        return;
+      }
+
+      try {
+        // following = 自分(user_id)が follow している数
+        const followingReq = supabase
+          .from("relations")
+          .select("target_id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .in("type", FOLLOW_TYPES as any);
+
+        // followers = 自分(target_id)を follow している数
+        const followersReq = supabase
+          .from("relations")
+          .select("user_id", { count: "exact", head: true })
+          .eq("target_id", userId)
+          .in("type", FOLLOW_TYPES as any);
+
+        const [followingRes, followersRes] = await Promise.all([
+          followingReq,
+          followersReq,
+        ]);
+
+        if (cancelled) return;
+
+        if (followingRes.error) {
+          console.error("[TherapistProfile] following count error:", followingRes.error);
+        }
+        if (followersRes.error) {
+          console.error("[TherapistProfile] followers count error:", followersRes.error);
+        }
+
+        setFollowingCount(followingRes.count ?? 0);
+        setFollowersCount(followersRes.count ?? 0);
+      } catch (e) {
+        if (cancelled) return;
+        console.error("[TherapistProfile] count unexpected error:", e);
+        setFollowingCount(0);
+        setFollowersCount(0);
+      }
+    };
+
+    if (therapistUserId) {
+      void loadCounts(therapistUserId);
+    } else {
+      setFollowingCount(0);
+      setFollowersCount(0);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [therapistUserId]);
+
   // ★ Relation UI は uuid会員同士 + 自分以外 のときだけ
   const canShowRelationUi =
     !isOwner && isUuid(authUserId) && isUuid(therapistUserId);
@@ -505,6 +578,12 @@ const TherapistProfilePage: React.FC = () => {
   const showSnsBlock = !!(profile.snsX || profile.snsLine || profile.snsOther);
 
   const areaLabel = profile.area?.trim() ? profile.area.trim() : "未設定";
+
+  // ★ connections に飛ばす（users.id ベース）
+  const openConnections = (tab: "following" | "followers") => {
+    if (!therapistUserId || !isUuid(therapistUserId)) return;
+    router.push(`/connections/${therapistUserId}?tab=${tab}`);
+  };
 
   return (
     <>
@@ -569,16 +648,31 @@ const TherapistProfilePage: React.FC = () => {
                   )}
                 </div>
 
+                {/* ★ マイページと同じ挙動：押すと connections */}
                 <div className="profile-stats-row">
                   <span>
                     投稿 <strong>{posts.length}</strong>
                   </span>
-                  <span>
-                    フォロー中 <strong>–</strong>
-                  </span>
-                  <span>
-                    フォロワー <strong>–</strong>
-                  </span>
+
+                  <button
+                    type="button"
+                    className="stat-link"
+                    onClick={() => openConnections("following")}
+                    disabled={!isUuid(therapistUserId)}
+                    aria-label="フォロー中一覧を見る"
+                  >
+                    フォロー中 <strong>{followingCount}</strong>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="stat-link"
+                    onClick={() => openConnections("followers")}
+                    disabled={!isUuid(therapistUserId)}
+                    aria-label="フォロワー一覧を見る"
+                  >
+                    フォロワー <strong>{followersCount}</strong>
+                  </button>
                 </div>
 
                 {canShowRelationUi && (
@@ -862,6 +956,31 @@ const TherapistProfilePage: React.FC = () => {
           color: var(--text-sub);
           display: flex;
           gap: 10px;
+          align-items: center;
+          flex-wrap: wrap;
+        }
+
+        /* ★ マイページ同様に「押せる」見た目にする */
+        .stat-link {
+          border: none;
+          background: none;
+          padding: 0;
+          margin: 0;
+          color: var(--text-sub);
+          font-size: 11px;
+          cursor: pointer;
+          text-decoration: underline;
+          text-underline-offset: 3px;
+        }
+        .stat-link strong {
+          color: var(--text-main);
+          font-weight: 700;
+          margin-left: 2px;
+        }
+        .stat-link:disabled {
+          cursor: default;
+          opacity: 0.5;
+          text-decoration: none;
         }
 
         .profile-intro {
