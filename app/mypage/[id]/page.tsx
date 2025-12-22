@@ -1004,7 +1004,6 @@ const PublicMyPage: React.FC = () => {
       <style jsx>{`
         .therapist-hero {
           padding: 4px 0 12px;
-          border-bottom: 1px solid var(--border);
           margin-bottom: 8px;
         }
 
