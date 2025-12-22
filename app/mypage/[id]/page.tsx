@@ -454,7 +454,7 @@ const PublicMyPage: React.FC = () => {
     let cancelled = false;
 
     // relations.type 互換（過去の "following" を吸収）
-    const FOLLOW_TYPES = ["follow", "following"] as const;
+    const FOLLOW_TYPES = ["follower", "following"] as const;
 
     async function fetchCounts() {
       // /mypage/[id] の対象が uuid じゃないなら（ゲスト互換）数えない

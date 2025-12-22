@@ -993,7 +993,6 @@ export default function TherapistProfilePage() {
 
         .linked-store-card {
           border-radius: 16px;
-          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
           padding: 10px;
         }
 
