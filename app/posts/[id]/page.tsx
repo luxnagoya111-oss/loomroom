@@ -908,8 +908,8 @@ export default function PostDetailPage() {
     if (!body) return;
 
     // 最低限の暴走防止（必要なら後で調整）
-    if (body.length > 2000) {
-      alert("返信が長すぎます（2000文字以内）。");
+    if (body.length > 200) {
+      alert("返信が長すぎます（200文字以内）。");
       return;
     }
 
@@ -1121,7 +1121,7 @@ export default function PostDetailPage() {
                 <div className="reply-compose-footer">
                   <div className="reply-hint">
                     {viewerReady ? (
-                      <span>{replyText.trim().length}/2000</span>
+                      <span>{replyText.trim().length}/200</span>
                     ) : (
                       <span>ログインが必要です</span>
                     )}
@@ -1133,7 +1133,7 @@ export default function PostDetailPage() {
                       !viewerReady ||
                       sendingReply ||
                       replyText.trim().length === 0 ||
-                      replyText.trim().length > 2000
+                      replyText.trim().length > 200
                     }
                     onClick={() => void handleSendReply()}
                   >
