@@ -292,7 +292,7 @@ function ConnectionRow(props: {
 }
 
 // ==============================
-// Page (構造変更: transform pager)
+// Page (transform pager)
 // ==============================
 const ConnectionsPage: React.FC = () => {
   const router = useRouter();
@@ -311,16 +311,26 @@ const ConnectionsPage: React.FC = () => {
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
-  // tab
-  const [activeTab, setActiveTab] = useState<TabKey>("following");
+  // 初期tabは URL から取る（再発防止）
+  const initialTab = useMemo<TabKey>(() => {
+    const raw = searchParams.get("tab");
+    return raw ? normalizeTab(raw) : "following";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // 初期のみ
 
-  // progress (0..1) —— インジケータ/ドラッグ位置
-  const [progress, setProgress] = useState(0); // 0=following, 1=followers
-  const progressRef = useRef(0);
+  // tab
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+
+  // progress (0..1)
+  const [progress, setProgress] = useState(initialTab === "following" ? 0 : 1);
+  const progressRef = useRef(initialTab === "following" ? 0 : 1);
 
   // container width
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [vpW, setVpW] = useState(1);
+
+  // 横ドラッグ中（transition切る / touch-action強化）
+  const [isDraggingX, setIsDraggingX] = useState(false);
 
   // drag state
   const dragRef = useRef<{
@@ -330,6 +340,7 @@ const ConnectionsPage: React.FC = () => {
     startY: number;
     startProgress: number;
     pointerId: number | null;
+    captured: boolean;
   }>({
     dragging: false,
     horizontal: false,
@@ -337,6 +348,7 @@ const ConnectionsPage: React.FC = () => {
     startY: 0,
     startProgress: 0,
     pointerId: null,
+    captured: false,
   });
 
   // data
@@ -385,7 +397,7 @@ const ConnectionsPage: React.FC = () => {
   }, []);
 
   // ------------------------------
-  // URL -> tab
+  // URL -> tab sync（戻る/直リンクにも追従）
   // ------------------------------
   useEffect(() => {
     if (!isValidTarget) return;
@@ -400,7 +412,6 @@ const ConnectionsPage: React.FC = () => {
       return;
     }
 
-    // state sync
     setActiveTab(normalized);
     const p = normalized === "following" ? 0 : 1;
     setProgress(p);
@@ -421,10 +432,9 @@ const ConnectionsPage: React.FC = () => {
   );
 
   // ------------------------------
-  // gesture (X風): transform pager をドラッグ
+  // gesture（X風）：横確定したら capture + transition off
   // ------------------------------
   const onPointerDown = useCallback((e: React.PointerEvent) => {
-    // 左右ドラッグでタブ切替、縦は通常スクロール
     const st = dragRef.current;
     st.dragging = true;
     st.horizontal = false;
@@ -432,9 +442,7 @@ const ConnectionsPage: React.FC = () => {
     st.startY = e.clientY;
     st.startProgress = progressRef.current;
     st.pointerId = e.pointerId;
-
-    // capture
-    (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+    st.captured = false;
   }, []);
 
   const onPointerMove = useCallback(
@@ -447,23 +455,37 @@ const ConnectionsPage: React.FC = () => {
 
       const THRESH = 8;
 
+      // まだ方向未確定
       if (!st.horizontal) {
         if (Math.abs(dx) < THRESH && Math.abs(dy) < THRESH) return;
+
         if (Math.abs(dx) > Math.abs(dy)) {
           st.horizontal = true;
+          setIsDraggingX(true);
+
+          // 横確定した瞬間だけ capture（縦スクロールを邪魔しない）
+          if (!st.captured && st.pointerId != null) {
+            (e.currentTarget as any).setPointerCapture?.(st.pointerId);
+            st.captured = true;
+          }
         } else {
-          // 縦が勝った → このドラッグは縦スクロールに任せる
+          // 縦が勝った → 縦スクロールに任せる
           st.dragging = false;
           st.pointerId = null;
+          st.captured = false;
+          setIsDraggingX(false);
           return;
         }
       }
 
-      // 横ドラッグ確定：ブラウザの縦スクロール等を止める
+      // 横ドラッグ中：ブラウザの挙動を止める（iOS対策）
       e.preventDefault();
 
-      const delta = -dx / (vpW || 1); // dx右=followers方向へ（負号で調整）
+      // dx: 右へドラッグ=前のページへ、左へドラッグ=次のページへ
+      // followers 方向へは progress が増える（左スワイプで増える）
+      const delta = -dx / (vpW || 1);
       const next = Math.max(0, Math.min(1, st.startProgress + delta));
+
       setProgress(next);
       progressRef.current = next;
     },
@@ -472,15 +494,22 @@ const ConnectionsPage: React.FC = () => {
 
   const endGesture = useCallback(() => {
     const st = dragRef.current;
+
+    if (!st.dragging) return;
+
+    // 横じゃない → 何もしないで終了
     if (!st.horizontal) {
       st.dragging = false;
       st.pointerId = null;
+      st.captured = false;
+      setIsDraggingX(false);
       return;
     }
 
     // 最寄りへスナップ
     const nextTab: TabKey = progressRef.current < 0.5 ? "following" : "followers";
     setActiveTab(nextTab);
+
     const p = nextTab === "following" ? 0 : 1;
     setProgress(p);
     progressRef.current = p;
@@ -492,6 +521,8 @@ const ConnectionsPage: React.FC = () => {
     st.dragging = false;
     st.pointerId = null;
     st.horizontal = false;
+    st.captured = false;
+    setIsDraggingX(false);
   }, [router, isValidTarget, targetUserId]);
 
   const onPointerUp = useCallback(() => endGesture(), [endGesture]);
@@ -719,8 +750,12 @@ const ConnectionsPage: React.FC = () => {
     if (!isUuid(authUserId) || !isUuid(targetId)) return;
     if (authUserId === targetId) return;
 
-    setFollowers((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x)));
-    setFollowing((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x)));
+    setFollowers((prev) =>
+      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
+    );
+    setFollowing((prev) =>
+      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
+    );
 
     const ok = await setRelationOnServer({
       userId: authUserId as UserId,
@@ -729,8 +764,12 @@ const ConnectionsPage: React.FC = () => {
     });
 
     if (!ok) {
-      setFollowers((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x)));
-      setFollowing((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x)));
+      setFollowers((prev) =>
+        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
+      );
+      setFollowing((prev) =>
+        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
+      );
     }
   };
 
@@ -817,9 +856,9 @@ const ConnectionsPage: React.FC = () => {
   const followersCount = followers.length;
   const followingCount = following.length;
 
-  // transform: 0..1 => 0%..-50%? ではなく、トラックは 2画面分なので -progress*50vw…ではなく -progress*100%
+  // trackは2ページ幅なので -progress*50%
   const trackStyle: React.CSSProperties = {
-     transform: `translate3d(${-(progress * 50)}%, 0, 0)`,
+    transform: `translate3d(${-(progress * 50)}%, 0, 0)`,
   };
 
   return (
@@ -861,18 +900,17 @@ const ConnectionsPage: React.FC = () => {
           </div>
         )}
 
-        {/* ★ ここが構造変更：scrollではなく transform pager */}
         <div
-          className="viewport"
+          className={`viewport ${isDraggingX ? "draggingX" : ""}`}
           ref={viewportRef}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerCancel}
         >
-          <div className="track" style={trackStyle}>
+          <div className={`track ${isDraggingX ? "dragging" : ""}`} style={trackStyle}>
             {/* following */}
-            <section className="page">
+            <section className="page" aria-label="following page">
               <div className="pageInner">
                 {loadingFollowing ? (
                   <div className="empty">読み込んでいます…</div>
@@ -895,7 +933,7 @@ const ConnectionsPage: React.FC = () => {
             </section>
 
             {/* followers */}
-            <section className="page">
+            <section className="page" aria-label="followers page">
               <div className="pageInner">
                 {loadingFollowers ? (
                   <div className="empty">読み込んでいます…</div>
@@ -999,13 +1037,16 @@ const ConnectionsPage: React.FC = () => {
           line-height: 1.6;
         }
 
-        /* ★ viewport/track/page: X寄り構造 */
+        /* viewport/track/page: X寄り構造 */
         .viewport {
           position: relative;
           width: 100%;
-          overflow: hidden; /* 横はクリップ */
-          touch-action: pan-y; /* 縦スクロールは自然に。横は pointer move で奪う */
+          overflow: hidden;
+          touch-action: pan-y; /* 通常は縦OK */
           margin-top: 6px;
+        }
+        .viewport.draggingX {
+          touch-action: none; /* 横確定中だけ強制（iOS吸い込み防止） */
         }
 
         .track {
@@ -1014,17 +1055,17 @@ const ConnectionsPage: React.FC = () => {
           will-change: transform;
           transition: transform 220ms cubic-bezier(0.2, 0.9, 0.2, 1);
         }
+        .track.dragging {
+          transition: none; /* ★これが“変な動き”の核心：ドラッグ中は切る */
+        }
 
-        /* ドラッグ中は transition を切りたいが、簡易にするならこのままでOK
-           厳密にやるなら st.horizontal のときだけ class を付けて transition:none にする */
         .page {
           flex: 0 0 50%;
           width: 50%;
         }
 
-        /* 各ページは縦スクロール（iOSに強い） */
         .pageInner {
-          max-height: calc(100vh - 180px); /* AppHeader+tabs+nav をざっくり避ける */
+          max-height: calc(100vh - 180px);
           overflow-y: auto;
           -webkit-overflow-scrolling: touch;
           padding-bottom: 12px;
