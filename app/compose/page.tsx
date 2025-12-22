@@ -1,29 +1,24 @@
 // app/compose/page.tsx
 "use client";
 
-import React, {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  ChangeEvent,
-  FormEvent,
-  Suspense,
-} from "react";
+import React, { useEffect, useMemo, useState, ChangeEvent, FormEvent } from "react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
-import { getCurrentUserRole, ensureViewerId } from "@/lib/auth";
+import { getCurrentUserId, getCurrentUserRole } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
 
-// 静的プリレンダーを避ける（CSR要素が多いページなので安全）
-export const dynamic = "force-dynamic";
+// Supabase users テーブル上で「ゲスト用」に1行だけ作っておく想定
+const GUEST_DB_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 const MAX_LENGTH = 280;
+
+// ===== 画像制限（STEP1）=====
+const POST_IMAGES_BUCKET = "post-images";
 const MAX_IMAGES = 4;
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8MB/枚（安全側の上限。必要なら調整）
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
+const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-type AuthorRole = "therapist" | "store" | "user";
-
+// therapists テーブルの最低限の行型
 type DbTherapistRowForStatus = {
   id: string;
   user_id: string;
@@ -37,141 +32,68 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
-const POST_IMAGES_BUCKET = "post-images";
-
 type SelectedImage = {
-  id: string;
   file: File;
   previewUrl: string;
+  error: string | null;
 };
 
-function extFromFile(file: File): string {
-  const name = (file.name || "").toLowerCase();
-  const m = name.match(/\.([a-z0-9]+)$/i);
-  if (m?.[1]) return m[1];
-  // contentType fallback
-  const t = (file.type || "").toLowerCase();
-  if (t.includes("png")) return "png";
-  if (t.includes("webp")) return "webp";
-  if (t.includes("gif")) return "gif";
-  if (t.includes("jpeg") || t.includes("jpg")) return "jpg";
-  return "bin";
+function sanitizeFilename(name: string) {
+  // ざっくり安全化（日本語は残す・空白と危険記号だけ整理）
+  return name
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[\\/#?%*:|"<>]/g, "_");
 }
 
-function sanitizeFileNamePart(s: string): string {
-  return (s || "").replace(/[^a-z0-9._-]+/gi, "_").slice(0, 60);
-}
-
-async function uploadImagesOrThrow(
-  viewerUuid: string,
-  images: SelectedImage[]
-): Promise<string[]> {
-  // upload paths (bucket内path) を返す
-  const uploaded: string[] = [];
-
-  try {
-    for (let i = 0; i < images.length; i++) {
-      const img = images[i];
-      const ext = extFromFile(img.file);
-      const base = sanitizeFileNamePart(img.file.name.replace(/\.[^/.]+$/, ""));
-      const ts = Date.now();
-      const path = `${viewerUuid}/${ts}_${i}_${base}.${ext}`;
-
-      const { error } = await supabase.storage
-        .from(POST_IMAGES_BUCKET)
-        .upload(path, img.file, {
-          cacheControl: "3600",
-          upsert: false,
-          contentType: img.file.type || undefined,
-        });
-
-      if (error) {
-        console.error("[post-images.upload] error:", error);
-        throw new Error(
-          (error as any)?.message ?? "画像アップロードに失敗しました"
-        );
-      }
-
-      uploaded.push(path);
-    }
-
-    return uploaded;
-  } catch (e) {
-    // 途中まで上がったものは削除（ベストエフォート）
-    if (uploaded.length) {
-      await Promise.all(
-        uploaded.map((p) =>
-          supabase.storage.from(POST_IMAGES_BUCKET).remove([p])
-        )
-      ).catch(() => {});
-    }
-    throw e;
-  }
-}
-
-function ComposeInner() {
-  const hasUnread = false;
-
-  // role はUI用（投稿のauthor_kindにも使う）
+export default function ComposePage() {
+  const logicalUserId = getCurrentUserId(); // "guest-xxxxx" or UUID
   const currentRole = getCurrentUserRole(); // "user" | "therapist" | "store" | "guest"
 
-  const [viewerUuid, setViewerUuid] = useState<string | null>(null);
-  const viewerReady = useMemo(() => !!viewerUuid && isUuid(viewerUuid), [viewerUuid]);
+  const hasUnread = false;
 
   // 「投稿可能か」の状態をここで一元管理
   const [canPost, setCanPost] = useState<boolean>(true);
-  const [checkingStatus, setCheckingStatus] = useState<boolean>(false);
+  const [checkingStatus, setCheckingStatus] = useState<boolean>(
+    currentRole === "therapist"
+  );
 
   const [text, setText] = useState("");
-  const remaining = MAX_LENGTH - text.length;
 
-  // まだDBカラムを作っていない前提：UIだけ残す（将来反映）
+  // まだDBカラムを作っていない前提：UIだけ残す
   const [visibility, setVisibility] = useState<"public" | "limited">("public");
   const [canReply, setCanReply] = useState(true);
 
-  // 画像
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [images, setImages] = useState<SelectedImage[]>([]);
-
   const [submitting, setSubmitting] = useState(false);
 
-  // 1) ログインuuidを確定（未ログインなら null）
+  // ===== 画像UI state =====
+  const [images, setImages] = useState<SelectedImage[]>([]);
+  const [imageError, setImageError] = useState<string | null>(null);
+
+  const isGuestLogical =
+    typeof logicalUserId === "string" && logicalUserId.startsWith("guest-");
+  const viewerUuid = useMemo(() => (isUuid(logicalUserId) ? logicalUserId : null), [logicalUserId]);
+
+  const canUseImages = useMemo(() => {
+    // 画像はログインユーザーのみ（uuid必須）
+    return !!viewerUuid && !isGuestLogical;
+  }, [viewerUuid, isGuestLogical]);
+
+  // ロールに応じて投稿可否を決定（既存）
   useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const uid = await ensureViewerId(); // uuid or null
-        if (cancelled) return;
-        setViewerUuid(uid);
-      } catch (e) {
-        if (cancelled) return;
-        setViewerUuid(null);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 2) ロールに応じて投稿可否（セラピストのみ store_id を確認）
-  useEffect(() => {
-    // 未ログインは投稿不可（要件）
-    if (!viewerReady) {
-      setCanPost(false);
-      setCheckingStatus(false);
-      return;
-    }
-
-    // therapist 以外は今のところ制限なし（ログイン済み前提）
+    // セラピスト以外（user / store / guest）は今のところ制限なし
     if (currentRole !== "therapist") {
       setCanPost(true);
       setCheckingStatus(false);
       return;
     }
 
-    // セラピストのみ所属チェック
+    if (!isUuid(logicalUserId)) {
+      setCanPost(false);
+      setCheckingStatus(false);
+      return;
+    }
+
     let cancelled = false;
 
     const checkTherapistStoreLink = async () => {
@@ -181,7 +103,7 @@ function ComposeInner() {
         const { data, error } = await supabase
           .from("therapists")
           .select("id, user_id, store_id")
-          .eq("user_id", viewerUuid)
+          .eq("user_id", logicalUserId)
           .maybeSingle<DbTherapistRowForStatus>();
 
         if (cancelled) return;
@@ -204,7 +126,9 @@ function ComposeInner() {
           setCanPost(false);
         }
       } finally {
-        if (!cancelled) setCheckingStatus(false);
+        if (!cancelled) {
+          setCheckingStatus(false);
+        }
       }
     };
 
@@ -213,108 +137,184 @@ function ComposeInner() {
     return () => {
       cancelled = true;
     };
-  }, [currentRole, viewerReady, viewerUuid]);
+  }, [currentRole, logicalUserId]);
 
-  // 画像のプレビューURLは解除する
+  // プレビューURL破棄
   useEffect(() => {
     return () => {
-      images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+      images.forEach((img) => {
+        try {
+          URL.revokeObjectURL(img.previewUrl);
+        } catch {}
+      });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const pickImages = () => {
-    if (!viewerReady) {
-      alert("画像投稿はログイン後に利用できます。");
-      return;
+  const handleChangeText = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const next = e.target.value;
+    if (next.length <= MAX_LENGTH) {
+      setText(next);
     }
-    fileInputRef.current?.click();
   };
 
-  const onPickFiles = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = ""; // 同じファイルを再選択できるようにクリア
+  const validateFiles = (files: File[], existingCount: number) => {
+    const next: SelectedImage[] = [];
+    let globalError: string | null = null;
 
+    const remainingSlots = MAX_IMAGES - existingCount;
+    const sliced = files.slice(0, Math.max(0, remainingSlots));
+
+    if (files.length > remainingSlots) {
+      globalError = `画像は最大${MAX_IMAGES}枚までです。`;
+    }
+
+    sliced.forEach((file) => {
+      let err: string | null = null;
+      if (!ALLOWED_MIME.has(file.type)) {
+        err = "対応していない形式です（jpeg/png/webpのみ）。";
+      } else if (file.size > MAX_IMAGE_BYTES) {
+        err = "容量が大きすぎます（1枚5MB以下）。";
+      }
+
+      const previewUrl = URL.createObjectURL(file);
+      next.push({ file, previewUrl, error: err });
+    });
+
+    return { next, globalError };
+  };
+
+  const handlePickImages = (e: ChangeEvent<HTMLInputElement>) => {
+    setImageError(null);
+
+    if (!canUseImages) {
+      setImageError("画像はログイン後に追加できます。");
+      e.target.value = "";
+      return;
+    }
+
+    const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
 
-    const remainingSlots = MAX_IMAGES - images.length;
-    if (remainingSlots <= 0) {
-      alert(`画像は最大${MAX_IMAGES}枚までです。`);
-      return;
-    }
+    const { next, globalError } = validateFiles(files, images.length);
 
-    const accepted: SelectedImage[] = [];
-    for (const f of files.slice(0, remainingSlots)) {
-      if (!f.type.startsWith("image/")) continue;
-      if (f.size > MAX_IMAGE_BYTES) {
-        alert(`画像サイズが大きすぎます（最大 ${(MAX_IMAGE_BYTES / 1024 / 1024).toFixed(0)}MB）。`);
-        continue;
-      }
-      const previewUrl = URL.createObjectURL(f);
-      accepted.push({
-        id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
-        file: f,
-        previewUrl,
-      });
-    }
+    // 個別エラーがある場合も「追加はする」が、送信時に弾く（ユーザーが差し替えできるように）
+    setImages((prev) => [...prev, ...next]);
+    if (globalError) setImageError(globalError);
 
-    if (!accepted.length) return;
-    setImages((prev) => [...prev, ...accepted]);
+    e.target.value = "";
   };
 
-  const removeImage = (id: string) => {
+  const removeImageAt = (idx: number) => {
     setImages((prev) => {
-      const target = prev.find((x) => x.id === id);
-      if (target) URL.revokeObjectURL(target.previewUrl);
-      return prev.filter((x) => x.id !== id);
+      const target = prev[idx];
+      if (target?.previewUrl) {
+        try {
+          URL.revokeObjectURL(target.previewUrl);
+        } catch {}
+      }
+      const next = prev.slice();
+      next.splice(idx, 1);
+      return next;
     });
   };
 
-  const handleChangeText = (e: ChangeEvent<HTMLTextAreaElement>) => {
-    const next = e.target.value;
-    if (next.length <= MAX_LENGTH) setText(next);
+  const hasInvalidImages = useMemo(() => {
+    return images.some((img) => !!img.error);
+  }, [images]);
+
+  const uploadImagesIfAny = async (uploaderUserId: string): Promise<string[]> => {
+    // uploaderUserId は uuid 前提（ログインユーザーのみ）
+    if (!images.length) return [];
+
+    // 画像制限をここで最終チェック（UIで弾いてるが安全のため）
+    if (images.length > MAX_IMAGES) {
+      throw new Error(`画像は最大${MAX_IMAGES}枚までです。`);
+    }
+    const invalid = images.find((img) => !!img.error);
+    if (invalid) {
+      throw new Error(invalid.error || "画像に問題があります。差し替えてください。");
+    }
+
+    const uploadedPaths: string[] = [];
+
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      const file = img.file;
+
+      const safeName = sanitizeFilename(file.name || `image_${i}.jpg`);
+      const path = `${uploaderUserId}/${Date.now()}_${i}_${safeName}`;
+
+      const { error } = await supabase.storage
+        .from(POST_IMAGES_BUCKET)
+        .upload(path, file, {
+          upsert: false,
+          contentType: file.type,
+        });
+
+      if (error) {
+        console.error("[post-images.upload] error:", error);
+        throw new Error((error as any)?.message ?? "画像アップロードに失敗しました。");
+      }
+
+      uploadedPaths.push(path);
+    }
+
+    return uploadedPaths;
   };
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
     const body = text.trim();
-    if (!body) return;
-
-    if (!viewerReady) {
-      alert("投稿はログイン後に利用できます。");
+    if (!body && images.length === 0) {
+      alert("本文か画像のどちらかを追加してください。");
       return;
     }
 
     if (!canPost) {
-      alert("現在、投稿はできません（所属状態をご確認ください）。");
+      alert("現在、所属店舗が無いため投稿はできません。");
       return;
     }
 
-    // author_kind は role ベース（ログイン前提）
-    const authorKind: AuthorRole =
-      currentRole === "therapist" || currentRole === "store" || currentRole === "user"
-        ? (currentRole as AuthorRole)
+    // 画像はログインユーザーのみ
+    if (images.length > 0 && !canUseImages) {
+      alert("画像はログイン後に投稿できます。");
+      return;
+    }
+
+    // Supabase 上の author_id に使う ID を決める
+    const authorId = isGuestLogical ? GUEST_DB_USER_ID : logicalUserId;
+
+    // author_kind は role ベース（guest は user 扱い）
+    const authorKind =
+      currentRole === "therapist" ||
+      currentRole === "store" ||
+      currentRole === "user"
+        ? currentRole
         : "user";
 
     try {
       setSubmitting(true);
 
-      // 1) 画像があるなら Storage upload
+      // 1) 画像があるなら upload（ログインユーザーのみ）
       let imagePaths: string[] = [];
-      if (images.length) {
-        imagePaths = await uploadImagesOrThrow(viewerUuid!, images);
+      if (images.length > 0) {
+        if (!viewerUuid) {
+          throw new Error("画像投稿にはログインが必要です。");
+        }
+        imagePaths = await uploadImagesIfAny(viewerUuid);
       }
 
-      // 2) posts insert
+      // 2) 投稿 insert（image_paths を含める）
       const { error } = await supabase.from("posts").insert([
         {
           body,
-          author_id: viewerUuid, // ログインユーザーのみ
+          author_id: authorId,
           author_kind: authorKind,
-          image_paths: imagePaths.length ? imagePaths : null,
-          // NOTE:
-          // visibility / can_reply をDBに入れるなら、posts側にカラム追加後にここを復帰
+          // 画像（text[]想定）
+          image_paths: imagePaths.length ? imagePaths : [],
+          // NOTE: visibility/can_reply をDBに入れるなら後で復帰
           // visibility,
           // can_reply: canReply,
         },
@@ -330,41 +330,41 @@ function ComposeInner() {
       }
 
       alert("投稿を公開しました。ホームのタイムラインに反映されます。");
-
-      // reset
       setText("");
-      images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
-      setImages([]);
+      // 画像クリア
+      setImages((prev) => {
+        prev.forEach((img) => {
+          try {
+            URL.revokeObjectURL(img.previewUrl);
+          } catch {}
+        });
+        return [];
+      });
+      setImageError(null);
 
-      if (typeof window !== "undefined") window.location.href = "/";
+      if (typeof window !== "undefined") {
+        window.location.href = "/";
+      }
     } catch (err: any) {
       console.error("Compose submit error:", err);
-      alert(err?.message ?? "投稿中にエラーが発生しました。");
+      alert(
+        err?.message ??
+          "予期せぬエラーが発生しました。時間をおいて再度お試しください。"
+      );
     } finally {
       setSubmitting(false);
     }
   };
 
-  const disabled =
-    submitting || checkingStatus || !viewerReady || !canPost;
+  const remaining = MAX_LENGTH - text.length;
 
   return (
     <div className="app-root">
       <AppHeader title="投稿を作成" />
 
       <main className="app-main compose-main">
-        {/* 未ログイン案内（要件） */}
-        {!viewerReady && (
-          <div className="compose-block">
-            <p className="compose-block-title">画像投稿・投稿機能はログイン後に利用できます。</p>
-            <p className="compose-block-text">
-              まずはログインしてください。
-            </p>
-          </div>
-        )}
-
         {/* セラピストで、所属なしのときの案内 */}
-        {viewerReady && currentRole === "therapist" && !checkingStatus && !canPost && (
+        {currentRole === "therapist" && !checkingStatus && !canPost && (
           <div className="compose-block">
             <p className="compose-block-title">
               現在、所属店舗が無いため、投稿機能はご利用いただけません。
@@ -376,11 +376,11 @@ function ComposeInner() {
         )}
 
         {/* ステータス判定中 */}
-        {viewerReady && currentRole === "therapist" && checkingStatus && (
+        {currentRole === "therapist" && checkingStatus && (
           <div className="compose-block">
             <p className="compose-block-title">投稿可否を確認しています…</p>
             <p className="compose-block-text">
-              通信状況によって数秒かかることがあります。
+              少しだけお待ちください。通信状況によって数秒かかることがあります。
             </p>
           </div>
         )}
@@ -393,54 +393,69 @@ function ComposeInner() {
               value={text}
               onChange={handleChangeText}
               placeholder="いまの気持ちや、残しておきたいことを自由に書いてください"
-              disabled={!viewerReady}
             />
 
-            {/* 画像ピッカー */}
-            <div className="compose-images">
-              <div className="compose-images-head">
-                <div className="compose-images-title">
-                  画像（最大{MAX_IMAGES}枚）
-                </div>
+            {/* 画像ピッカー（ログインのみ） */}
+            <div className="compose-image-panel">
+              <div className="compose-image-row">
+                <label className={`compose-image-btn ${!canUseImages ? "disabled" : ""}`}>
+                  画像を追加（最大4枚）
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    multiple
+                    onChange={handlePickImages}
+                    disabled={!canUseImages || submitting || checkingStatus}
+                    style={{ display: "none" }}
+                  />
+                </label>
 
-                <button
-                  type="button"
-                  className="compose-image-add"
-                  onClick={pickImages}
-                  disabled={!viewerReady || images.length >= MAX_IMAGES}
-                >
-                  ＋ 画像を追加
-                </button>
-
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={onPickFiles}
-                  style={{ display: "none" }}
-                />
+                {!canUseImages && (
+                  <div className="compose-image-note">
+                    画像はログイン後に追加できます。
+                  </div>
+                )}
               </div>
+
+              {imageError && <div className="compose-image-error">{imageError}</div>}
 
               {images.length > 0 && (
                 <div className="compose-image-grid">
-                  {images.map((img) => (
-                    <div key={img.id} className="compose-image-item">
-                      <img
-                        src={img.previewUrl}
-                        alt="選択した画像"
-                        className="compose-image-thumb"
-                      />
+                  {images.map((img, idx) => (
+                    <div key={idx} className="compose-image-item">
+                      <div className="compose-image-thumb">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={img.previewUrl} alt={`selected-${idx}`} />
+                      </div>
+
+                      <div className="compose-image-meta">
+                        <div className="compose-image-name" title={img.file.name}>
+                          {img.file.name}
+                        </div>
+                        <div className="compose-image-sub">
+                          {(img.file.size / 1024 / 1024).toFixed(2)}MB
+                        </div>
+                        {img.error && (
+                          <div className="compose-image-warn">{img.error}</div>
+                        )}
+                      </div>
+
                       <button
                         type="button"
                         className="compose-image-remove"
-                        onClick={() => removeImage(img.id)}
+                        onClick={() => removeImageAt(idx)}
                         aria-label="画像を削除"
                       >
                         ×
                       </button>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {images.length > 0 && (
+                <div className="compose-image-hint">
+                  制限：最大4枚 / 1枚5MB以下 / jpeg・png・webp
                 </div>
               )}
             </div>
@@ -451,15 +466,16 @@ function ComposeInner() {
               <button
                 type="submit"
                 className="compose-submit"
-                disabled={!text.trim() || disabled}
+                disabled={
+                  submitting ||
+                  checkingStatus ||
+                  (!text.trim() && images.length === 0) ||
+                  hasInvalidImages
+                }
               >
                 {submitting ? "送信中…" : "投稿する"}
               </button>
             </div>
-
-            {!viewerReady && (
-              <div className="compose-hint">投稿はログイン後に利用できます。</div>
-            )}
           </div>
 
           {/* 公開範囲・返信可否設定（現状はUIのみ） */}
@@ -506,11 +522,16 @@ function ComposeInner() {
                 </label>
               </div>
             </div>
-
-            <div className="compose-note">
-              ※ 公開範囲・返信設定は、次フェーズでDBに反映します（今はUIのみ）。
-            </div>
           </div>
+
+          {hasInvalidImages && (
+            <div className="compose-block" style={{ marginTop: 12 }}>
+              <p className="compose-block-title">画像に問題があります</p>
+              <p className="compose-block-text">
+                容量や形式の条件を満たす画像に差し替えてください（jpeg/png/webp、1枚5MB以下）。
+              </p>
+            </div>
+          )}
         </form>
       </main>
 
@@ -525,7 +546,7 @@ function ComposeInner() {
           border-radius: 16px;
           border: 1px solid var(--border);
           background: var(--surface);
-          padding: 12px 12px 10px;
+          padding: 12px 12px 8px;
           box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
           margin-top: 12px;
         }
@@ -541,74 +562,131 @@ function ComposeInner() {
           line-height: 1.6;
         }
 
-        .compose-images {
+        .compose-image-panel {
           margin-top: 10px;
-          padding-top: 10px;
           border-top: 1px solid rgba(0, 0, 0, 0.06);
+          padding-top: 10px;
         }
 
-        .compose-images-head {
+        .compose-image-row {
           display: flex;
           align-items: center;
           gap: 10px;
+          justify-content: space-between;
         }
 
-        .compose-images-title {
-          font-size: 12px;
-          color: var(--text-sub);
-          flex: 1;
-        }
-
-        .compose-image-add {
+        .compose-image-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
           border-radius: 999px;
           border: 1px solid var(--border);
-          background: #fff;
-          padding: 6px 10px;
+          padding: 6px 12px;
           font-size: 12px;
+          background: #fff;
           cursor: pointer;
+          user-select: none;
+          white-space: nowrap;
         }
 
-        .compose-image-add:disabled {
+        .compose-image-btn.disabled {
           opacity: 0.5;
           cursor: default;
         }
 
+        .compose-image-note {
+          font-size: 11px;
+          color: var(--text-sub);
+          text-align: right;
+        }
+
+        .compose-image-error {
+          margin-top: 8px;
+          font-size: 12px;
+          color: #b00020;
+        }
+
         .compose-image-grid {
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: 8px;
           margin-top: 10px;
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 10px;
         }
 
         .compose-image-item {
           position: relative;
-          border-radius: 12px;
-          overflow: hidden;
+          display: flex;
+          gap: 10px;
+          border-radius: 14px;
           border: 1px solid rgba(0, 0, 0, 0.08);
           background: #fff;
-          aspect-ratio: 1 / 1;
+          padding: 8px;
         }
 
         .compose-image-thumb {
+          width: 72px;
+          height: 72px;
+          border-radius: 12px;
+          overflow: hidden;
+          flex: 0 0 72px;
+          background: rgba(0, 0, 0, 0.04);
+        }
+
+        .compose-image-thumb img {
           width: 100%;
           height: 100%;
           object-fit: cover;
           display: block;
         }
 
+        .compose-image-meta {
+          min-width: 0;
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .compose-image-name {
+          font-size: 12px;
+          font-weight: 600;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .compose-image-sub {
+          font-size: 11px;
+          color: var(--text-sub);
+        }
+
+        .compose-image-warn {
+          margin-top: 4px;
+          font-size: 11px;
+          color: #b00020;
+        }
+
         .compose-image-remove {
           position: absolute;
           top: 6px;
           right: 6px;
-          width: 22px;
-          height: 22px;
+          width: 28px;
+          height: 28px;
           border-radius: 999px;
-          border: none;
-          background: rgba(0, 0, 0, 0.55);
-          color: #fff;
+          border: 1px solid rgba(0, 0, 0, 0.10);
+          background: #fff;
           cursor: pointer;
-          line-height: 22px;
-          font-size: 14px;
+          font-size: 16px;
+          line-height: 1;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .compose-image-hint {
+          margin-top: 8px;
+          font-size: 11px;
+          color: var(--text-sub);
         }
 
         .compose-footer {
@@ -639,12 +717,6 @@ function ComposeInner() {
         .compose-submit:disabled {
           opacity: 0.5;
           cursor: default;
-        }
-
-        .compose-hint {
-          margin-top: 8px;
-          font-size: 11px;
-          color: var(--text-sub);
         }
 
         .compose-settings {
@@ -701,15 +773,9 @@ function ComposeInner() {
           color: var(--text-sub);
         }
 
-        .compose-note {
-          font-size: 11px;
-          color: var(--text-sub);
-          padding-top: 6px;
-        }
-
         .compose-block {
-          margin-top: 12px;
-          padding: 18px 16px;
+          margin-top: 24px;
+          padding: 20px 16px;
           border-radius: 16px;
           background: var(--surface);
           border: 1px solid var(--border);
@@ -728,14 +794,5 @@ function ComposeInner() {
         }
       `}</style>
     </div>
-  );
-}
-
-export default function ComposePage() {
-  // AppHeader / BottomNav 内部に useSearchParams が居てもビルドで落ちないように、ページ直下で Suspense
-  return (
-    <Suspense fallback={<div style={{ padding: 16, fontSize: 13 }}>読み込み中…</div>}>
-      <ComposeInner />
-    </Suspense>
   );
 }

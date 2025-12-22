@@ -18,23 +18,19 @@ type AuthorKind = "therapist" | "store" | "user";
 
 type Post = {
   id: string;
-  authorId: string;
+  authorId: string; // canonical users.id
   authorName: string;
   authorKind: AuthorKind;
   avatarUrl?: string | null;
-
   body: string;
   timeAgo: string;
-
   likeCount: number;
   liked: boolean;
-
   replyCount: number;
-
   profilePath: string | null;
 
-  // ★ 追加
-  imagePaths?: string[] | null;
+  // ★ 追加：画像URL（表示用）
+  imageUrls: string[];
 };
 
 type DbPostRow = {
@@ -46,8 +42,8 @@ type DbPostRow = {
   like_count: number | null;
   reply_count: number | null;
 
-  // ★ 追加
-  image_paths: string[] | null;
+  // ★ 追加：text[] 想定
+  image_paths?: string[] | null;
 };
 
 type DbUserRow = {
@@ -119,7 +115,6 @@ function looksValidAvatarUrl(v: string | null | undefined): boolean {
   if (s.includes("/storage/v1/object/public/avatars")) {
     if (/\/public\/avatars\/?$/i.test(s)) return false;
   }
-
   return true;
 }
 
@@ -136,14 +131,29 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   return data?.publicUrl ?? null;
 }
 
-// ★ post-images のURL解決
+// ===== 画像（post-images）=====
 const POST_IMAGES_BUCKET = "post-images";
-function resolvePostImageUrl(raw: string | null | undefined): string | null {
-  const v = (raw ?? "").trim();
+
+function resolvePostImageUrl(rawPath: string | null | undefined): string | null {
+  const v = typeof rawPath === "string" ? rawPath.trim() : "";
   if (!v) return null;
   if (isProbablyHttpUrl(v)) return v;
-  const { data } = supabase.storage.from(POST_IMAGES_BUCKET).getPublicUrl(v);
+
+  const path = v.startsWith(`${POST_IMAGES_BUCKET}/`)
+    ? v.slice(POST_IMAGES_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(POST_IMAGES_BUCKET).getPublicUrl(path);
   return data?.publicUrl ?? null;
+}
+
+function pickImageUrls(paths: string[] | null | undefined): string[] {
+  const arr = Array.isArray(paths) ? paths : [];
+  const urls = arr
+    .map((p) => resolvePostImageUrl(p))
+    .filter((u): u is string => !!u);
+  // 最大4枚まで表示（compose側も4枚制限だが保険）
+  return urls.slice(0, 4);
 }
 
 export default function LoomRoomHome() {
@@ -456,6 +466,8 @@ export default function LoomRoomHome() {
             ? resolveAvatarUrl(userRaw)
             : null;
 
+          const imageUrls = pickImageUrls(row.image_paths ?? []);
+
           return {
             id: row.id,
             authorId: canonicalUserId,
@@ -468,7 +480,7 @@ export default function LoomRoomHome() {
             liked,
             replyCount: row.reply_count ?? 0,
             profilePath,
-            imagePaths: row.image_paths ?? null,
+            imageUrls,
           };
         });
 
@@ -654,9 +666,6 @@ export default function LoomRoomHome() {
             const handle = getHandle(post.authorKind, post.authorId);
             const profileClickable = !!post.profilePath;
 
-            const firstImg = post.imagePaths?.[0] ?? null;
-            const thumbUrl = firstImg ? resolvePostImageUrl(firstImg) : null;
-
             return (
               <article
                 key={post.id}
@@ -711,16 +720,6 @@ export default function LoomRoomHome() {
                       <span className="post-time">{post.timeAgo}</span>
                     </div>
 
-                    {/* ★ 画像サムネ（1枚目だけ） */}
-                    {thumbUrl && (
-                      <div className="post-thumb-wrap">
-                        <img src={thumbUrl} alt="投稿画像" className="post-thumb" />
-                        {Array.isArray(post.imagePaths) && post.imagePaths.length > 1 && (
-                          <div className="post-thumb-badge">+{post.imagePaths.length - 1}</div>
-                        )}
-                      </div>
-                    )}
-
                     <div className="post-body">
                       {post.body.split("\n").map((line, idx) => (
                         <p key={idx}>
@@ -728,6 +727,24 @@ export default function LoomRoomHome() {
                         </p>
                       ))}
                     </div>
+
+                    {/* ===== 画像（X風グリッド）===== */}
+                    {post.imageUrls.length > 0 && (
+                      <div
+                        className={`media-grid media-grid--${post.imageUrls.length}`}
+                        onClick={(e) => {
+                          // 画像タップも投稿詳細へ（article onClick に任せる）
+                          // ここで止めない
+                        }}
+                      >
+                        {post.imageUrls.map((url, i) => (
+                          <div key={i} className={`media-cell media-cell--${i}`}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={url} alt={`post-media-${i}`} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     <div className="post-footer">
                       <button
@@ -761,9 +778,7 @@ export default function LoomRoomHome() {
                           className="post-more-btn"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setOpenPostMenuId(
-                              openPostMenuId === post.id ? null : post.id
-                            );
+                            setOpenPostMenuId(openPostMenuId === post.id ? null : post.id);
                           }}
                         >
                           ⋯
@@ -788,10 +803,7 @@ export default function LoomRoomHome() {
                     </div>
 
                     {!viewerReady && (
-                      <div
-                        className="feed-message"
-                        style={{ padding: "6px 0 0", fontSize: 11 }}
-                      >
+                      <div className="feed-message" style={{ padding: "6px 0 0", fontSize: 11 }}>
                         いいね・通報はログイン後に利用できます。
                       </div>
                     )}
@@ -907,37 +919,84 @@ export default function LoomRoomHome() {
           margin-top: 2px;
         }
 
-        .post-thumb-wrap {
+        .post-body {
+          font-size: 13px;
+          line-height: 1.7;
+          margin-top: 4px;
+          margin-bottom: 6px;
+        }
+
+        /* ===== X風：メディアグリッド ===== */
+        .media-grid {
           margin-top: 8px;
-          position: relative;
-          border-radius: 12px;
+          border-radius: 16px;
           overflow: hidden;
+          background: rgba(0, 0, 0, 0.04);
           border: 1px solid rgba(0, 0, 0, 0.06);
         }
 
-        .post-thumb {
+        .media-grid img {
           width: 100%;
-          display: block;
-          max-height: 240px;
+          height: 100%;
           object-fit: cover;
+          display: block;
+          background: rgba(0, 0, 0, 0.04);
         }
 
-        .post-thumb-badge {
-          position: absolute;
-          right: 8px;
-          bottom: 8px;
-          background: rgba(0, 0, 0, 0.55);
-          color: #fff;
-          font-size: 12px;
-          padding: 2px 8px;
-          border-radius: 999px;
+        .media-grid--1 {
+          display: grid;
+          grid-template-columns: 1fr;
+          height: 220px;
+        }
+
+        .media-grid--2 {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 2px;
+          height: 220px;
+        }
+
+        .media-grid--3 {
+          display: grid;
+          grid-template-columns: 1.35fr 1fr;
+          gap: 2px;
+          height: 220px;
+        }
+
+        .media-grid--4 {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 2px;
+          height: 220px;
+        }
+
+        .media-cell {
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
+        }
+
+        /* 3枚：左大 + 右2段 */
+        .media-grid--3 .media-cell--0 {
+          grid-row: 1 / span 2;
+          grid-column: 1;
+        }
+
+        .media-grid--3 .media-cell--1 {
+          grid-column: 2;
+          grid-row: 1;
+        }
+
+        .media-grid--3 .media-cell--2 {
+          grid-column: 2;
+          grid-row: 2;
         }
 
         .post-footer {
           display: flex;
           align-items: center;
           gap: 8px;
-          margin-top: 6px;
+          margin-top: 8px;
         }
 
         .post-like-btn,
@@ -991,13 +1050,6 @@ export default function LoomRoomHome() {
 
         .post-report-btn:hover {
           background: rgba(176, 0, 32, 0.06);
-        }
-
-        .post-body {
-          font-size: 13px;
-          line-height: 1.7;
-          margin-top: 8px;
-          margin-bottom: 4px;
         }
 
         .feed-message {
