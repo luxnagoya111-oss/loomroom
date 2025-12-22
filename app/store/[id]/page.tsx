@@ -35,6 +35,7 @@ import { resolveAvatarUrl, pickRawPostImages, resolvePostImageUrls } from "@/lib
 import type { UserId } from "@/types/user";
 import type { UiPost } from "@/lib/postFeedHydrator";
 import { RelationActions } from "@/components/RelationActions";
+import { getConnectionCounts } from "@/lib/repositories/connectionRepository";
 
 // ==============================
 // 型定義（Supabase から取る最低限）
@@ -77,7 +78,6 @@ function isUuid(id: string | null | undefined): id is string {
 }
 
 // relations.type 互換（過去の "following" を吸収）
-const FOLLOW_TYPES = ["follow", "following"] as const;
 
 function safeNumber(v: any, fallback = 0): number {
   const n = typeof v === "number" ? v : Number(v);
@@ -248,40 +248,21 @@ export default function StoreProfilePage() {
   useEffect(() => {
     let cancelled = false;
 
-    const loadCounts = async (userId: string) => {
-      if (!isUuid(userId)) {
-        if (!cancelled) {
-          setFollowingCount(0);
-          setFollowersCount(0);
-          setLoadingCounts(false);
-        }
+    async function loadCounts(uid: string) {
+      if (!isUuid(uid)) {
+        setFollowingCount(0);
+        setFollowersCount(0);
+        setLoadingCounts(false);
         return;
       }
 
+      setLoadingCounts(true);
       try {
-        if (!cancelled) setLoadingCounts(true);
-
-        const followingReq = supabase
-          .from("relations")
-          .select("target_id", { count: "exact", head: true })
-          .eq("user_id", userId)
-          .in("type", FOLLOW_TYPES as any);
-
-        const followersReq = supabase
-          .from("relations")
-          .select("user_id", { count: "exact", head: true })
-          .eq("target_id", userId)
-          .in("type", FOLLOW_TYPES as any);
-
-        const [followingRes, followersRes] = await Promise.all([followingReq, followersReq]);
-
+        const { followers, follows } = await getConnectionCounts(uid);
         if (cancelled) return;
 
-        if (followingRes.error) console.error("[StoreProfile] following count error:", followingRes.error);
-        if (followersRes.error) console.error("[StoreProfile] followers count error:", followersRes.error);
-
-        setFollowingCount(followingRes.count ?? 0);
-        setFollowersCount(followersRes.count ?? 0);
+        setFollowingCount(follows);
+        setFollowersCount(followers);
       } catch (e) {
         if (cancelled) return;
         console.error("[StoreProfile] count unexpected error:", e);
@@ -290,7 +271,7 @@ export default function StoreProfilePage() {
       } finally {
         if (!cancelled) setLoadingCounts(false);
       }
-    };
+    }
 
     if (storeOwnerUserId) void loadCounts(storeOwnerUserId);
     else {
@@ -302,7 +283,7 @@ export default function StoreProfilePage() {
     return () => {
       cancelled = true;
     };
-  }, [storeOwnerUserId]);
+  }, [storeOwnerUserId]);;
 
   // 在籍申請ボタン表示判定（uuid会員の therapist のみ）
   useEffect(() => {
@@ -547,8 +528,13 @@ export default function StoreProfilePage() {
 
         if (cancelled) return;
 
+        const ownerAvatarResolved =
+          ownerUser && looksValidAvatarUrl(ownerUser.avatar_url)
+            ? resolveAvatarUrl(ownerUser.avatar_url)
+            : null;
+
         // 表示に使う店舗アバターは「stores.avatar_url 優先 → owner users.avatar_url」
-        const effectiveStoreAvatarUrl = storeAvatarResolved || ownerAvatarUrl || null;
+        const effectiveStoreAvatarUrl = storeAvatarResolved || ownerAvatarResolved || null;
 
         const profilePath = `/store/${storeId}`;
         const authorId = row.owner_user_id ?? storeId; // UiPost必須対策（uuid優先）

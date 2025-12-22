@@ -36,6 +36,7 @@ import type { UserId } from "@/types/user";
 import type { DbTherapistRow, DbUserRow, DbStoreRow } from "@/types/db";
 import { RelationActions } from "@/components/RelationActions";
 import type { UiPost } from "@/lib/postFeedHydrator";
+import { getConnectionCounts } from "@/lib/repositories/connectionRepository";
 
 // ===== uuid 判定（relations は users.id = uuid で運用する）=====
 const UUID_REGEX =
@@ -45,8 +46,7 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
-// relations.type 互換（過去の "following" を吸収）
-const FOLLOW_TYPES = ["follow", "following"] as const;
+// relations.type 互換（過去の "following" を吸収）t;
 
 type TherapistProfile = {
   displayName: string;
@@ -486,27 +486,11 @@ export default function TherapistProfilePage() {
 
       setLoadingCounts(true);
       try {
-        const followingReq = supabase
-          .from("relations")
-          .select("target_id", { count: "exact", head: true })
-          .eq("user_id", uid)
-          .in("type", FOLLOW_TYPES as any);
-
-        const followersReq = supabase
-          .from("relations")
-          .select("user_id", { count: "exact", head: true })
-          .eq("target_id", uid)
-          .in("type", FOLLOW_TYPES as any);
-
-        const [followingRes, followersRes] = await Promise.all([followingReq, followersReq]);
-
+        const { followers, follows } = await getConnectionCounts(uid);
         if (cancelled) return;
 
-        if (followingRes.error) console.error("[TherapistProfile] following count error:", followingRes.error);
-        if (followersRes.error) console.error("[TherapistProfile] followers count error:", followersRes.error);
-
-        setFollowingCount(typeof followingRes.count === "number" ? followingRes.count : 0);
-        setFollowersCount(typeof followersRes.count === "number" ? followersRes.count : 0);
+        setFollowingCount(follows);
+        setFollowersCount(followers);
       } catch (e) {
         if (cancelled) return;
         console.error("[TherapistProfile] count unexpected error:", e);
