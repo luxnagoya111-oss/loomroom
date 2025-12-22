@@ -1,5 +1,5 @@
 // lib/repositories/relationRepository.ts
-// フォロー / ミュート / ブロックの「サーバー側」ストレージ
+// フォロー / ミュート / ブロックの「サーバー側」ストレージ（Supabase）
 
 import { supabase } from "@/lib/supabaseClient";
 import type { UserId } from "@/types/user";
@@ -20,6 +20,26 @@ export function toRelationFlags(row: DbRelationRow | null): RelationFlags {
   };
 }
 
+// UUID 判定（relations は users.id(uuid) 前提）
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(id: string | null | undefined): id is string {
+  return !!id && UUID_REGEX.test(id);
+}
+
+function logSupabaseError(tag: string, error: any) {
+  // supabase-js の error は環境により {} に見えることがあるので、
+  // 取りうる情報をまとめて出す
+  console.error(tag, {
+    name: error?.name,
+    message: error?.message,
+    code: error?.code,
+    details: error?.details,
+    hint: error?.hint,
+    status: error?.status,
+  });
+}
+
 /**
  * 自分 → 相手 の関係を1件取得
  */
@@ -27,41 +47,50 @@ export async function getRelation(
   userId: UserId,
   targetId: UserId
 ): Promise<DbRelationRow | null> {
-  const { data, error } = await supabase
+  // relations は uuid 前提
+  if (!isUuid(userId) || !isUuid(targetId)) return null;
+
+  const res = await supabase
     .from("relations")
     .select("*")
     .eq("user_id", userId)
     .eq("target_id", targetId)
     .maybeSingle();
 
-  if (error) {
-    console.error("[relationRepository.getRelation] Supabase error:", error);
+  if (res.error) {
+    logSupabaseError("[relationRepository.getRelation] Supabase error:", res.error);
+    // ここで status も見たい場合
+    console.error("[relationRepository.getRelation] http:", {
+      status: (res as any).status,
+      statusText: (res as any).statusText,
+    });
     return null;
   }
 
-  return data ?? null;
+  return (res.data as DbRelationRow) ?? null;
 }
 
 /**
  * 自分が持っている relations 全件を取得
  */
-export async function getRelationsForUser(
-  userId: UserId
-): Promise<DbRelationRow[]> {
-  const { data, error } = await supabase
-    .from("relations")
-    .select("*")
-    .eq("user_id", userId);
+export async function getRelationsForUser(userId: UserId): Promise<DbRelationRow[]> {
+  if (!isUuid(userId)) return [];
 
-  if (error) {
-    console.error(
+  const res = await supabase.from("relations").select("*").eq("user_id", userId);
+
+  if (res.error) {
+    logSupabaseError(
       "[relationRepository.getRelationsForUser] Supabase error:",
-      error
+      res.error
     );
+    console.error("[relationRepository.getRelationsForUser] http:", {
+      status: (res as any).status,
+      statusText: (res as any).statusText,
+    });
     return [];
   }
 
-  return data ?? [];
+  return (res.data as DbRelationRow[]) ?? [];
 }
 
 type SetRelationParams = {
@@ -82,34 +111,64 @@ type SetRelationParams = {
 export async function setRelation(params: SetRelationParams): Promise<boolean> {
   const { userId, targetId, type } = params;
 
+  // relations は uuid 前提。guest 等ならサーバーに書かない
+  if (!isUuid(userId) || !isUuid(targetId)) {
+    console.warn("[relationRepository.setRelation] skip (non-uuid)", {
+      userId,
+      targetId,
+      type,
+    });
+    return false;
+  }
+
+  // auth 状態（RLS/401 を切り分けるためのログ）
+  try {
+    const { data: auth } = await supabase.auth.getUser();
+    console.log("[relationRepository.setRelation] auth.uid:", auth?.user?.id);
+  } catch (e) {
+    console.warn("[relationRepository.setRelation] auth.getUser failed:", e);
+  }
+
   if (!type) {
-    const { error } = await supabase
+    const res = await supabase
       .from("relations")
       .delete()
       .eq("user_id", userId)
       .eq("target_id", targetId);
 
-    if (error) {
-      console.error("[relationRepository.setRelation:delete] error:", error);
+    if (res.error) {
+      logSupabaseError("[relationRepository.setRelation:delete] error:", res.error);
+      console.error("[relationRepository.setRelation:delete] http:", {
+        status: (res as any).status,
+        statusText: (res as any).statusText,
+      });
       return false;
     }
 
     return true;
   }
 
-  const { error } = await supabase.from("relations").upsert(
+  const res = await supabase.from("relations").upsert(
     {
       user_id: userId,
       target_id: targetId,
       type,
     },
-    {
-      onConflict: "user_id,target_id",
-    }
+    { onConflict: "user_id,target_id" }
   );
 
-  if (error) {
-    console.error("[relationRepository.setRelation:upsert] error:", error);
+  if (res.error) {
+    logSupabaseError("[relationRepository.setRelation:upsert] error:", res.error);
+    console.error("[relationRepository.setRelation:upsert] http:", {
+      status: (res as any).status,
+      statusText: (res as any).statusText,
+    });
+    // 追加で payload も出す（RLS/制約違反の切り分け）
+    console.error("[relationRepository.setRelation:upsert] payload:", {
+      userId,
+      targetId,
+      type,
+    });
     return false;
   }
 

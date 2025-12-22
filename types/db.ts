@@ -118,10 +118,13 @@ export type DbSignupStatus = "pending" | "approved" | "rejected";
 
 export type DbSignupApplicationRow = {
   id: string;
-  type: DbSignupType;            // "store" / "therapist" / "user"
-  status: DbSignupStatus;        // pending / approved / rejected
-  name: string;                  // 申請者名 or 店名
-  contact: string | null;        // 任意の連絡先
+
+  applicant_user_id: string; // ★必須（auth.uid / uuid文字列）
+
+  type: DbSignupType;        // "store" / "therapist" / "user"
+  status: DbSignupStatus;    // pending / approved / rejected
+  name: string;              // 申請者名 or 店名
+  contact: string | null;    // 任意の連絡先
   payload: Record<string, any> | null; // フォームの中身
   created_at: string;
   reviewed_at: string | null;

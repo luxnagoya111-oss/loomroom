@@ -7,6 +7,7 @@
 
 import type { DMThread, DMMessage } from "@/types/dm";
 import type { UserId } from "@/types/user";
+import { parseThreadId } from "@/lib/dmThread";
 
 const THREADS_KEY = "loomroom_dm_threads_v1";
 const MSG_KEY_PREFIX = "loomroom_dm_messages_v1_";
@@ -47,9 +48,7 @@ function saveThreads(threads: DMThread[]) {
  */
 export function loadThreads(userId: UserId): DMThread[] {
   const all = loadAllThreads();
-  return all.filter(
-    (t) => t.userAId === userId || t.userBId === userId
-  );
+  return all.filter((t) => t.userAId === userId || t.userBId === userId);
 }
 
 // ==============================
@@ -116,8 +115,15 @@ export function appendMessageToThread(
 
   // 既存メッセージを取得
   const currentMsgs = loadMessagesRaw(threadId);
+
+  // ID は衝突しにくい形に（randomUUID があれば尚良い）
+  const msgId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? `${threadId}_${(crypto as any).randomUUID()}`
+      : `${threadId}_${currentMsgs.length + 1}_${Date.now()}`;
+
   const newMessage: DMMessage = {
-    id: `${threadId}_${currentMsgs.length + 1}_${Date.now()}`,
+    id: msgId,
     threadId,
     fromUserId,
     text,
@@ -128,7 +134,8 @@ export function appendMessageToThread(
   saveMessagesRaw(threadId, nextMsgs);
 
   // thread を更新 or 新規作成
-  const [idA, idB] = threadId.split("_") as [UserId, UserId];
+  const [idA, idB] = parseThreadId(threadId);
+
   let threads = loadAllThreads();
   const idx = threads.findIndex((t) => t.threadId === threadId);
 
@@ -140,7 +147,6 @@ export function appendMessageToThread(
       userBId: idB,
       lastMessage: text,
       lastMessageAt: nowIso,
-      // 未読管理はフェーズ3以降で本格実装
       unreadForA: 0,
       unreadForB: 0,
     };
@@ -151,10 +157,10 @@ export function appendMessageToThread(
       ...t,
       lastMessage: text,
       lastMessageAt: nowIso,
-      // 未読カウントは将来ここで更新
     };
-    threads = [...threads];
-    threads[idx] = updated;
+
+    // ★ 最新スレを先頭へ（一般的なDM UX）
+    threads = [updated, ...threads.filter((x) => x.threadId !== threadId)];
   }
 
   saveThreads(threads);
@@ -171,19 +177,19 @@ function lastReadKey(threadId: string, userId: UserId): string {
 
 /**
  * スレッドを「自分視点で既読」にする
- * - 今はタイムスタンプを記録するだけ（未読バッジはフェーズ3で活用）
+ * - 安全のため「最後に読んだメッセージ時刻」を保存する（端末時計ズレ対策）
  */
 export function markThreadAsRead(threadId: string, userId: UserId): void {
   if (!isBrowser()) return;
   try {
-    const nowIso = new Date().toISOString();
-    window.localStorage.setItem(lastReadKey(threadId, userId), nowIso);
+    const last = getLastMessage(threadId);
+    const stamp = last?.createdAt ?? new Date().toISOString();
+    window.localStorage.setItem(lastReadKey(threadId, userId), stamp);
   } catch (e) {
     console.warn("markThreadAsRead failed:", e);
   }
 }
 
-// 将来、未読数を計算したいときのためのヘルパー（今は未使用でもOK）
 export function getLastReadAt(threadId: string, userId: UserId): string | null {
   if (!isBrowser()) return null;
   try {
@@ -192,6 +198,7 @@ export function getLastReadAt(threadId: string, userId: UserId): string | null {
     return null;
   }
 }
+
 /**
  * 指定 thread の最後のメッセージを返す（なければ null）
  */
@@ -217,20 +224,16 @@ export function hasMessages(threadId: string): boolean {
  */
 export function isThreadUnread(threadId: string, userId: UserId): boolean {
   const last = getLastMessage(threadId);
-  if (!last) return false; // メッセージ自体がない
+  if (!last) return false;
 
   const lastRead = getLastReadAt(threadId, userId);
-  if (!lastRead) {
-    // 一度も開いていない → 未読
-    return true;
-  }
+  if (!lastRead) return true;
 
   try {
     const lastReadTime = new Date(lastRead).getTime();
     const lastMsgTime = new Date(last.createdAt).getTime();
     return lastMsgTime > lastReadTime;
   } catch {
-    // パースに失敗したら安全側：未読扱い
     return true;
   }
 }

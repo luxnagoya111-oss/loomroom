@@ -11,7 +11,7 @@ const HAS_UNREAD = false;
 /**
  * /signup
  *
- * LoomRoom をどんな立場で使うかを選ぶ入口ページ。
+ * LRoom をどんな立場で使うかを選ぶ入口ページ。
  * - 一般ユーザー: /signup/user へ
  * - セラピスト / 店舗: /signup/creator/start へ
  */
@@ -26,7 +26,7 @@ export default function SignupPage() {
       <main className="app-main">
         <div className="signup-root">
           <p className="signup-lead">
-            LoomRoom をどんな立場で使うかを選んでください。
+            LRoom をどんな立場で使うかを選んでください。
           </p>
 
           <section className="signup-section">
@@ -43,7 +43,7 @@ export default function SignupPage() {
           <section className="signup-section">
             <h2 className="section-title">セラピスト / 店舗として使う</h2>
             <p className="section-text">
-              LoomRoom に掲載したいセラピスト / 店舗向けの申し込みです。
+              LRoom に掲載したいセラピスト / 店舗向けの申し込みです。
               審査後に、プロフィール編集やDM機能が使えるアカウントを発行します。
             </p>
             <Link href="/signup/creator/start" className="secondary-btn">

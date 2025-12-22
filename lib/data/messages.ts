@@ -19,7 +19,7 @@ const USER_PROFILES: Record<UserId, Profile> = {
   taki: { displayName: "TAKI" },
   hiyori: { displayName: "HIYORI" },
   lux: { displayName: "LuX nagoya" },
-  loomroom: { displayName: "LoomRoom" },
+  loomroom: { displayName: "LRoom" },
 };
 
 // プロフィール取得（なければIDをそのまま名前にする）

@@ -287,17 +287,20 @@ is_read	        bool	     ○	   false	            既読フラグ（簡易）
 
 C. signup／店舗／セラピスト／通報まわり
 C-1. stores（店舗プロフィール）
-列名	         型	         必須	デフォルト	          説明
-id	            uuid	     ○	    gen_random_uuid()	店舗ID（PK）
-owner_user_id	uuid	     ○	    なし	            この店舗を管理する users.id
-name	        text	     ○	    なし	            店名
-area	        text	     ×	    なし	            エリア
-description	    text	     ×	    なし	            紹介文
-created_at	    timestamptz	 ○	    now()	            作成日時
-website_url　　　text         ×	     なし
-x_url　　　　　 　text        ×	     なし
-twicas_url　　　 text        ×	     なし
+列名	         型	          必須	デフォルト	          説明
+id	            uuid	      ○	    gen_random_uuid()	店舗ID（PK）
+owner_user_id	uuid	      ○	    なし	            この店舗を管理する users.id
+name	        text	      ○	    なし	            店名
+area	        text	      ×	    なし	            エリア
+description	    text	      ×	    なし	            紹介文
+created_at	    timestamptz	  ○	    now()	            作成日時
+website_url　　　text          ×	     なし
+x_url　　　　　 　text         ×	     なし
+twicas_url　　　 text         ×	     なし
 line_url　　　 　text         ×	     なし
+description     text         ×
+dm_notice       bool         ×
+avatar_url      text         ×
 
 C-2. therapists（セラピストプロフィール）
 列名	         型	          必須	   デフォルト	        説明
@@ -307,6 +310,7 @@ store_id	     uuid	      ×	      なし	              所属店舗ID（任意�
 display_name	 text	      ○	      なし	              表示名（LoomRoom内用）
 area	         text	      ×  	  なし	              エリア
 profile	         text	      ×	      なし	              紹介文
+dm_notice        bool	      ×	
 created_at	     timestamptz  ○	      now()	              作成日時
 
 C-3. signup_applications（店舗・セラピスト申請）

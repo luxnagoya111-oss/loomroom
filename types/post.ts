@@ -1,5 +1,5 @@
 // types/post.ts
-// LoomRoom 内の1件の投稿データ定義
+// LRoom 内の1件の投稿データ定義
 
 import type { Role, UserId } from "@/types/user";
 

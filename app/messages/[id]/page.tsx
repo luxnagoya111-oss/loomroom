@@ -12,9 +12,11 @@ import { useParams } from "next/navigation";
 
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
+import AvatarCircle from "@/components/AvatarCircle";
 
 import { getCurrentUserId, getCurrentUserRole } from "@/lib/auth";
-import { getRelationFlags } from "@/lib/relationStorage";
+import { supabase } from "@/lib/supabaseClient";
+
 import {
   getThreadById,
   getMessagesForThread,
@@ -22,10 +24,8 @@ import {
   markThreadAsRead,
 } from "@/lib/repositories/dmRepository";
 import { canSendDm } from "@/lib/dmPolicy";
-import { supabase } from "@/lib/supabaseClient";
 
 import type { UserId, Role } from "@/types/user";
-import { inferRoleFromId } from "@/types/user";
 import type { ThreadId } from "@/types/dm";
 import type { DbDmMessageRow, DbDmThreadRow } from "@/types/db";
 
@@ -35,32 +35,60 @@ type Message = {
   id: string;
   from: "me" | "partner";
   text: string;
-  time: string; // HH:MM
-  date: string; // YYYY.MM.DD
+  time: string;
+  date: string;
 };
 
-// therapists テーブルのステータス確認用（最小限）
 type DbTherapistRowForStatus = {
   id: string;
   user_id: string;
   store_id: string | null;
 };
+type DbUserMini = {
+  id: string;
+  name: string | null;
+  role: string | null;
+  avatar_url: string | null; // raw (http or storage path)
+};
+type DbTherapistMini = {
+  user_id: string;
+  display_name: string | null;
+  avatar_url: string | null; // raw
+};
+type DbStoreMini = {
+  id: string;
+  owner_user_id: string | null;
+  name: string | null;
+  avatar_url: string | null; // raw
+};
 
-// ==============================
-// Utility
-// ==============================
+// uuid 判定
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(id: string | null | undefined): id is string {
+  return !!id && UUID_REGEX.test(id);
+}
+
+function safeText(v: any): string {
+  return typeof v === "string" ? v.trim() : String(v ?? "").trim();
+}
+
 function formatTime(date: Date): string {
   const h = date.getHours().toString().padStart(2, "0");
   const m = date.getMinutes().toString().padStart(2, "0");
   return `${h}:${m}`;
 }
-
 function formatDateString(date: Date): string {
   const y = date.getFullYear();
   const m = (date.getMonth() + 1).toString().padStart(2, "0");
   const d = date.getDate().toString().padStart(2, "0");
-  // YYYY.MM.DD 形式
   return `${y}.${m}.${d}`;
+}
+
+function normalizeRole(raw: string | null | undefined): Role {
+  const v = (raw ?? "").toString();
+  if (v === "store" || v === "therapist" || v === "user") return v;
+  return "guest";
 }
 
 function mapDbToUi(msg: DbDmMessageRow, currentUserId: string): Message {
@@ -74,19 +102,41 @@ function mapDbToUi(msg: DbDmMessageRow, currentUserId: string): Message {
   };
 }
 
-// ==============================
-// Components
-// ==============================
-function ChatAvatar({ side }: { side: "me" | "partner" }) {
-  const content = side === "partner" ? "🦋" : "U";
-  return (
-    <div className={`avatar-circle chat-avatar chat-avatar--${side}`}>
-      <span className="avatar-circle-text">{content}</span>
-    </div>
-  );
+/**
+ * ★ 6桁ID（表示用）
+ * - uuid なら "-" を除去して先頭6文字
+ * - それ以外も先頭6文字
+ */
+function toShortId(id: string): string {
+  const s = safeText(id);
+  if (!s) return "";
+  const compact = isUuid(s) ? s.replace(/-/g, "") : s;
+  return compact.slice(0, 6);
 }
 
-// LINE風の小さい日付チップ
+function isProbablyHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * ★ Avatar URL 解決（storage path / http 両対応）
+ * - raw が http(s) ならそのまま
+ * - それ以外は avatars bucket の publicUrl に変換
+ */
+const AVATAR_BUCKET = "avatars";
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  const v = safeText(raw);
+  if (!v) return null;
+  if (isProbablyHttpUrl(v)) return v;
+
+  const path = v.startsWith(`${AVATAR_BUCKET}/`)
+    ? v.slice(AVATAR_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return data?.publicUrl ?? null;
+}
+
 function DateDivider({ date }: { date: string }) {
   return (
     <div className="date-divider">
@@ -95,29 +145,28 @@ function DateDivider({ date }: { date: string }) {
   );
 }
 
-// ==============================
-// Page
-// ==============================
 const MessageDetailPage: React.FC = () => {
   const params = useParams();
   const rawId = (params?.id as string) || "";
-  const threadId = rawId as ThreadId; // URL = dm_threads.thread_id
+  const threadId = rawId as ThreadId;
 
-  // SSRズレ防止：currentUserId / Role は state で管理
   const [currentUserId, setCurrentUserId] = useState<UserId>("" as UserId);
   const [currentRole, setCurrentRole] = useState<Role>("guest");
 
-  // 「無所属セラピストかどうか」を Supabase から判定
+  const [myName, setMyName] = useState<string>("You");
+  const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
+
   const [isUnaffiliatedTherapist, setIsUnaffiliatedTherapist] =
     useState<boolean>(false);
   const [checkingStatus, setCheckingStatus] = useState<boolean>(false);
 
   const [thread, setThread] = useState<DbDmThreadRow | null>(null);
-  const [partnerId, setPartnerId] = useState<string>("");
+  const [partnerId, setPartnerId] = useState<UserId | "">("" as any);
 
-  // ヘッダーに表示する相手名とID（@xxx）
   const [partnerName, setPartnerName] = useState<string>("メッセージ相手");
   const [partnerHandle, setPartnerHandle] = useState<string>("");
+  const [partnerRole, setPartnerRole] = useState<Role>("guest");
+  const [partnerAvatarUrl, setPartnerAvatarUrl] = useState<string | null>(null);
 
   const [text, setText] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -129,22 +178,96 @@ const MessageDetailPage: React.FC = () => {
 
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  // ==============================
-  // currentUserId / Role をクライアントで決定
-  // ==============================
+  // viewerId（Auth uuid 正）
   useEffect(() => {
-    const id = getCurrentUserId();
-    setCurrentUserId(id as UserId);
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const authId = data.user?.id ?? null;
 
-    const role = getCurrentUserRole();
-    setCurrentRole(role);
+        if (cancelled) return;
+
+        if (isUuid(authId)) setCurrentUserId(authId as UserId);
+        else setCurrentUserId((getCurrentUserId() ?? "") as UserId);
+      } catch {
+        if (!cancelled) setCurrentUserId((getCurrentUserId() ?? "") as UserId);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // ==============================
-  // 「無所属セラピストかどうか」を Supabase から確認
-  // ==============================
+  // viewerRole（DB users.role を優先して解決）
   useEffect(() => {
-    if (!currentUserId || currentRole !== "therapist") {
+    if (!currentUserId) return;
+
+    let cancelled = false;
+    (async () => {
+      // まず local fallback
+      let role: Role = getCurrentUserRole();
+
+      // uuid会員なら DB を正にする
+      if (isUuid(currentUserId)) {
+        const { data, error } = await supabase
+          .from("users")
+          .select("role")
+          .eq("id", currentUserId)
+          .maybeSingle<{ role: string | null }>();
+
+        if (!cancelled && !error) {
+          const dbRole = normalizeRole(data?.role);
+          if (dbRole !== "guest") role = dbRole;
+        }
+      }
+
+      if (!cancelled) setCurrentRole(role);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
+  // threadId バリデーション（uuid前提）
+  useEffect(() => {
+    if (!threadId) return;
+    if (!isUuid(threadId)) {
+      setError("このスレッドIDは無効です（uuidではありません）。");
+      setLoading(false);
+    }
+  }, [threadId]);
+
+  // 自分の name / avatar（表示用）
+  useEffect(() => {
+    if (!currentUserId || !isUuid(currentUserId)) return;
+
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("users")
+        .select("id, name, avatar_url")
+        .eq("id", currentUserId)
+        .maybeSingle<{ id: string; name: string | null; avatar_url: string | null }>();
+
+      if (cancelled) return;
+      if (error) {
+        console.warn("[Messages] my users fetch error:", error);
+        return;
+      }
+      if (data?.name?.trim()) setMyName(data.name.trim());
+      setMyAvatarUrl(resolveAvatarUrl(data?.avatar_url));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
+  // 無所属セラピスト判定
+  useEffect(() => {
+    if (!currentUserId || currentRole !== "therapist" || !isUuid(currentUserId)) {
       setIsUnaffiliatedTherapist(false);
       setCheckingStatus(false);
       return;
@@ -152,7 +275,7 @@ const MessageDetailPage: React.FC = () => {
 
     let cancelled = false;
 
-    const checkTherapistStatus = async () => {
+    (async () => {
       try {
         setCheckingStatus(true);
 
@@ -164,20 +287,12 @@ const MessageDetailPage: React.FC = () => {
 
         if (cancelled) return;
 
-        if (error) {
+        if (error || !data) {
           console.error("[Messages] therapist status load error:", error);
-          // 安全側に倒して「無所属扱い」とする
           setIsUnaffiliatedTherapist(true);
           return;
         }
 
-        if (!data) {
-          // therapist レコードがない → 無所属扱い
-          setIsUnaffiliatedTherapist(true);
-          return;
-        }
-
-        // store_id が NULL なら無所属
         setIsUnaffiliatedTherapist(!data.store_id);
       } catch (e) {
         if (!cancelled) {
@@ -185,24 +300,19 @@ const MessageDetailPage: React.FC = () => {
           setIsUnaffiliatedTherapist(true);
         }
       } finally {
-        if (!cancelled) {
-          setCheckingStatus(false);
-        }
+        if (!cancelled) setCheckingStatus(false);
       }
-    };
-
-    checkTherapistStatus();
+    })();
 
     return () => {
       cancelled = true;
     };
   }, [currentUserId, currentRole]);
 
-  // ==============================
-  // threadId から Supabase のスレッド情報を取得し、partnerId を決める
-  // ==============================
+  // thread取得 → partnerId
   useEffect(() => {
     if (!threadId || !currentUserId) return;
+    if (!isUuid(threadId)) return;
 
     let cancelled = false;
 
@@ -210,24 +320,21 @@ const MessageDetailPage: React.FC = () => {
       try {
         const th = await getThreadById(threadId);
         if (cancelled) return;
+
         setThread(th);
 
         if (th) {
           const other =
             th.user_a_id === currentUserId ? th.user_b_id : th.user_a_id;
-          setPartnerId(other ?? "");
-          setPartnerHandle(other ? `@${other}` : "");
+          setPartnerId((other ?? "") as any);
         } else {
-          // スレッドが存在しない場合 (将来: 新規スレッド作成導線で調整)
-          setPartnerId("");
-          setPartnerHandle("");
+          setPartnerId("" as any);
         }
       } catch (e) {
         console.error("Failed to load dm thread:", e);
         if (!cancelled) {
           setThread(null);
-          setPartnerId("");
-          setPartnerHandle("");
+          setPartnerId("" as any);
         }
       }
     })();
@@ -237,106 +344,133 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId]);
 
-  // ==============================
-  // 相手との関係（ブロック状態）を確認（ローカル版）
-  // ==============================
+  // 相手の表示情報（users.role 正）
+  useEffect(() => {
+    if (!partnerId) {
+      setPartnerName("メッセージ相手");
+      setPartnerHandle("");
+      setPartnerRole("guest");
+      setPartnerAvatarUrl(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { data: u, error: uErr } = await supabase
+          .from("users")
+          .select("id, name, role, avatar_url")
+          .eq("id", partnerId)
+          .maybeSingle<DbUserMini>();
+
+        if (cancelled) return;
+        if (uErr) console.warn("[Messages] partner users fetch error:", uErr);
+
+        const resolvedRole = normalizeRole(u?.role);
+        setPartnerRole(resolvedRole);
+
+        // ★ 変更：相手ID6桁（一覧と同ルール）
+        const handle = `@${toShortId(partnerId) || "------"}`;
+        setPartnerHandle(handle);
+
+        let resolvedName = u?.name?.trim() ? u.name.trim() : "メッセージ相手";
+        let resolvedAvatar: string | null = resolveAvatarUrl(u?.avatar_url);
+
+        if (resolvedRole === "therapist") {
+          const { data: th } = await supabase
+            .from("therapists")
+            .select("user_id, display_name, avatar_url")
+            .eq("user_id", partnerId)
+            .maybeSingle<DbTherapistMini>();
+
+          if (!cancelled && th) {
+            if (th.display_name?.trim()) resolvedName = th.display_name.trim();
+            if (!resolvedAvatar) resolvedAvatar = resolveAvatarUrl(th.avatar_url);
+          }
+        }
+
+        if (resolvedRole === "store") {
+          const { data: st } = await supabase
+            .from("stores")
+            .select("id, owner_user_id, name, avatar_url")
+            .eq("owner_user_id", partnerId)
+            .maybeSingle<DbStoreMini>();
+
+          if (!cancelled && st) {
+            if (st.name?.trim()) resolvedName = st.name.trim();
+            const stAv = resolveAvatarUrl(st.avatar_url);
+            if (stAv) resolvedAvatar = stAv;
+          }
+        }
+
+        if (cancelled) return;
+        setPartnerName(resolvedName);
+        setPartnerAvatarUrl(resolvedAvatar);
+      } catch (e) {
+        if (cancelled) return;
+        console.warn("[Messages] resolve partner failed:", e);
+
+        // ★ フォールバックも6桁IDへ
+        setPartnerName("メッセージ相手");
+        setPartnerHandle(partnerId ? `@${toShortId(partnerId)}` : "");
+        setPartnerRole("guest");
+        setPartnerAvatarUrl(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [partnerId]);
+
+  // ブロック判定（uuid同士のみ）
   useEffect(() => {
     if (!currentUserId || !partnerId) {
       setIsBlocked(false);
       return;
     }
-    try {
-      const flags = getRelationFlags(currentUserId, partnerId as UserId);
-      setIsBlocked(flags.blocked);
-    } catch (e) {
-      console.warn("Failed to get relation flags", e);
+    if (!isUuid(currentUserId) || !isUuid(partnerId)) {
       setIsBlocked(false);
+      return;
     }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("relations")
+          .select("type")
+          .eq("user_id", currentUserId)
+          .eq("target_id", partnerId)
+          .maybeSingle<{ type: string | null }>();
+
+        if (cancelled) return;
+        if (error) {
+          console.warn("[Messages] block check error:", error);
+          setIsBlocked(false);
+          return;
+        }
+        setIsBlocked(data?.type === "block");
+      } catch (e) {
+        if (!cancelled) {
+          console.warn("[Messages] block check exception:", e);
+          setIsBlocked(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [currentUserId, partnerId]);
 
-  // ==============================
-  // 相手の表示名／ハンドルを解決（localStorage ベースの仮仕様）
-  // ==============================
-  useEffect(() => {
-    if (!partnerId) return;
-
-    let handle = `@${partnerId}`;
-    let name = "";
-
-    try {
-      if (typeof window !== "undefined") {
-        // 1) セラピストプロフ（displayName）
-        const thRaw = window.localStorage.getItem(
-          `loomroom_therapist_profile_${partnerId}`
-        );
-        if (thRaw) {
-          const th = JSON.parse(thRaw) as { displayName?: string };
-          if (th.displayName && th.displayName.trim().length > 0) {
-            name = th.displayName.trim();
-          }
-        }
-
-        // 2) 店舗プロフ
-        if (!name) {
-          const storeRaw = window.localStorage.getItem(
-            `loomroom_store_profile_${partnerId}`
-          );
-          if (storeRaw) {
-            if (partnerId === "lux") {
-              name = "LuX nagoya";
-              handle = "@lux";
-            } else if (partnerId === "loomroom") {
-              name = "LoomRoom";
-              handle = "@loomroom";
-            } else {
-              name = "LoomRoom 提携サロン";
-            }
-          }
-        }
-
-        // 3) ユーザープロフ（nickname）
-        if (!name) {
-          const userRaw = window.localStorage.getItem(
-            `loomroom_profile_v1_${partnerId}`
-          );
-          if (userRaw) {
-            const user = JSON.parse(userRaw) as { nickname?: string };
-            if (user.nickname && user.nickname.trim().length > 0) {
-              name = user.nickname.trim();
-            }
-          }
-        }
-      }
-
-      // 4) デモ用の特別扱い
-      if (!name) {
-        if (partnerId === "taki") {
-          name = "TAKI";
-          handle = "@taki_lux";
-        } else if (partnerId === "loomroom") {
-          name = "LoomRoom nagoya";
-          handle = "@loomroom_app";
-        } else {
-          name = "メッセージ相手";
-        }
-      }
-
-      setPartnerName(name);
-      setPartnerHandle(handle);
-    } catch (e) {
-      console.warn("Failed to resolve partner for thread", threadId, e);
-      setPartnerName("メッセージ相手");
-      setPartnerHandle(partnerId ? `@${partnerId}` : "");
-    }
-  }, [threadId, partnerId]);
-
-  // ==============================
-  // メッセージ読み込み ＋ 既読化
-  // ==============================
+  // メッセージ読み込み + 既読化
   useEffect(() => {
     if (!threadId || !currentUserId) return;
+    if (!isUuid(threadId)) return;
 
-    // ブロック中は会話履歴を出さない（システムメッセージのみ）
     if (isBlocked) {
       setMessages([]);
       setLoading(false);
@@ -356,20 +490,12 @@ const MessageDetailPage: React.FC = () => {
 
         setMessages(stored.map((m) => mapDbToUi(m, currentUserId)));
 
-        // 自分側の未読を0にする
-        await markThreadAsRead({
-          threadId,
-          viewerId: currentUserId,
-        });
+        await markThreadAsRead({ threadId, viewerId: currentUserId });
       } catch (e) {
         console.error(e);
-        if (!cancelled) {
-          setError("メッセージの読み込みに失敗しました。");
-        }
+        if (!cancelled) setError("メッセージの読み込みに失敗しました。");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     })();
 
@@ -378,14 +504,11 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId, isBlocked]);
 
-  // ==============================
-  // Realtime 購読（dm_messages / dm_threads）
-  // ==============================
+  // Realtime
   useEffect(() => {
-    // ID 未確定 or ブロック中は購読しない
     if (!threadId || !currentUserId || isBlocked) return;
+    if (!isUuid(threadId)) return;
 
-    // ---- dm_messages: INSERT（新着メッセージ） ----
     const channelMessages = supabase
       .channel(`dm_messages_${threadId}_${currentUserId}`)
       .on(
@@ -398,18 +521,14 @@ const MessageDetailPage: React.FC = () => {
         },
         (payload) => {
           const row = payload.new as DbDmMessageRow;
-
           setMessages((prev) => {
-            // すでに存在するIDならスキップ（重複防止）
             if (prev.some((m) => m.id === row.id)) return prev;
-            const ui = mapDbToUi(row, currentUserId);
-            return [...prev, ui];
+            return [...prev, mapDbToUi(row, currentUserId)];
           });
         }
       )
       .subscribe();
 
-    // ---- dm_threads: UPDATE（last_message / unread など）----
     const channelThreads = supabase
       .channel(`dm_threads_${threadId}_${currentUserId}`)
       .on(
@@ -420,10 +539,7 @@ const MessageDetailPage: React.FC = () => {
           table: "dm_threads",
           filter: `thread_id=eq.${threadId}`,
         },
-        (payload) => {
-          const updated = payload.new as DbDmThreadRow;
-          setThread(updated);
-        }
+        (payload) => setThread(payload.new as DbDmThreadRow)
       )
       .subscribe();
 
@@ -433,31 +549,30 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId, isBlocked]);
 
-  // 自動スクロール
   useEffect(() => {
-    if (endRef.current) {
-      endRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-    }
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
+
+  // ★ 重要：既存スレッド/メッセージがあるなら「返信」扱いにする
+  const isReplyForPolicy = !!thread || messages.length > 0;
+  const allowedByRole = canSendDm(currentRole, partnerRole, isReplyForPolicy);
 
   const handleSend = async () => {
     const trimmed = text.trim();
     if (!trimmed || sending || !threadId || !currentUserId) return;
-    if (isBlocked) return; // ブロック中は送信不可
+    if (!isUuid(threadId)) return;
+    if (isBlocked) return;
     if (!partnerId) return;
 
-    // 無所属セラピストは返信不可（念のためここでもガード）
     if (currentRole === "therapist" && isUnaffiliatedTherapist) {
       alert("現在、所属店舗が無いため、ご返信ができません。");
       return;
     }
 
-    const partnerRole: Role = inferRoleFromId(partnerId as UserId);
-    const isReply = messages.some((m) => m.from === "partner");
-    const allowedByRole = canSendDm(currentRole, partnerRole, isReply);
-
-    if (!allowedByRole) {
-      alert("この組み合わせでは新しくDMを送ることができません。");
+    // ★ 修正：isReplyForPolicy を使う（相手未返信でも送れる）
+    const allowed = canSendDm(currentRole, partnerRole, isReplyForPolicy);
+    if (!allowed) {
+      alert("この組み合わせではDMを送ることができません。");
       return;
     }
 
@@ -475,16 +590,11 @@ const MessageDetailPage: React.FC = () => {
         return;
       }
 
-      // 再取得（Realtime と二重になるが、IDチェックで重複は防ぐ）
       const stored = await getMessagesForThread(threadId);
       setMessages(stored.map((m) => mapDbToUi(m, currentUserId)));
       setText("");
 
-      // 自分視点の未読を0にしておく
-      await markThreadAsRead({
-        threadId,
-        viewerId: currentUserId,
-      });
+      await markThreadAsRead({ threadId, viewerId: currentUserId });
     } catch (e) {
       console.error(e);
       alert("メッセージの送信に失敗しました。");
@@ -493,20 +603,13 @@ const MessageDetailPage: React.FC = () => {
     }
   };
 
-  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) =>
-    setText(e.target.value);
-
+  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => setText(e.target.value);
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
   };
-
-  // ロール・ポリシーに基づく DM 可否判定
-  const partnerRole: Role = inferRoleFromId(partnerId as UserId);
-  const isReply = messages.some((m) => m.from === "partner");
-  const allowedByRole = canSendDm(currentRole, partnerRole, isReply);
 
   const inputDisabled =
     isBlocked ||
@@ -522,6 +625,23 @@ const MessageDetailPage: React.FC = () => {
 
         <main className="app-main chat-main">
           <div className="chat-inner">
+            <div className="partner-badge">
+              <div className="avatar-wrap avatar-wrap--lg">
+                <AvatarCircle displayName={partnerName} src={partnerAvatarUrl} />
+              </div>
+              <div className="partner-badge-main">
+                <div className="partner-badge-name">{partnerName}</div>
+                <div className="partner-badge-sub">
+                  {partnerHandle}
+                  {partnerRole !== "guest" && partnerRole !== "user" && (
+                    <span className="partner-badge-pill">
+                      {partnerRole === "store" ? "店舗" : "セラピスト"}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {loading && (
               <p className="text-meta" style={{ padding: "8px 2px" }}>
                 読み込み中…
@@ -554,19 +674,22 @@ const MessageDetailPage: React.FC = () => {
                     <div
                       className={
                         "chat-row " +
-                        (m.from === "me"
-                          ? "chat-row--me"
-                          : "chat-row--partner")
+                        (m.from === "me" ? "chat-row--me" : "chat-row--partner")
                       }
                     >
-                      {m.from === "partner" && <ChatAvatar side="partner" />}
+                      {m.from === "partner" && (
+                        <div className="avatar-wrap avatar-wrap--sm">
+                          <AvatarCircle
+                            displayName={partnerName}
+                            src={partnerAvatarUrl}
+                          />
+                        </div>
+                      )}
 
                       <div className="chat-bubble-wrap">
                         <div className="chat-bubble">{m.text}</div>
                         <div className="chat-meta">{m.time}</div>
                       </div>
-
-                      {m.from === "me" && <ChatAvatar side="me" />}
                     </div>
                   </React.Fragment>
                 );
@@ -576,7 +699,6 @@ const MessageDetailPage: React.FC = () => {
           </div>
         </main>
 
-        {/* 入力バー or 無所属セラピストメッセージ */}
         {currentRole === "therapist" && isUnaffiliatedTherapist ? (
           <div className="chat-status-bar">
             <p className="chat-status-text">
@@ -616,31 +738,90 @@ const MessageDetailPage: React.FC = () => {
         <BottomNav active="messages" hasUnread={hasUnread} />
       </div>
 
-      <style jsx>{`
+      <style jsx global>{`
         .chat-main {
           padding: 12px 12px 120px;
         }
-
         .chat-inner {
           display: flex;
           flex-direction: column;
           gap: 10px;
         }
 
-        /* LINE風・小さい日付チップ */
+        .avatar-wrap {
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .avatar-wrap--lg {
+          width: 44px;
+          height: 44px;
+        }
+        .avatar-wrap--sm {
+          width: 32px;
+          height: 32px;
+        }
+
+        .partner-badge {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 10px;
+          border-radius: 14px;
+          background: var(--surface-soft);
+          border: 1px solid var(--border);
+          margin-bottom: 6px;
+        }
+        .partner-badge-main {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          min-width: 0;
+          flex: 1;
+        }
+        .partner-badge-name {
+          font-size: 13px;
+          font-weight: 700;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .partner-badge-sub {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 11px;
+          color: var(--text-sub);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .partner-badge-pill {
+          font-size: 10px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          background: var(--surface);
+          color: var(--text-sub);
+          font-weight: 700;
+          flex-shrink: 0;
+        }
+
+        /* ★ 日付：小さく、薄いグレー、中央 */
         .date-divider {
           display: flex;
           justify-content: center;
-          margin: 14px 0;
+          margin: 10px 0;
         }
-
         .date-divider span {
-          padding: 4px 10px;
+          padding: 3px 10px;
           border-radius: 999px;
-          font-size: 11px;
+          font-size: 10px;
           line-height: 1;
-          background: rgba(0, 0, 0, 0.08);
-          color: var(--text-sub);
+          background: rgba(0, 0, 0, 0.06);
+          color: var(--text-sub); /* ←あなたのテーマに存在する変数 */
+          letter-spacing: 0.02em;
         }
 
         .chat-row {
@@ -648,18 +829,11 @@ const MessageDetailPage: React.FC = () => {
           align-items: flex-end;
           gap: 8px;
         }
-
         .chat-row--partner {
           justify-content: flex-start;
         }
-
         .chat-row--me {
           justify-content: flex-end;
-        }
-
-        .chat-avatar {
-          width: 32px;
-          height: 32px;
         }
 
         .chat-bubble-wrap {
@@ -668,7 +842,6 @@ const MessageDetailPage: React.FC = () => {
           flex-direction: column;
           gap: 2px;
         }
-
         .chat-bubble {
           border-radius: 14px;
           padding: 8px 11px;
@@ -676,13 +849,11 @@ const MessageDetailPage: React.FC = () => {
           line-height: 1.6;
           word-break: break-word;
         }
-
         .chat-row--partner .chat-bubble {
           background: var(--surface);
           color: var(--text-main);
           border: 1px solid var(--border);
         }
-
         .chat-row--me .chat-bubble {
           background: var(--accent);
           color: #fff;
@@ -712,7 +883,6 @@ const MessageDetailPage: React.FC = () => {
           box-sizing: border-box;
           z-index: 40;
         }
-
         .chat-input-inner {
           display: flex;
           align-items: flex-end;
@@ -723,7 +893,6 @@ const MessageDetailPage: React.FC = () => {
           padding: 6px 8px 6px 12px;
           box-shadow: 0 4px 10px rgba(0, 0, 0, 0.03);
         }
-
         .chat-input {
           flex: 1;
           border: none;
@@ -734,7 +903,6 @@ const MessageDetailPage: React.FC = () => {
           max-height: 80px;
           padding: 2px 0;
         }
-
         .chat-input:focus {
           outline: none;
         }
@@ -744,14 +912,13 @@ const MessageDetailPage: React.FC = () => {
           border-radius: 999px;
           padding: 6px 12px;
           font-size: 13px;
-          font-weight: 600;
+          font-weight: 700;
           cursor: pointer;
           background: var(--accent);
           color: #fff;
           box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
           flex-shrink: 0;
         }
-
         .chat-send-btn:disabled {
           opacity: 0.5;
           cursor: default;
@@ -763,10 +930,9 @@ const MessageDetailPage: React.FC = () => {
           padding: 8px 12px;
           background: var(--surface);
         }
-
         .chat-status-text {
           font-size: 12px;
-          color: var(--muted-foreground);
+          color: var(--text-sub);
           text-align: center;
         }
       `}</style>

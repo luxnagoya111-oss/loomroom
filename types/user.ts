@@ -1,5 +1,5 @@
 // types/user.ts
-// LoomRoom 共通のユーザー型定義（ソース・オブ・トゥルース）
+// LRoom 共通のユーザー型定義（ソース・オブ・トゥルース）
 
 // アカウント種別
 export type Role = "guest" | "user" | "therapist" | "store";
@@ -8,7 +8,7 @@ export type Role = "guest" | "user" | "therapist" | "store";
 export type UserId = string;
 
 /**
- * IDのプレフィックス規則（LoomRoom 内部ID体系）
+ * IDのプレフィックス規則（LRoom 内部ID体系）
  *
  * - ゲスト: guest-xxxxxx 形式（localStorage 自動発行）
  * - 一般ユーザー: u_xxxxx
