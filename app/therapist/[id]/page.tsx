@@ -1004,10 +1004,6 @@ export default function TherapistProfilePage() {
           align-items: center;
         }
 
-        .store-avatar {
-          border: 1px solid rgba(0, 0, 0, 0.08);
-        }
-
         .linked-store-main {
           flex: 1;
           display: flex;
