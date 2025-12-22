@@ -18,32 +18,46 @@ type AuthorKind = "therapist" | "store" | "user";
 
 type Post = {
   id: string;
-  authorId: string; // canonical users.id
+
+  /**
+   * relations（mute/block）に合わせて users.id（uuid）へ正規化したID
+   * therapist/store 投稿でも canonical user id を入れる
+   */
+  authorId: string;
+
   authorName: string;
   authorKind: AuthorKind;
+
+  /** 表示用のURL（http or public url） */
   avatarUrl?: string | null;
+
   body: string;
   timeAgo: string;
+
   likeCount: number;
   liked: boolean;
+
   replyCount: number;
+
+  /** プロフィール遷移先（therapist/storeは role id 優先） */
   profilePath: string | null;
 
-  // ★ 追加：画像URL（表示用）
+  /** ★ 追加：投稿画像（public URL配列） */
   imageUrls: string[];
 };
 
 type DbPostRow = {
   id: string;
-  author_id: string | null;
+  author_id: string | null; // users.id or therapists.id or stores.id の可能性あり
   author_kind: "therapist" | "store" | "user" | null;
   body: string | null;
   created_at: string;
   like_count: number | null;
   reply_count: number | null;
 
-  // ★ 追加：text[] 想定
-  image_paths?: string[] | null;
+  // ★ 追加：DB側のカラム名がどちらでも落ちないように optional
+  image_urls?: string[] | null; // 推奨
+  imageUrls?: string[] | null; // フロント寄り命名がもしある場合の保険
 };
 
 type DbUserRow = {
@@ -54,15 +68,15 @@ type DbUserRow = {
 };
 
 type DbTherapistLite = {
-  id: string;
-  user_id: string | null;
+  id: string; // therapists.id
+  user_id: string | null; // users.id
   display_name?: string | null;
   avatar_url?: string | null;
 };
 
 type DbStoreLite = {
-  id: string;
-  owner_user_id: string | null;
+  id: string; // stores.id
+  owner_user_id: string | null; // users.id
   name?: string | null;
   avatar_url?: string | null;
 };
@@ -86,6 +100,9 @@ const renderGoldBadge = (kind: AuthorKind) => {
   return null;
 };
 
+/**
+ * handle生成：canonical users.id(uuid) から一律 @xxxxxx（先頭6桁）
+ */
 function getHandle(_kind: AuthorKind, authorId: unknown): string | null {
   const s = typeof authorId === "string" ? authorId.trim() : "";
   return toPublicHandleFromUserId(s);
@@ -106,8 +123,14 @@ function isProbablyHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
 
+/**
+ * ★ avatars bucket
+ */
 const AVATAR_BUCKET = "avatars";
 
+/**
+ * URLとして使う前に「それっぽいゴミ」を弾く
+ */
 function looksValidAvatarUrl(v: string | null | undefined): boolean {
   const s = (v ?? "").trim();
   if (!s) return false;
@@ -115,9 +138,15 @@ function looksValidAvatarUrl(v: string | null | undefined): boolean {
   if (s.includes("/storage/v1/object/public/avatars")) {
     if (/\/public\/avatars\/?$/i.test(s)) return false;
   }
+
   return true;
 }
 
+/**
+ * avatar_url が
+ * - https://... ならそのまま
+ * - それ以外（storage path）なら public URL に変換
+ */
 function resolveAvatarUrl(raw: string | null | undefined): string | null {
   const v = normalizeAvatarUrl(raw);
   if (!v) return null;
@@ -131,34 +160,26 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   return data?.publicUrl ?? null;
 }
 
-// ===== 画像（post-images）=====
-const POST_IMAGES_BUCKET = "post-images";
-
-function resolvePostImageUrl(rawPath: string | null | undefined): string | null {
-  const v = typeof rawPath === "string" ? rawPath.trim() : "";
-  if (!v) return null;
-  if (isProbablyHttpUrl(v)) return v;
-
-  const path = v.startsWith(`${POST_IMAGES_BUCKET}/`)
-    ? v.slice(POST_IMAGES_BUCKET.length + 1)
-    : v;
-
-  const { data } = supabase.storage.from(POST_IMAGES_BUCKET).getPublicUrl(path);
-  return data?.publicUrl ?? null;
-}
-
-function pickImageUrls(paths: string[] | null | undefined): string[] {
-  const arr = Array.isArray(paths) ? paths : [];
+/**
+ * ★ 投稿画像（imageUrls）の簡易サニタイズ
+ * - http(s) のみ許可
+ * - 最大4枚（表示上は4枚まで）
+ */
+function sanitizeImageUrls(raw: unknown): string[] {
+  const arr = Array.isArray(raw) ? raw : [];
   const urls = arr
-    .map((p) => resolvePostImageUrl(p))
-    .filter((u): u is string => !!u);
-  // 最大4枚まで表示（compose側も4枚制限だが保険）
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter((s) => !!s && /^https?:\/\//i.test(s));
   return urls.slice(0, 4);
 }
 
 export default function LoomRoomHome() {
   const router = useRouter();
 
+  /**
+   * currentUserId = 画面識別用（guest-xxxx or uuid）
+   * viewerUuid    = DB操作用（uuidのみ / 未ログインは null）
+   */
   const [currentUserId, setCurrentUserId] = useState<UserId>("");
   const [viewerUuid, setViewerUuid] = useState<UserId | null>(null);
 
@@ -170,10 +191,12 @@ export default function LoomRoomHome() {
   const [kindFilter, setKindFilter] = useState<AuthorKind | "all">("all");
   const [openPostMenuId, setOpenPostMenuId] = useState<string | null>(null);
 
+  // 1) 画面IDは常に（ゲストでも）確定
   useEffect(() => {
     setCurrentUserId(getCurrentUserId());
   }, []);
 
+  // 2) DB操作用 uuid を確定（未ログインなら null）
   useEffect(() => {
     let cancelled = false;
 
@@ -194,6 +217,7 @@ export default function LoomRoomHome() {
     };
   }, []);
 
+  // 3) relations は uuid のときだけ取得
   useEffect(() => {
     if (!viewerUuid || !isUuid(viewerUuid)) {
       setRelations([]);
@@ -219,6 +243,7 @@ export default function LoomRoomHome() {
     };
   }, [viewerUuid]);
 
+  // 4) タイムラインは「誰でも」取得（viewerUuid は likes 取得にだけ使う）
   useEffect(() => {
     let cancelled = false;
 
@@ -227,10 +252,11 @@ export default function LoomRoomHome() {
       setError(null);
 
       try {
+        // ★ image_urls を含める（無い環境でも落ちない）
         const { data: postData, error: postError } = await supabase
           .from("posts")
           .select(
-            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_paths"
+            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_urls"
           )
           .order("created_at", { ascending: false })
           .limit(100);
@@ -250,6 +276,7 @@ export default function LoomRoomHome() {
           return;
         }
 
+        // ★ author_id は uuid とは限らない（therapists/stores id の場合あり）
         const rowsWithAuthor = rows.filter((r) => !!r.author_id);
         if (!rowsWithAuthor.length) {
           setPosts([]);
@@ -269,6 +296,7 @@ export default function LoomRoomHome() {
         const storeByOwnerId = new Map<string, DbStoreLite>();
         const storeById = new Map<string, DbStoreLite>();
 
+        // therapists / stores を「user_id / owner_user_id と id」両方で引けるようにする
         if (authorIds.length) {
           const { data: therByUserData, error: therByUserError } = await supabase
             .from("therapists")
@@ -276,7 +304,10 @@ export default function LoomRoomHome() {
             .in("user_id", authorIds);
 
           if (therByUserError) {
-            console.error("Supabase therapists(user_id) error:", therByUserError);
+            console.error(
+              "Supabase therapists(user_id) error:",
+              therByUserError
+            );
           } else {
             (therByUserData ?? []).forEach((t: any) => {
               const r = t as DbTherapistLite;
@@ -307,7 +338,10 @@ export default function LoomRoomHome() {
               .in("owner_user_id", authorIds);
 
           if (storeByOwnerError) {
-            console.error("Supabase stores(owner_user_id) error:", storeByOwnerError);
+            console.error(
+              "Supabase stores(owner_user_id) error:",
+              storeByOwnerError
+            );
           } else {
             (storeByOwnerData ?? []).forEach((s: any) => {
               const r = s as DbStoreLite;
@@ -332,6 +366,7 @@ export default function LoomRoomHome() {
           }
         }
 
+        // users は uuid だけ fetch
         const resolvedUserIds = new Set<string>();
         authorIds.forEach((id) => {
           if (isUuid(id)) resolvedUserIds.add(id);
@@ -359,6 +394,7 @@ export default function LoomRoomHome() {
           }
         }
 
+        // likes は viewerUuid があるときだけ取得（未ログインは全部 false）
         let likedIdSet = new Set<string>();
         if (viewerUuid && isUuid(viewerUuid)) {
           const { data: likeData, error: likeError } = await supabase
@@ -402,6 +438,7 @@ export default function LoomRoomHome() {
                 null
               : null;
 
+          // canonical user id（mute/block判定に使う）
           let canonicalUserId = rawAuthorId;
           if (inferredKind === "therapist") {
             if (therapist?.user_id) canonicalUserId = therapist.user_id;
@@ -466,7 +503,9 @@ export default function LoomRoomHome() {
             ? resolveAvatarUrl(userRaw)
             : null;
 
-          const imageUrls = pickImageUrls(row.image_paths ?? []);
+          // ★ 画像URL配列（DB命名揺れに対応）
+          const rawImages = (row as any).image_urls ?? (row as any).imageUrls ?? null;
+          const imageUrls = sanitizeImageUrls(rawImages);
 
           return {
             id: row.id,
@@ -501,7 +540,7 @@ export default function LoomRoomHome() {
     return () => {
       cancelled = true;
     };
-  }, [viewerUuid]);
+  }, [viewerUuid]); // viewerUuid が入ったら liked を反映し直すため再取得
 
   const handleToggleLike = async (post: Post) => {
     if (!viewerUuid || !isUuid(viewerUuid)) return;
@@ -728,19 +767,20 @@ export default function LoomRoomHome() {
                       ))}
                     </div>
 
-                    {/* ===== 画像（X風グリッド）===== */}
+                    {/* ★ 追加：正方形タイル統一の画像グリッド（表示のみ） */}
                     {post.imageUrls.length > 0 && (
                       <div
                         className={`media-grid media-grid--${post.imageUrls.length}`}
-                        onClick={(e) => {
-                          // 画像タップも投稿詳細へ（article onClick に任せる）
-                          // ここで止めない
-                        }}
+                        aria-label="投稿画像"
                       >
-                        {post.imageUrls.map((url, i) => (
-                          <div key={i} className={`media-cell media-cell--${i}`}>
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={url} alt={`post-media-${i}`} />
+                        {post.imageUrls.map((src, idx) => (
+                          <div className="media-tile" key={`${post.id}_${idx}`}>
+                            <img
+                              src={src}
+                              alt="投稿画像"
+                              loading="lazy"
+                              decoding="async"
+                            />
                           </div>
                         ))}
                       </div>
@@ -765,7 +805,9 @@ export default function LoomRoomHome() {
                         className="post-reply-btn"
                         onClick={(e) => {
                           e.stopPropagation();
-                          alert("返信機能はこれから実装予定です（現在はテスト用です）。");
+                          alert(
+                            "返信機能はこれから実装予定です（現在はテスト用です）。"
+                          );
                         }}
                       >
                         <span className="post-reply-icon">💬</span>
@@ -778,7 +820,9 @@ export default function LoomRoomHome() {
                           className="post-more-btn"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setOpenPostMenuId(openPostMenuId === post.id ? null : post.id);
+                            setOpenPostMenuId(
+                              openPostMenuId === post.id ? null : post.id
+                            );
                           }}
                         >
                           ⋯
@@ -803,7 +847,10 @@ export default function LoomRoomHome() {
                     </div>
 
                     {!viewerReady && (
-                      <div className="feed-message" style={{ padding: "6px 0 0", fontSize: 11 }}>
+                      <div
+                        className="feed-message"
+                        style={{ padding: "6px 0 0", fontSize: 11 }}
+                      >
                         いいね・通報はログイン後に利用できます。
                       </div>
                     )}
@@ -919,84 +966,11 @@ export default function LoomRoomHome() {
           margin-top: 2px;
         }
 
-        .post-body {
-          font-size: 13px;
-          line-height: 1.7;
-          margin-top: 4px;
-          margin-bottom: 6px;
-        }
-
-        /* ===== X風：メディアグリッド ===== */
-        .media-grid {
-          margin-top: 8px;
-          border-radius: 16px;
-          overflow: hidden;
-          background: rgba(0, 0, 0, 0.04);
-          border: 1px solid rgba(0, 0, 0, 0.06);
-        }
-
-        .media-grid img {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-          background: rgba(0, 0, 0, 0.04);
-        }
-
-        .media-grid--1 {
-          display: grid;
-          grid-template-columns: 1fr;
-          height: 220px;
-        }
-
-        .media-grid--2 {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 2px;
-          height: 220px;
-        }
-
-        .media-grid--3 {
-          display: grid;
-          grid-template-columns: 1.35fr 1fr;
-          gap: 2px;
-          height: 220px;
-        }
-
-        .media-grid--4 {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 2px;
-          height: 220px;
-        }
-
-        .media-cell {
-          width: 100%;
-          height: 100%;
-          overflow: hidden;
-        }
-
-        /* 3枚：左大 + 右2段 */
-        .media-grid--3 .media-cell--0 {
-          grid-row: 1 / span 2;
-          grid-column: 1;
-        }
-
-        .media-grid--3 .media-cell--1 {
-          grid-column: 2;
-          grid-row: 1;
-        }
-
-        .media-grid--3 .media-cell--2 {
-          grid-column: 2;
-          grid-row: 2;
-        }
-
         .post-footer {
           display: flex;
           align-items: center;
           gap: 8px;
-          margin-top: 8px;
+          margin-top: 6px;
         }
 
         .post-like-btn,
@@ -1052,6 +1026,13 @@ export default function LoomRoomHome() {
           background: rgba(176, 0, 32, 0.06);
         }
 
+        .post-body {
+          font-size: 13px;
+          line-height: 1.7;
+          margin-top: 4px;
+          margin-bottom: 4px;
+        }
+
         .feed-message {
           font-size: 12px;
           padding: 8px 12px;
@@ -1060,6 +1041,61 @@ export default function LoomRoomHome() {
 
         .feed-error {
           color: #b00020;
+        }
+
+        /* =========================
+           ★ 画像グリッド（方式A）
+           - 全部正方形タイル
+           - object-fit: cover
+           ========================= */
+        .media-grid {
+          margin-top: 8px;
+          border-radius: 14px;
+          overflow: hidden;
+          border: 1px solid rgba(0, 0, 0, 0.06);
+          background: #f6f6f6;
+          display: grid;
+          gap: 2px;
+        }
+
+        /* 1枚：1x1（正方形） */
+        .media-grid--1 {
+          grid-template-columns: 1fr;
+        }
+
+        /* 2枚：2カラム */
+        .media-grid--2 {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        /* 3枚：2カラム（正方形タイルで統一するため、上段2枚＋下段1枚にする）
+           - Xの「1+2」ではなく「同一タイル優先」を守る
+           - 3枚目は横幅いっぱいにしたい場合は span も可能だが、
+             “全部同じサイズ”を優先して 2x2 の1マス欠けにする
+         */
+        .media-grid--3 {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        /* 4枚：2x2 */
+        .media-grid--4 {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .media-tile {
+          position: relative;
+          width: 100%;
+          aspect-ratio: 1 / 1;
+          background: #eee;
+        }
+
+        .media-tile img {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
         }
       `}</style>
     </div>
