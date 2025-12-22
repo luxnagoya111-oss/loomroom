@@ -1014,13 +1014,15 @@ export default function StoreProfilePage() {
                   key={p.id}
                   post={p}
                   viewerReady={viewerReady}
+                  viewerUuid={viewerReady && viewerUuid ? viewerUuid : null}
                   onOpenDetail={handleOpenDetail}
                   onOpenProfile={handleOpenProfile}
                   onToggleLike={handleToggleLike}
                   onReply={handleReply}
-                  onOpenMenu={handleOpenMenu}
-                  menuOpen={menuPostId === p.id}
-                  onReport={handleReport}
+                  onDeleted={(postId) => {
+                    // このページの state 名に合わせて下さい（例：posts / filteredPosts など）
+                    setPosts((prev) => prev.filter((x) => x.id !== postId));
+                  }}
                   showBadges={true}
                 />
               ))}
