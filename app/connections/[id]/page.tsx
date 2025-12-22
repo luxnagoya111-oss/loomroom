@@ -203,7 +203,6 @@ function ConnectionRow(props: {
         </div>
       </button>
 
-      {/* 右：フォローボタン（自分自身には出さない） */}
       <div className="right-col">
         {!hideFollow && (
           <RelationActions
@@ -355,8 +354,10 @@ const ConnectionsPage: React.FC = () => {
   const initialTab: TabKey = normalizeTab(searchParams.get("tab"));
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
 
-  // ★ 追加：スワイプ中に動くインジケータ（0=following, 1=followers）
-  const [tabProgress, setTabProgress] = useState<number>(initialTab === "following" ? 0 : 1);
+  // ★ インジケータ用：0〜1（following→followers）
+  const [tabProgress, setTabProgress] = useState<number>(
+    initialTab === "following" ? 0 : 1
+  );
 
   // refs for stable sync
   const pagerRef = useRef<HTMLDivElement | null>(null);
@@ -418,37 +419,21 @@ const ConnectionsPage: React.FC = () => {
 
   // ------------------------------
   // pager snap helpers
-  // ★ pagerの1枚目=following, 2枚目=followers に固定
   // ------------------------------
   const snapPagerToTab = useCallback((tab: TabKey, behavior: ScrollBehavior) => {
     const el = pagerRef.current;
     if (!el) return;
 
-    const doSnap = () => {
-      const width = el.clientWidth || 0;
-      if (!width) return false;
+    const width = el.clientWidth || 0;
+    if (!width) return;
 
-      isSyncingRef.current = true;
+    isSyncingRef.current = true;
 
-      const left = tab === "following" ? 0 : width;
-      el.scrollTo({ left, behavior });
-
-      // ★ インジケータも同期（スムーズスクロール中は scroll handler が追従するが、念押し）
-      setTabProgress(tab === "following" ? 0 : 1);
-
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          isSyncingRef.current = false;
-        });
-      });
-
-      return true;
-    };
+    const left = tab === "following" ? 0 : width;
+    el.scrollTo({ left, behavior });
 
     requestAnimationFrame(() => {
-      if (doSnap()) return;
       requestAnimationFrame(() => {
-        if (doSnap()) return;
         isSyncingRef.current = false;
       });
     });
@@ -465,6 +450,9 @@ const ConnectionsPage: React.FC = () => {
       setActiveTab(next);
     }
 
+    // ★ URL反映時は見た目も合わせる（即時）
+    setTabProgress(next === "following" ? 0 : 1);
+
     snapPagerToTab(next, "auto");
   }, [searchParams, snapPagerToTab]);
 
@@ -478,15 +466,16 @@ const ConnectionsPage: React.FC = () => {
     let raf = 0;
 
     const onScroll = () => {
-      // ★ インジケータは「同期中でも」追従させたいので、ここでは isSyncing を見ない
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const width = el.clientWidth || 1;
-        const raw = el.scrollLeft / width;
-        const progress = Math.max(0, Math.min(1, raw));
-        setTabProgress(progress);
 
-        // ★ URL/state の切り替えは「同期中は抑制」
+        // ★ ここで必ず 0〜1 を連続更新
+        const raw = el.scrollLeft / width;
+        const p = Math.max(0, Math.min(1, raw));
+        setTabProgress(p);
+
+        // URL切替は同期中は抑制
         if (isSyncingRef.current) return;
 
         const idx = Math.round(el.scrollLeft / width);
@@ -504,27 +493,15 @@ const ConnectionsPage: React.FC = () => {
     };
 
     el.addEventListener("scroll", onScroll, { passive: true });
+
+    // ★ 初回も一度計算してインジケータ位置を確定
+    requestAnimationFrame(onScroll);
+
     return () => {
       cancelAnimationFrame(raf);
       el.removeEventListener("scroll", onScroll as any);
     };
   }, [router, isValidTarget, targetUserId]);
-
-  // ★ 追加：リサイズ時に progress から位置を復元（横向き/幅変化でズレるのを防ぐ）
-  useEffect(() => {
-    const el = pagerRef.current;
-    if (!el) return;
-
-    const onResize = () => {
-      const width = el.clientWidth || 1;
-      const raw = el.scrollLeft / width;
-      const progress = Math.max(0, Math.min(1, raw));
-      setTabProgress(progress);
-    };
-
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
 
   // ------------------------------
   // tab click handler
@@ -536,7 +513,7 @@ const ConnectionsPage: React.FC = () => {
       activeTabRef.current = tab;
       setActiveTab(tab);
 
-      // ★ クリック時も即時反映
+      // ★ クリック時は見た目も即時
       setTabProgress(tab === "following" ? 0 : 1);
 
       router.replace(`/connections/${targetUserId}?tab=${tab}`);
@@ -552,9 +529,7 @@ const ConnectionsPage: React.FC = () => {
     idsInOrder: string[],
     viewerId: string
   ): Promise<ConnectionUser[]> {
-    // ★ 推奨A：自分自身は一覧から除外
     const ids = idsInOrder.filter((id) => id !== viewerId);
-
     if (ids.length === 0) return [];
 
     const { data: users, error: uErr } = await supabase
@@ -604,7 +579,6 @@ const ConnectionsPage: React.FC = () => {
       );
     }
 
-    // viewer の follow 状態（互換）
     const { data: myFollowing, error: fErr } = await supabase
       .from("relations")
       .select("target_id")
@@ -798,8 +772,6 @@ const ConnectionsPage: React.FC = () => {
   const toggleFollow = async (targetId: string, nextEnabled: boolean) => {
     if (!authUserId) return;
     if (!isUuid(authUserId) || !isUuid(targetId)) return;
-
-    // 自分自身には操作しない（保険）
     if (authUserId === targetId) return;
 
     setFollowers((prev) =>
@@ -913,9 +885,6 @@ const ConnectionsPage: React.FC = () => {
     );
   }
 
-  // ==============================
-  // main render
-  // ==============================
   const followersCount = followers.length;
   const followingCount = following.length;
 
@@ -924,33 +893,36 @@ const ConnectionsPage: React.FC = () => {
       <AppHeader title="つながり" subtitle={targetHandle} showBack />
 
       <main className="app-main connections-main">
-        <div className="tabs" role="tablist" aria-label="connections tabs">
-          <button
-            className={`tab ${activeTab === "following" ? "active" : ""}`}
-            onClick={() => goTab("following")}
-            role="tab"
-            aria-selected={activeTab === "following"}
-          >
-            フォロー中
-            <span className="count">{followingCount}</span>
-          </button>
+        {/* ★ sticky + relative を確実にするため tabsWrap を噛ませる */}
+        <div className="tabsWrap">
+          <div className="tabs" role="tablist" aria-label="connections tabs">
+            <button
+              className={`tab ${activeTab === "following" ? "active" : ""}`}
+              onClick={() => goTab("following")}
+              role="tab"
+              aria-selected={activeTab === "following"}
+            >
+              フォロー中
+              <span className="count">{followingCount}</span>
+            </button>
 
-          <button
-            className={`tab ${activeTab === "followers" ? "active" : ""}`}
-            onClick={() => goTab("followers")}
-            role="tab"
-            aria-selected={activeTab === "followers"}
-          >
-            フォロワー
-            <span className="count">{followersCount}</span>
-          </button>
+            <button
+              className={`tab ${activeTab === "followers" ? "active" : ""}`}
+              onClick={() => goTab("followers")}
+              role="tab"
+              aria-selected={activeTab === "followers"}
+            >
+              フォロワー
+              <span className="count">{followersCount}</span>
+            </button>
 
-          {/* ★ スワイプ追従インジケータ（50%幅で左右にスライド） */}
-          <div
-            className="tab-indicator"
-            style={{ transform: `translateX(${tabProgress * 100}%)` }}
-            aria-hidden="true"
-          />
+            {/* ★ スワイプ追従インジケータ */}
+            <div
+              className="tabIndicator"
+              style={{ transform: `translateX(${tabProgress * 100}%)` }}
+              aria-hidden="true"
+            />
+          </div>
         </div>
 
         {errorMsg && (
@@ -960,7 +932,6 @@ const ConnectionsPage: React.FC = () => {
         )}
 
         <div className="pager" ref={pagerRef}>
-          {/* following */}
           <section className="page">
             {loadingFollowing ? (
               <div className="empty">読み込んでいます…</div>
@@ -981,7 +952,6 @@ const ConnectionsPage: React.FC = () => {
             )}
           </section>
 
-          {/* followers */}
           <section className="page">
             {loadingFollowers ? (
               <div className="empty">読み込んでいます…</div>
@@ -1011,55 +981,18 @@ const ConnectionsPage: React.FC = () => {
           padding: 0 16px 120px;
         }
 
-        .tabs {
+        /* ★ stickyのラッパーを relative にして absoluteの基準を固定 */
+        .tabsWrap {
           position: sticky;
           top: 0;
           z-index: 3;
-          display: flex;
           background: var(--surface, #fff);
-          border-bottom: 1px solid rgba(148, 163, 184, 0.25);
-          position: sticky;
-          /* ★ インジケータを置くため relative */
-          position: sticky;
-        }
-        /* ↑ Next/JSXだと position が上書きされるのが嫌なので明示 */
-        .tabs {
-          position: sticky;
-          top: 0;
-          z-index: 3;
-          display: flex;
-          background: var(--surface, #fff);
-          border-bottom: 1px solid rgba(148, 163, 184, 0.25);
-          position: sticky;
-          position: sticky;
-          position: sticky;
-        }
-        /* ここで最終的に relative を効かせる */
-        .tabs {
-          position: sticky;
-          top: 0;
-          z-index: 3;
-          display: flex;
-          background: var(--surface, #fff);
-          border-bottom: 1px solid rgba(148, 163, 184, 0.25);
-          position: sticky;
-          /* sticky のまま relative にするには別要素が必要なので、疑似的に下で対応 */
         }
 
-        /* ★ ここが肝：stickyの親としてインジケータを絶対配置するため wrapper を作らない代わりに tabs を relative にする */
         .tabs {
-          position: sticky;
-          top: 0;
-          z-index: 3;
+          position: relative;
           display: flex;
-          background: var(--surface, #fff);
           border-bottom: 1px solid rgba(148, 163, 184, 0.25);
-          /* relative */
-          position: sticky;
-        }
-        /* sticky + relative は両立する（positionは1つなので sticky のまま）。absolute の基準は sticky 要素でもOK */
-        .tabs {
-          position: sticky;
         }
 
         .tab {
@@ -1094,13 +1027,13 @@ const ConnectionsPage: React.FC = () => {
           opacity: 0.95;
         }
 
-        /* ★ 旧 ::after を廃止（スワイプ追従できないため） */
+        /* ★ 旧方式は完全に殺す（これが残っていると「変化なし」に見える） */
         .tab.active::after {
           content: none;
         }
 
-        /* ★ スライドバー本体（幅はタブの半分） */
-        .tab-indicator {
+        /* ★ インジケータ：幅50%で左右にスライド */
+        .tabIndicator {
           position: absolute;
           left: 0;
           bottom: -1px;
@@ -1110,7 +1043,6 @@ const ConnectionsPage: React.FC = () => {
           background: var(--text-main);
           pointer-events: none;
           will-change: transform;
-          transition: transform 120ms linear;
         }
 
         .error-box {
