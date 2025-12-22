@@ -10,7 +10,6 @@ import AvatarCircle from "@/components/AvatarCircle";
 import { RelationActions } from "@/components/RelationActions";
 
 import { supabase } from "@/lib/supabaseClient";
-import { getCurrentUserId } from "@/lib/auth";
 import { toPublicHandleFromUserId } from "@/lib/handle";
 
 import {
@@ -33,8 +32,6 @@ type TabKey = "following" | "followers";
 
 /**
  * URL tab のゆれを吸収して内部は必ず followers/following に統一
- * - followers / following を受ける
- * - 過去互換: follows / follow / followings なども following 扱い
  */
 function normalizeTab(v: string | null): TabKey {
   const s = (v ?? "").toLowerCase().trim();
@@ -49,7 +46,7 @@ function normalizeTab(v: string | null): TabKey {
   return "followers";
 }
 
-// ★ relations.type 互換読み取り（過去の "following" を吸収）
+// relations.type 互換読み取り（過去の "following" を吸収）
 const FOLLOW_TYPES = ["follow", "following"] as const;
 
 // ===== Avatar URL 正規化 =====
@@ -151,7 +148,7 @@ function buildHandle(userId: string): string {
 }
 
 // ==============================
-// Row Component (X風)
+// Row Component
 // ==============================
 function ConnectionRow(props: {
   item: ConnectionUser;
@@ -349,19 +346,15 @@ const ConnectionsPage: React.FC = () => {
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
-  // tab
-  const initialTab: TabKey = normalizeTab(searchParams.get("tab"));
-  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
-
-  // ★ インジケータ用：0〜1（following→followers）
-  const [tabProgress, setTabProgress] = useState<number>(
-    initialTab === "following" ? 0 : 1
-  );
+  // ★ 初期タブは「state初期化に頼らず」、マウント後に searchParams で確定させる
+  const [activeTab, setActiveTab] = useState<TabKey>("following");
+  const [tabProgress, setTabProgress] = useState<number>(0);
 
   // refs
   const pagerRef = useRef<HTMLDivElement | null>(null);
-  const activeTabRef = useRef<TabKey>(initialTab);
+  const activeTabRef = useRef<TabKey>("following");
   const isSyncingRef = useRef<boolean>(false);
+  const didInitTabRef = useRef<boolean>(false); // ★ 初期スクロールを1回だけ保証
 
   // data
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
@@ -396,23 +389,6 @@ const ConnectionsPage: React.FC = () => {
   const isLoggedIn = !!authUserId;
 
   // ------------------------------
-  // URL 正規化
-  // ------------------------------
-  useEffect(() => {
-    if (!isValidTarget || !targetUserId) return;
-
-    const raw = searchParams.get("tab");
-    const normalized = normalizeTab(raw);
-
-    if (raw !== normalized) {
-      const sp = new URLSearchParams(searchParams.toString());
-      sp.set("tab", normalized);
-      router.replace(`/connections/${targetUserId}?${sp.toString()}`);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isValidTarget, targetUserId]);
-
-  // ------------------------------
   // pager snap
   // ------------------------------
   const snapPagerToTab = useCallback((tab: TabKey, behavior: ScrollBehavior) => {
@@ -437,18 +413,60 @@ const ConnectionsPage: React.FC = () => {
   }, []);
 
   // ------------------------------
-  // URL -> state 同期
+  // URL 正規化（tab表記ゆれ吸収）
   // ------------------------------
   useEffect(() => {
-    const next = normalizeTab(searchParams.get("tab"));
+    if (!isValidTarget || !targetUserId) return;
 
-    if (activeTabRef.current !== next) {
-      activeTabRef.current = next;
-      setActiveTab(next);
-      setTabProgress(next === "following" ? 0 : 1);
-      snapPagerToTab(next, "auto");
+    const raw = searchParams.get("tab");
+    const normalized = normalizeTab(raw);
+
+    if (raw && raw !== normalized) {
+      const sp = new URLSearchParams(searchParams.toString());
+      sp.set("tab", normalized);
+      router.replace(`/connections/${targetUserId}?${sp.toString()}`);
     }
-  }, [searchParams, snapPagerToTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isValidTarget, targetUserId]);
+
+  // ------------------------------
+  // ★ 初期表示：URL(tab)に合わせて必ず pager をスクロール
+  // （searchParams/pagerRef の準備順の差でズレるのを潰す）
+  // ------------------------------
+  useEffect(() => {
+    if (!isValidTarget || !targetUserId) return;
+    if (!pagerRef.current) return;
+
+    const urlTab = normalizeTab(searchParams.get("tab"));
+    const next = urlTab; // URLが無ければ normalizeTab が followers になるので、明示的に following をデフォにしたいならここで制御
+
+    // ここでは「URLが未指定なら following を初期」に寄せる
+    const raw = searchParams.get("tab");
+    const effective: TabKey = raw ? next : "following";
+
+    // 初期化は1回だけ。ただし URL が followers 指定なら必ず followers に行く
+    if (!didInitTabRef.current) {
+      didInitTabRef.current = true;
+
+      activeTabRef.current = effective;
+      setActiveTab(effective);
+      setTabProgress(effective === "following" ? 0 : 1);
+
+      // ★ レイアウト確定後にスクロール（0ms + RAF）
+      setTimeout(() => {
+        snapPagerToTab(effective, "auto");
+      }, 0);
+      return;
+    }
+
+    // 2回目以降：URL変更なら追従
+    if (activeTabRef.current !== effective) {
+      activeTabRef.current = effective;
+      setActiveTab(effective);
+      setTabProgress(effective === "following" ? 0 : 1);
+      snapPagerToTab(effective, "auto");
+    }
+  }, [searchParams, isValidTarget, targetUserId, snapPagerToTab]);
 
   // ------------------------------
   // scroll -> indicator / tab / URL
@@ -465,7 +483,6 @@ const ConnectionsPage: React.FC = () => {
         const width = el.clientWidth || 1;
         const raw = el.scrollLeft / width;
 
-        // ★ インジケータは常に scroll に追従
         const progress = Math.max(0, Math.min(1, raw));
         setTabProgress(progress);
 
@@ -608,10 +625,7 @@ const ConnectionsPage: React.FC = () => {
             area = normalizeFreeText(t.area);
           if (!baseIntro && normalizeFreeText(t.profile))
             intro = normalizeFreeText(t.profile);
-          if (
-            !looksValidAvatarUrl(avatarRaw) &&
-            looksValidAvatarUrl(t.avatar_url)
-          )
+          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(t.avatar_url))
             avatarRaw = t.avatar_url;
         }
       }
@@ -625,10 +639,7 @@ const ConnectionsPage: React.FC = () => {
             area = normalizeFreeText(s.area);
           if (!baseIntro && normalizeFreeText(s.description))
             intro = normalizeFreeText(s.description);
-          if (
-            !looksValidAvatarUrl(avatarRaw) &&
-            looksValidAvatarUrl(s.avatar_url)
-          )
+          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(s.avatar_url))
             avatarRaw = s.avatar_url;
         }
       }
@@ -880,7 +891,6 @@ const ConnectionsPage: React.FC = () => {
       <AppHeader title="つながり" subtitle={targetHandle} showBack />
 
       <main className="app-main connections-main">
-        {/* ★ sticky + relative を確実にするため tabsWrap を噛ませる */}
         <div className="tabsWrap">
           <div className="tabs" role="tablist" aria-label="connections tabs">
             <button
@@ -903,7 +913,6 @@ const ConnectionsPage: React.FC = () => {
               <span className="count">{followersCount}</span>
             </button>
 
-            {/* ★ スワイプ追従インジケータ */}
             <div
               className="tabIndicator"
               style={{ transform: `translateX(${tabProgress * 100}%)` }}
@@ -919,7 +928,6 @@ const ConnectionsPage: React.FC = () => {
         )}
 
         <div className="pager" ref={pagerRef}>
-          {/* following */}
           <section className="page">
             {loadingFollowing ? (
               <div className="empty">読み込んでいます…</div>
@@ -940,7 +948,6 @@ const ConnectionsPage: React.FC = () => {
             )}
           </section>
 
-          {/* followers */}
           <section className="page">
             {loadingFollowers ? (
               <div className="empty">読み込んでいます…</div>
@@ -970,7 +977,6 @@ const ConnectionsPage: React.FC = () => {
           padding: 0 16px 120px;
         }
 
-        /* ★ sticky 用ラッパー（absolute の基準は .tabs 側） */
         .tabsWrap {
           position: sticky;
           top: 0;
@@ -1016,12 +1022,10 @@ const ConnectionsPage: React.FC = () => {
           opacity: 0.95;
         }
 
-        /* ★ 旧方式は完全に殺す（これが残っていると「変化なし」に見える） */
         .tab.active::after {
           content: none;
         }
 
-        /* ★ インジケータ：幅50%で左右にスライド */
         .tabIndicator {
           position: absolute;
           left: 0;
@@ -1051,13 +1055,18 @@ const ConnectionsPage: React.FC = () => {
           scroll-snap-type: x mandatory;
           -webkit-overflow-scrolling: touch;
           scrollbar-width: none;
+
+          /* ★ iOS/Androidで横スワイプが確実に入るように */
+          touch-action: pan-y;
         }
         .pager::-webkit-scrollbar {
           display: none;
         }
 
         .page {
-          min-width: 100%;
+          /* ★ これが重要：横スライド用の「確定幅」を作る */
+          flex: 0 0 100%;
+          width: 100%;
           scroll-snap-align: start;
           padding-top: 6px;
         }
