@@ -475,40 +475,88 @@ const ConnectionsPage: React.FC = () => {
     const el = pagerRef.current;
     if (!el) return;
 
-    let raf = 0;
+    let dragging = false;
+    let horizontal = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
 
-    const onScroll = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        const width = el.clientWidth || 1;
-        const raw = el.scrollLeft / width;
+    const THRESH = 8; // 判定閾値(px)
 
-        const progress = Math.max(0, Math.min(1, raw));
-        setTabProgress(progress);
+    const onTouchStart = (e: TouchEvent) => {
+      if (!el) return;
+      const t = e.touches[0];
+      dragging = true;
+      horizontal = false;
+      startX = t.clientX;
+      startY = t.clientY;
+      startLeft = el.scrollLeft;
+    };
 
-        if (isSyncingRef.current) return;
+    const onTouchMove = (e: TouchEvent) => {
+      if (!dragging || !el) return;
+      if (e.touches.length !== 1) return;
 
-        const idx = Math.round(progress);
-        const next: TabKey = idx === 0 ? "following" : "followers";
+      const t = e.touches[0];
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
 
-        if (activeTabRef.current !== next) {
-          activeTabRef.current = next;
-          setActiveTab(next);
+      // まだ方向確定してないなら、閾値で決める
+      if (!horizontal) {
+        if (Math.abs(dx) < THRESH && Math.abs(dy) < THRESH) return;
 
-          if (isValidTarget && targetUserId) {
-            router.replace(`/connections/${targetUserId}?tab=${next}`);
-          }
+        // 横が勝ったら「横切替モード」に入る（縦スクロールを止める）
+        if (Math.abs(dx) > Math.abs(dy)) {
+          horizontal = true;
+        } else {
+          // 縦が勝った → ここでは関与しない（通常の縦スクロール）
+          dragging = false;
+          return;
         }
-      });
+      }
+
+      // 横切替モード：ページャを自分で引っ張る
+      e.preventDefault(); // ★ これが無いと縦扱いにされて横が死ぬ端末がある
+      el.scrollLeft = startLeft - dx;
     };
 
-    el.addEventListener("scroll", onScroll, { passive: true });
+    const onTouchEnd = () => {
+      if (!el) return;
+      if (!dragging) return;
+
+      dragging = false;
+
+      // 横切替していた場合だけ、近い方へスナップ
+      if (horizontal) {
+        const width = el.clientWidth || 1;
+        const progress = Math.max(0, Math.min(1, el.scrollLeft / width));
+        const next: TabKey = Math.round(progress) === 0 ? "following" : "followers";
+
+        // state / URL / スナップを統一
+        activeTabRef.current = next;
+       setActiveTab(next);
+        setTabProgress(next === "following" ? 0 : 1);
+
+        if (isValidTarget && targetUserId) {
+          router.replace(`/connections/${targetUserId}?tab=${next}`);
+        }
+        snapPagerToTab(next, "smooth");
+      }
+    };
+
+    // ★ iOS対策：touchmove を passive:false で登録する（重要）
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
     return () => {
-      cancelAnimationFrame(raf);
-      el.removeEventListener("scroll", onScroll as any);
+      el.removeEventListener("touchstart", onTouchStart as any);
+      el.removeEventListener("touchmove", onTouchMove as any);
+      el.removeEventListener("touchend", onTouchEnd as any);
+      el.removeEventListener("touchcancel", onTouchEnd as any);
     };
-  }, [router, isValidTarget, targetUserId]);
-
+  }, [router, isValidTarget, targetUserId, snapPagerToTab]);
   // ------------------------------
   // tab click
   // ------------------------------
@@ -1057,18 +1105,18 @@ const ConnectionsPage: React.FC = () => {
           scrollbar-width: none;
 
           /* ★ iOS/Androidで横スワイプが確実に入るように */
-          touch-action: pan-y;
+          touch-action: pan-x;
+          overscroll-behavior-x: contain;
         }
+          
         .pager::-webkit-scrollbar {
           display: none;
         }
 
         .page {
-          /* ★ これが重要：横スライド用の「確定幅」を作る */
           flex: 0 0 100%;
           width: 100%;
-          scroll-snap-align: start;
-          padding-top: 6px;
+          croll-snap-align: start;
         }
 
         .list {
