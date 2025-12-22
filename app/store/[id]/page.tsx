@@ -588,9 +588,7 @@ const StoreProfilePage: React.FC = () => {
           // 3) posts (author_id=owner_user_id)
           const { data: postRows, error: pError } = await supabase
             .from("posts")
-            .select(
-              "id, author_id, body, created_at, like_count, reply_count, image_paths, image_urls, imageUrls"
-            )
+            .select("id, author_id, body, created_at, like_count, reply_count, image_urls, image_paths")
             .eq("author_id", row.owner_user_id)
             .order("created_at", { ascending: false })
             .limit(50);
