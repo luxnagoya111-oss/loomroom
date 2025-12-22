@@ -13,7 +13,7 @@ import type { DbRelationRow } from "@/types/db";
 import type { UserId } from "@/types/user";
 import { ensureViewerId, getCurrentUserId } from "@/lib/auth";
 
-import { fetchRecentPosts, toggleLike, reportPost } from "@/lib/repositories/postRepository";
+import { fetchRecentPosts, toggleLike } from "@/lib/repositories/postRepository";
 import { hydratePosts, type UiPost } from "@/lib/postFeedHydrator";
 
 type AuthorKind = "therapist" | "store" | "user";
@@ -39,7 +39,6 @@ export default function LoomRoomHome() {
   const [error, setError] = useState<string | null>(null);
 
   const [kindFilter, setKindFilter] = useState<AuthorKind | "all">("all");
-  const [openPostMenuId, setOpenPostMenuId] = useState<string | null>(null);
 
   // 画面ID（guestでも）
   useEffect(() => {
@@ -62,9 +61,11 @@ export default function LoomRoomHome() {
     };
   }, []);
 
+  const viewerReady = !!viewerUuid && isUuid(viewerUuid);
+
   // relations（uuid時だけ）
   useEffect(() => {
-    if (!viewerUuid || !isUuid(viewerUuid)) {
+    if (!viewerReady || !viewerUuid) {
       setRelations([]);
       return;
     }
@@ -82,7 +83,7 @@ export default function LoomRoomHome() {
     return () => {
       cancelled = true;
     };
-  }, [viewerUuid]);
+  }, [viewerReady, viewerUuid]);
 
   // TL取得 → hydrate
   useEffect(() => {
@@ -94,7 +95,10 @@ export default function LoomRoomHome() {
 
       try {
         const rows = await fetchRecentPosts({ limit: 100, excludeReplies: true });
-        const ui = await hydratePosts({ rows, viewerUuid: viewerUuid && isUuid(viewerUuid) ? viewerUuid : null });
+        const ui = await hydratePosts({
+          rows,
+          viewerUuid: viewerReady && viewerUuid ? viewerUuid : null,
+        });
         if (!cancelled) setPosts(ui);
       } catch (e: any) {
         if (!cancelled) {
@@ -109,9 +113,7 @@ export default function LoomRoomHome() {
     return () => {
       cancelled = true;
     };
-  }, [viewerUuid]);
-
-  const viewerReady = !!viewerUuid && isUuid(viewerUuid);
+  }, [viewerReady, viewerUuid]);
 
   const filteredPosts = useMemo(() => {
     const mutedTargets = new Set<string>();
@@ -139,7 +141,9 @@ export default function LoomRoomHome() {
     // optimistic
     setPosts((prev) =>
       prev.map((p) =>
-        p.id === post.id ? { ...p, liked: !prevLiked, likeCount: prevCount + (!prevLiked ? 1 : -1) } : p
+        p.id === post.id
+          ? { ...p, liked: !prevLiked, likeCount: prevCount + (!prevLiked ? 1 : -1) }
+          : p
       )
     );
 
@@ -159,17 +163,8 @@ export default function LoomRoomHome() {
     }
   };
 
-  const handleReport = async (postId: string) => {
-    if (!viewerReady || !viewerUuid) return;
-
-    const ok = await reportPost({ postId, reporterId: viewerUuid, reason: null });
-    setOpenPostMenuId(null);
-
-    if (!ok) {
-      alert("通報の送信中にエラーが発生しました。時間をおいて再度お試しください。");
-      return;
-    }
-    alert("この投稿の通報を受け付けました。");
+  const handleDeleted = (postId: string) => {
+    setPosts((prev) => prev.filter((p) => p.id !== postId));
   };
 
   return (
@@ -196,15 +191,24 @@ export default function LoomRoomHome() {
         </section>
 
         <section className="feed-list">
-          {error && <div className="feed-message feed-error">タイムラインの読み込みに失敗しました：{error}</div>}
-          {loading && !error && <div className="feed-message feed-loading">タイムラインを読み込んでいます…</div>}
-          {!loading && !error && filteredPosts.length === 0 && <div className="feed-message">まだ投稿がありません。</div>}
+          {error && (
+            <div className="feed-message feed-error">
+              タイムラインの読み込みに失敗しました：{error}
+            </div>
+          )}
+          {loading && !error && (
+            <div className="feed-message feed-loading">タイムラインを読み込んでいます…</div>
+          )}
+          {!loading && !error && filteredPosts.length === 0 && (
+            <div className="feed-message">まだ投稿がありません。</div>
+          )}
 
           {filteredPosts.map((p) => (
             <PostCard
               key={p.id}
               post={p}
               viewerReady={viewerReady}
+              viewerUuid={viewerReady && viewerUuid ? viewerUuid : null}
               onOpenDetail={(id) => router.push(`/posts/${id}`)}
               onOpenProfile={(path) => {
                 if (!path) return;
@@ -212,9 +216,7 @@ export default function LoomRoomHome() {
               }}
               onToggleLike={handleToggleLike}
               onReply={(id) => router.push(`/posts/${id}?reply=1`)}
-              onOpenMenu={(id) => setOpenPostMenuId(openPostMenuId === id ? null : id)}
-              menuOpen={openPostMenuId === p.id}
-              onReport={handleReport}
+              onDeleted={handleDeleted}
               showBadges
             />
           ))}

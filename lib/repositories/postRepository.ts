@@ -227,3 +227,48 @@ export async function reportPost(params: {
   }
   return true;
 }
+
+/**
+ * 投稿削除（安全のため API Route 経由）
+ * - RLS OFF の posts に対してフロント直 delete は危険なので禁止
+ */
+export async function deletePost(params: {
+  postId: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const { postId } = params;
+
+  try {
+    const { data: sessionData, error: sessErr } = await supabase.auth.getSession();
+    if (sessErr) throw sessErr;
+
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) {
+      return { ok: false, error: "not_logged_in" };
+    }
+
+    const res = await fetch("/api/posts/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ postId }),
+    });
+
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = { _raw: text };
+    }
+
+    if (!res.ok) {
+      return { ok: false, error: json?.error ?? `http_${res.status}` };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    console.error("[postRepository.deletePost] error:", e);
+    return { ok: false, error: e?.message ?? "unknown_error" };
+  }
+}

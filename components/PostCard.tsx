@@ -1,24 +1,28 @@
 // components/PostCard.tsx
 "use client";
 
-import React from "react";
+import React, { useMemo, useState } from "react";
 import AvatarCircle from "@/components/AvatarCircle";
+import PostActionsMenu from "@/components/PostActionsMenu";
 import type { UiPost } from "@/lib/postFeedHydrator";
+import type { UserId } from "@/types/user";
+
+import { reportPost } from "@/lib/repositories/postRepository";
+import { supabase } from "@/lib/supabaseClient";
 
 type Props = {
   post: UiPost;
 
   viewerReady: boolean;
+  viewerUuid?: UserId | null;
 
   onOpenDetail: (postId: string) => void;
   onOpenProfile: (profilePath: string | null) => void;
 
-  onToggleLike: (post: UiPost) => void;
+  onToggleLike: (post: UiPost) => void | Promise<void>;
   onReply: (postId: string) => void;
 
-  onOpenMenu?: (postId: string) => void;
-  menuOpen?: boolean;
-  onReport?: (postId: string) => void;
+  onDeleted?: (postId: string) => void;
 
   showBadges?: boolean;
 };
@@ -29,21 +33,111 @@ const renderGoldBadge = (kind: UiPost["authorKind"]) => {
   return null;
 };
 
+async function getAccessToken(): Promise<string | null> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export default function PostCard(props: Props) {
   const {
     post,
     viewerReady,
+    viewerUuid = null,
     onOpenDetail,
     onOpenProfile,
     onToggleLike,
     onReply,
-    onOpenMenu,
-    menuOpen,
-    onReport,
+    onDeleted,
     showBadges = true,
   } = props;
 
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // UiPost.authorId は Home 側で mute/block 判定に使っている前提
+  const isOwner = useMemo(() => {
+    if (!viewerReady || !viewerUuid) return false;
+    return post.authorId === viewerUuid;
+  }, [viewerReady, viewerUuid, post.authorId]);
+
   const profileClickable = !!post.profilePath;
+
+  const handleDelete = async () => {
+    if (!viewerReady || busy) return;
+
+    const ok = window.confirm("この投稿を削除しますか？");
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        alert("削除にはログインが必要です。");
+        return;
+      }
+
+      const res = await fetch("/api/posts/delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ postId: post.id }),
+      });
+
+      if (!res.ok) {
+        const j = await res.json().catch(() => null);
+        if (res.status === 403) {
+          alert("この投稿を削除する権限がありません。");
+          return;
+        }
+        if (res.status === 401) {
+          alert("セッションが切れています。再ログインしてください。");
+          return;
+        }
+        alert(`削除に失敗しました。(${j?.error ?? "unknown"})`);
+        return;
+      }
+
+      setMenuOpen(false);
+      onDeleted?.(post.id);
+    } catch {
+      alert("削除に失敗しました。通信状況を確認して再度お試しください。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleReport = async () => {
+    if (!viewerReady || busy) return;
+
+    const ok = window.confirm("この投稿を通報しますか？");
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      // report は DB に書くので viewerUuid（uuid）が必要
+      if (!viewerUuid) {
+        alert("通報にはログインが必要です。");
+        return;
+      }
+
+      const ok2 = await reportPost({ postId: post.id, reporterId: viewerUuid, reason: null });
+      setMenuOpen(false);
+
+      if (!ok2) {
+        alert("通報の送信中にエラーが発生しました。時間をおいて再度お試しください。");
+        return;
+      }
+      alert("この投稿の通報を受け付けました。");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <article
@@ -119,7 +213,7 @@ export default function PostCard(props: Props) {
             <button
               type="button"
               className={`post-like-btn ${post.liked ? "liked" : ""}`}
-              disabled={!viewerReady}
+              disabled={!viewerReady || busy}
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleLike(post);
@@ -132,6 +226,7 @@ export default function PostCard(props: Props) {
             <button
               type="button"
               className="post-reply-btn"
+              disabled={busy}
               onClick={(e) => {
                 e.stopPropagation();
                 onReply(post.id);
@@ -141,41 +236,20 @@ export default function PostCard(props: Props) {
               <span className="post-reply-count">{post.replyCount}</span>
             </button>
 
-            {onOpenMenu && (
-              <div className="post-more-wrapper">
-                <button
-                  type="button"
-                  className="post-more-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenMenu(post.id);
-                  }}
-                >
-                  ⋯
-                </button>
-
-                {menuOpen && (
-                  <div className="post-more-menu">
-                    <button
-                      type="button"
-                      className="post-report-btn"
-                      disabled={!viewerReady}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onReport?.(post.id);
-                      }}
-                    >
-                      通報する
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+            {/* ★ 常に表示。開閉は PostCard 内部で管理 */}
+            <PostActionsMenu
+              open={menuOpen}
+              onToggle={() => setMenuOpen((v) => !v)}
+              isOwner={isOwner}
+              viewerReady={viewerReady && !busy}
+              onDelete={isOwner ? handleDelete : undefined}
+              onReport={!isOwner ? handleReport : undefined}
+            />
           </div>
 
           {!viewerReady && (
             <div className="feed-message" style={{ padding: "6px 0 0", fontSize: 11 }}>
-              いいね・通報はログイン後に利用できます。
+              いいね・通報・削除はログイン後に利用できます。
             </div>
           )}
         </div>
@@ -258,8 +332,7 @@ export default function PostCard(props: Props) {
         }
 
         .post-like-btn,
-        .post-reply-btn,
-        .post-more-btn {
+        .post-reply-btn {
           border: none;
           background: transparent;
           padding: 2px 4px;
@@ -271,43 +344,13 @@ export default function PostCard(props: Props) {
         }
 
         .post-like-btn:disabled,
-        .post-report-btn:disabled {
+        .post-reply-btn:disabled {
           opacity: 0.5;
           cursor: not-allowed;
         }
 
         .post-like-btn.liked .post-like-icon {
           color: #e0245e;
-        }
-
-        .post-more-wrapper {
-          margin-left: auto;
-          position: relative;
-        }
-
-        .post-more-menu {
-          position: absolute;
-          right: 0;
-          top: 18px;
-          background: #fff;
-          border-radius: 8px;
-          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
-          padding: 4px 0;
-          z-index: 10;
-        }
-
-        .post-report-btn {
-          background: transparent;
-          border: none;
-          font-size: 12px;
-          padding: 6px 12px;
-          width: 100%;
-          text-align: left;
-          color: #b00020;
-        }
-
-        .post-report-btn:hover {
-          background: rgba(176, 0, 32, 0.06);
         }
 
         .feed-message {
