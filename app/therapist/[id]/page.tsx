@@ -873,11 +873,6 @@ export default function TherapistProfilePage() {
       </div>
 
       <style jsx>{`
-        .profile-hero {
-          padding: 4px 0 12px;
-          border-bottom: 1px solid var(--border);
-          margin-bottom: 8px;
-        }
 
         .profile-hero-row {
           display: flex;

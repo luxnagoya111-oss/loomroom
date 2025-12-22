@@ -33,7 +33,6 @@ type LocalProfilePayload = {
   avatarDataUrl?: string;
 
   snsX?: string;
-  snsLine?: string;
   snsOther?: string;
 
   isMember?: boolean;
@@ -43,6 +42,8 @@ type DbUserRow = {
   id: string;
   name: string | null;
   avatar_url: string | null;
+  sns_x: string | null;
+  sns_other: string | null;
 
   // ★ 追加カラム
   area: string | null;
@@ -65,7 +66,6 @@ const MyPageConsole: React.FC = () => {
 
   // SNS系リンク
   const [snsX, setSnsX] = useState<string>("");
-  const [snsLine, setSnsLine] = useState<string>("");
   const [snsOther, setSnsOther] = useState<string>("");
 
   // 通知設定
@@ -108,7 +108,6 @@ const MyPageConsole: React.FC = () => {
       if (typeof data.avatarDataUrl === "string") setAvatarDataUrl(data.avatarDataUrl);
 
       if (typeof data.snsX === "string") setSnsX(data.snsX);
-      if (typeof data.snsLine === "string") setSnsLine(data.snsLine);
       if (typeof data.snsOther === "string") setSnsOther(data.snsOther);
     } catch (e) {
       console.warn("[MyPageConsole] Failed to load profile from localStorage", e);
@@ -117,7 +116,7 @@ const MyPageConsole: React.FC = () => {
     }
   }, [STORAGE_KEY]);
 
-  // Supabase の users から name / avatar_url / area / description を取得（会員のみ）
+  // Supabase の users から name / avatar_url / area / description / sns を取得（会員のみ）
   useEffect(() => {
     if (!isMember) return;
     if (!userId || typeof userId !== "string") return;
@@ -128,9 +127,9 @@ const MyPageConsole: React.FC = () => {
       try {
         const { data, error } = await supabase
           .from("users")
-          .select("id, name, avatar_url, area, description")
+          .select("id, name, avatar_url, area, description, sns_x, sns_other")
           .eq("id", userId)
-          .maybeSingle<DbUserRow>();
+          .maybeSingle<DbUserRow & { sns_x?: string | null; sns_other?: string | null }>();
 
         if (cancelled) return;
 
@@ -140,20 +139,40 @@ const MyPageConsole: React.FC = () => {
         }
         if (!data) return;
 
-        if (typeof data.name === "string" && data.name.trim().length > 0) setNickname(data.name);
+        if (typeof data.name === "string" && data.name.trim().length > 0) {
+          setNickname(data.name);
+        }
+
         if (typeof data.avatar_url === "string" && data.avatar_url.trim().length > 0) {
           setAvatarDataUrl(data.avatar_url);
         }
 
         // ★ DB優先で反映（空文字も許容）
-        if (typeof data.area === "string") setArea(data.area);
-        if (typeof data.description === "string") setIntro(data.description);
+        if (typeof data.area === "string") {
+          setArea(data.area);
+        }
+
+        if (typeof data.description === "string") {
+          setIntro(data.description);
+        }
+
+        // ★ SNS（ここが今まで抜けていた復元処理）
+        if (typeof data.sns_x === "string") {
+          setSnsX(data.sns_x);
+        }
+
+        if (typeof data.sns_other === "string") {
+          setSnsOther(data.sns_other);
+        }
       } catch (e) {
-        if (!cancelled) console.error("[MyPageConsole] loadUser exception:", e);
+        if (!cancelled) {
+          console.error("[MyPageConsole] loadUser exception:", e);
+        }
       }
     };
 
     loadUser();
+
     return () => {
       cancelled = true;
     };
@@ -227,7 +246,6 @@ const MyPageConsole: React.FC = () => {
       notifyNews,
       avatarDataUrl,
       snsX,
-      snsLine,
       snsOther,
       isMember,
     };
@@ -383,16 +401,6 @@ const MyPageConsole: React.FC = () => {
               value={snsX}
               onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsX(e.target.value)}
               placeholder="https://x.com/..."
-            />
-          </div>
-
-          <div className="field">
-            <label className="field-label">LINE（任意）</label>
-            <input
-              className="field-input"
-              value={snsLine}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsLine(e.target.value)}
-              placeholder="https://lin.ee/..."
             />
           </div>
 

@@ -444,6 +444,9 @@ const PublicMyPage: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
 
+    // relations.type 互換（過去の "following" を吸収）
+    const FOLLOW_TYPES = ["follow", "following"] as const;
+
     async function fetchCounts() {
       // /mypage/[id] の対象が uuid じゃないなら（ゲスト互換）数えない
       if (!isUuid(userId)) {
@@ -455,28 +458,29 @@ const PublicMyPage: React.FC = () => {
       setLoadingCounts(true);
 
       try {
-        const { count: c1, error: e1 } = await supabase
+        const followingReq = supabase
           .from("relations")
           .select("target_id", { count: "exact", head: true })
           .eq("user_id", userId)
-          .eq("type", "follow");
+          .in("type", FOLLOW_TYPES as any);
 
-        if (cancelled) return;
-        if (e1) throw e1;
-
-        const { count: c2, error: e2 } = await supabase
+        const followersReq = supabase
           .from("relations")
           .select("user_id", { count: "exact", head: true })
           .eq("target_id", userId)
-          .eq("type", "follow");
+          .in("type", FOLLOW_TYPES as any);
+
+        const [followingRes, followersRes] = await Promise.all([followingReq, followersReq]);
 
         if (cancelled) return;
-        if (e2) throw e2;
 
-        setFollowCount(typeof c1 === "number" ? c1 : 0);
-        setFollowerCount(typeof c2 === "number" ? c2 : 0);
+        if (followingRes.error) throw followingRes.error;
+        if (followersRes.error) throw followersRes.error;
+
+        setFollowCount(typeof followingRes.count === "number" ? followingRes.count : 0);
+        setFollowerCount(typeof followersRes.count === "number" ? followersRes.count : 0);
       } catch (e: any) {
-        console.warn("[PublicMyPage] following count fetch failed:", e);
+        console.warn("[PublicMyPage] counts fetch failed:", e);
         setFollowCount(null);
         setFollowerCount(null);
       } finally {
@@ -1044,15 +1048,6 @@ const PublicMyPage: React.FC = () => {
           gap: 10px;
         }
 
-        .stats-link {
-          color: inherit;
-          text-decoration: none;
-          border-bottom: 1px solid rgba(0, 0, 0, 0.18);
-        }
-        .stats-link:hover {
-          border-bottom-color: rgba(0, 0, 0, 0.35);
-        }
-
         .therapist-intro {
           font-size: 13px;
           line-height: 1.7;
@@ -1119,6 +1114,14 @@ const PublicMyPage: React.FC = () => {
         :global(.no-link-style) {
           color: inherit;
           text-decoration: none;
+        }
+
+        .stats-link {
+          color: inherit;
+          text-decoration: none;
+        }
+        .stats-link:hover {
+          opacity: 0.9;
         }
       `}</style>
     </>

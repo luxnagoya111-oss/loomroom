@@ -60,17 +60,11 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
 
   // 「旧：外から flags / handler を渡すか？」でモード判定
   const isControlled =
-    !!flags &&
-    !!onToggleFollow &&
-    !!onToggleMute &&
-    !!onToggleBlock; // report は任意
+    !!flags && !!onToggleFollow && !!onToggleMute && !!onToggleBlock; // report は任意
 
   // smart モードかつ自分自身なら非表示
   const shouldHideSmart =
-    !isControlled &&
-    (!!currentUserId &&
-      !!targetId &&
-      currentUserId === targetId); // 自分宛なら出さない
+    !isControlled && !!currentUserId && !!targetId && currentUserId === targetId; // 自分宛なら出さない
 
   // smart モードかどうか（currentUserId/targetId が渡っている）
   const isSmart = !isControlled && currentUserId !== null && targetId !== null;
@@ -80,6 +74,9 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
     flags ?? DEFAULT_FLAGS
   );
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // ★ 外側クリック/Escで閉じるためのref
+  const menuRef = React.useRef<HTMLDivElement | null>(null);
 
   // 画面に表示するフラグ
   const effectiveFlags: RelationFlags = isControlled
@@ -94,10 +91,7 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
     let cancelled = false;
 
     (async () => {
-      const row = await getRelation(
-        currentUserId as UserId,
-        targetId as UserId
-      );
+      const row = await getRelation(currentUserId as UserId, targetId as UserId);
       if (cancelled) return;
       setInternalFlags(toRelationFlags(row));
     })();
@@ -110,6 +104,35 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
   const applyInternalFlags = (next: Partial<RelationFlags>) => {
     setInternalFlags((prev) => ({ ...prev, ...next }));
   };
+
+  // ==============================
+  // menu UX: 外側クリック / ESC で閉じる
+  // ==============================
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    const onPointerDown = (e: PointerEvent) => {
+      const root = menuRef.current;
+      if (!root) return;
+
+      const target = e.target as Node | null;
+      if (!target) return;
+
+      if (!root.contains(target)) setMenuOpen(false);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+
+    window.addEventListener("pointerdown", onPointerDown, { capture: true });
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, { capture: true } as any);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
 
   // ==============================
   // クリックハンドラ
@@ -209,9 +232,7 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
     return null;
   }
 
-  const wrapperClass = ["relation-actions-row", className]
-    .filter(Boolean)
-    .join(" ");
+  const wrapperClass = ["relation-actions-row", className].filter(Boolean).join(" ");
 
   return (
     <div className={wrapperClass}>
@@ -231,17 +252,27 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
       </div>
 
       {/* ・・・メニュー（ミュート／ブロック／通報） */}
-      <div className="relation-more">
+      <div className="relation-more" ref={menuRef}>
         <button
           type="button"
           className="relation-more-btn"
-          onClick={() => setMenuOpen((prev) => !prev)}
+          onClick={(e) => {
+            e.stopPropagation();
+            setMenuOpen((prev) => !prev);
+          }}
+          aria-label="その他の操作"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
         >
           ⋯
         </button>
 
         {menuOpen && (
-          <div className="relation-more-menu">
+          <div
+            className="relation-more-menu"
+            role="menu"
+            onClick={(e) => e.stopPropagation()}
+          >
             <button
               type="button"
               className="relation-menu-item"
@@ -249,6 +280,7 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
                 handleMuteClick();
                 setMenuOpen(false);
               }}
+              role="menuitem"
             >
               {effectiveFlags.muted ? "ミュートを解除" : "ミュートする"}
             </button>
@@ -260,6 +292,7 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
                 handleBlockClick();
                 setMenuOpen(false);
               }}
+              role="menuitem"
             >
               {effectiveFlags.blocked ? "ブロックを解除" : "ブロックする"}
             </button>
@@ -271,12 +304,97 @@ export const RelationActions: React.FC<RelationActionsProps> = (props) => {
                 handleReportClick();
                 setMenuOpen(false);
               }}
+              role="menuitem"
             >
               通報する
             </button>
           </div>
         )}
       </div>
+
+      <style jsx>{`
+        .relation-actions-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: 8px;
+        }
+
+        .relation-main-actions {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .follow-button {
+          border: 1px solid rgba(0, 0, 0, 0.12);
+          background: #fff;
+          color: var(--text-main, #171717);
+          padding: 7px 12px;
+          border-radius: 999px;
+          font-size: 12px;
+          cursor: pointer;
+        }
+
+        .follow-button--active {
+          background: rgba(0, 0, 0, 0.06);
+          border-color: rgba(0, 0, 0, 0.14);
+        }
+
+        .relation-more {
+          margin-left: auto;
+          position: relative;
+        }
+
+        .relation-more-btn {
+          border: none;
+          background: transparent;
+          padding: 2px 6px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          color: var(--text-sub, #777777);
+          cursor: pointer;
+        }
+
+        .relation-more-menu {
+          position: absolute;
+          right: 0;
+          top: 18px;
+          background: #fff;
+          border-radius: 10px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+          padding: 6px 0;
+          z-index: 20;
+          min-width: 160px;
+          border: 1px solid rgba(0, 0, 0, 0.06);
+        }
+
+        .relation-menu-item,
+        .relation-report-btn {
+          background: transparent;
+          border: none;
+          font-size: 12px;
+          padding: 8px 12px;
+          width: 100%;
+          text-align: left;
+          cursor: pointer;
+          color: var(--text-main, #171717);
+        }
+
+        .relation-menu-item:hover {
+          background: rgba(0, 0, 0, 0.04);
+        }
+
+        .relation-report-btn {
+          color: #b00020;
+        }
+
+        .relation-report-btn:hover {
+          background: rgba(176, 0, 32, 0.06);
+        }
+      `}</style>
     </div>
   );
 };

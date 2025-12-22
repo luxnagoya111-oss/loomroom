@@ -1,7 +1,7 @@
 // components/PostActionsMenu.tsx
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
 
 type Props = {
   open: boolean;
@@ -19,6 +19,10 @@ type Props = {
   // optional labels
   deleteLabel?: string; // default: "削除する"
   reportLabel?: string; // default: "通報する"
+
+  // optional: 外側クリック/ESC で閉じたい場合（通常 true 想定）
+  closeOnOutsideClick?: boolean; // default: true
+  closeOnEscape?: boolean; // default: true
 };
 
 export default function PostActionsMenu(props: Props) {
@@ -31,10 +35,49 @@ export default function PostActionsMenu(props: Props) {
     onReport,
     deleteLabel = "削除する",
     reportLabel = "通報する",
+    closeOnOutsideClick = true,
+    closeOnEscape = true,
   } = props;
 
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // 外側クリックで閉じる
+  useEffect(() => {
+    if (!open) return;
+    if (!closeOnOutsideClick) return;
+
+    const onPointerDown = (e: PointerEvent) => {
+      const root = rootRef.current;
+      if (!root) return;
+
+      const target = e.target as Node | null;
+      if (!target) return;
+
+      // メニュー領域外なら閉じる
+      if (!root.contains(target)) onToggle();
+    };
+
+    window.addEventListener("pointerdown", onPointerDown, { capture: true });
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, { capture: true } as any);
+    };
+  }, [open, closeOnOutsideClick, onToggle]);
+
+  // ESC で閉じる
+  useEffect(() => {
+    if (!open) return;
+    if (!closeOnEscape) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onToggle();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, closeOnEscape, onToggle]);
+
   return (
-    <div className="post-more-wrapper">
+    <div className="post-more-wrapper" ref={rootRef}>
       <button
         type="button"
         className="post-more-btn"
@@ -43,6 +86,8 @@ export default function PostActionsMenu(props: Props) {
           onToggle();
         }}
         aria-label="投稿メニュー"
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
         ⋯
       </button>
@@ -60,7 +105,12 @@ export default function PostActionsMenu(props: Props) {
               disabled={!viewerReady}
               onClick={async () => {
                 if (!viewerReady) return;
-                await onDelete?.();
+                try {
+                  await onDelete?.();
+                } finally {
+                  // 成否に関わらず閉じる
+                  onToggle();
+                }
               }}
               role="menuitem"
             >
@@ -73,7 +123,12 @@ export default function PostActionsMenu(props: Props) {
               disabled={!viewerReady}
               onClick={async () => {
                 if (!viewerReady) return;
-                await onReport?.();
+                try {
+                  await onReport?.();
+                } finally {
+                  // 成否に関わらず閉じる
+                  onToggle();
+                }
               }}
               role="menuitem"
             >
