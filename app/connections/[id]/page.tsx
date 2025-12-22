@@ -355,6 +355,9 @@ const ConnectionsPage: React.FC = () => {
   const initialTab: TabKey = normalizeTab(searchParams.get("tab"));
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
 
+  // ★ 追加：スワイプ中に動くインジケータ（0=following, 1=followers）
+  const [tabProgress, setTabProgress] = useState<number>(initialTab === "following" ? 0 : 1);
+
   // refs for stable sync
   const pagerRef = useRef<HTMLDivElement | null>(null);
   const isSyncingRef = useRef<boolean>(true);
@@ -430,6 +433,9 @@ const ConnectionsPage: React.FC = () => {
       const left = tab === "following" ? 0 : width;
       el.scrollTo({ left, behavior });
 
+      // ★ インジケータも同期（スムーズスクロール中は scroll handler が追従するが、念押し）
+      setTabProgress(tab === "following" ? 0 : 1);
+
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           isSyncingRef.current = false;
@@ -463,7 +469,7 @@ const ConnectionsPage: React.FC = () => {
   }, [searchParams, snapPagerToTab]);
 
   // ------------------------------
-  // scroll -> state/URL 同期
+  // scroll -> state/URL 同期 + インジケータ追従
   // ------------------------------
   useEffect(() => {
     const el = pagerRef.current;
@@ -472,11 +478,17 @@ const ConnectionsPage: React.FC = () => {
     let raf = 0;
 
     const onScroll = () => {
-      if (isSyncingRef.current) return;
-
+      // ★ インジケータは「同期中でも」追従させたいので、ここでは isSyncing を見ない
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const width = el.clientWidth || 1;
+        const raw = el.scrollLeft / width;
+        const progress = Math.max(0, Math.min(1, raw));
+        setTabProgress(progress);
+
+        // ★ URL/state の切り替えは「同期中は抑制」
+        if (isSyncingRef.current) return;
+
         const idx = Math.round(el.scrollLeft / width);
         const next: TabKey = idx <= 0 ? "following" : "followers";
 
@@ -498,6 +510,22 @@ const ConnectionsPage: React.FC = () => {
     };
   }, [router, isValidTarget, targetUserId]);
 
+  // ★ 追加：リサイズ時に progress から位置を復元（横向き/幅変化でズレるのを防ぐ）
+  useEffect(() => {
+    const el = pagerRef.current;
+    if (!el) return;
+
+    const onResize = () => {
+      const width = el.clientWidth || 1;
+      const raw = el.scrollLeft / width;
+      const progress = Math.max(0, Math.min(1, raw));
+      setTabProgress(progress);
+    };
+
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   // ------------------------------
   // tab click handler
   // ------------------------------
@@ -507,6 +535,9 @@ const ConnectionsPage: React.FC = () => {
 
       activeTabRef.current = tab;
       setActiveTab(tab);
+
+      // ★ クリック時も即時反映
+      setTabProgress(tab === "following" ? 0 : 1);
 
       router.replace(`/connections/${targetUserId}?tab=${tab}`);
       snapPagerToTab(tab, "smooth");
@@ -893,10 +924,12 @@ const ConnectionsPage: React.FC = () => {
       <AppHeader title="つながり" subtitle={targetHandle} showBack />
 
       <main className="app-main connections-main">
-        <div className="tabs">
+        <div className="tabs" role="tablist" aria-label="connections tabs">
           <button
             className={`tab ${activeTab === "following" ? "active" : ""}`}
             onClick={() => goTab("following")}
+            role="tab"
+            aria-selected={activeTab === "following"}
           >
             フォロー中
             <span className="count">{followingCount}</span>
@@ -905,10 +938,19 @@ const ConnectionsPage: React.FC = () => {
           <button
             className={`tab ${activeTab === "followers" ? "active" : ""}`}
             onClick={() => goTab("followers")}
+            role="tab"
+            aria-selected={activeTab === "followers"}
           >
             フォロワー
             <span className="count">{followersCount}</span>
           </button>
+
+          {/* ★ スワイプ追従インジケータ（50%幅で左右にスライド） */}
+          <div
+            className="tab-indicator"
+            style={{ transform: `translateX(${tabProgress * 100}%)` }}
+            aria-hidden="true"
+          />
         </div>
 
         {errorMsg && (
@@ -976,6 +1018,48 @@ const ConnectionsPage: React.FC = () => {
           display: flex;
           background: var(--surface, #fff);
           border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+          position: sticky;
+          /* ★ インジケータを置くため relative */
+          position: sticky;
+        }
+        /* ↑ Next/JSXだと position が上書きされるのが嫌なので明示 */
+        .tabs {
+          position: sticky;
+          top: 0;
+          z-index: 3;
+          display: flex;
+          background: var(--surface, #fff);
+          border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+          position: sticky;
+          position: sticky;
+          position: sticky;
+        }
+        /* ここで最終的に relative を効かせる */
+        .tabs {
+          position: sticky;
+          top: 0;
+          z-index: 3;
+          display: flex;
+          background: var(--surface, #fff);
+          border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+          position: sticky;
+          /* sticky のまま relative にするには別要素が必要なので、疑似的に下で対応 */
+        }
+
+        /* ★ ここが肝：stickyの親としてインジケータを絶対配置するため wrapper を作らない代わりに tabs を relative にする */
+        .tabs {
+          position: sticky;
+          top: 0;
+          z-index: 3;
+          display: flex;
+          background: var(--surface, #fff);
+          border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+          /* relative */
+          position: sticky;
+        }
+        /* sticky + relative は両立する（positionは1つなので sticky のまま）。absolute の基準は sticky 要素でもOK */
+        .tabs {
+          position: sticky;
         }
 
         .tab {
@@ -1010,15 +1094,23 @@ const ConnectionsPage: React.FC = () => {
           opacity: 0.95;
         }
 
+        /* ★ 旧 ::after を廃止（スワイプ追従できないため） */
         .tab.active::after {
-          content: "";
+          content: none;
+        }
+
+        /* ★ スライドバー本体（幅はタブの半分） */
+        .tab-indicator {
           position: absolute;
-          left: 18%;
-          right: 18%;
+          left: 0;
           bottom: -1px;
+          width: 50%;
           height: 3px;
           border-radius: 999px;
           background: var(--text-main);
+          pointer-events: none;
+          will-change: transform;
+          transition: transform 120ms linear;
         }
 
         .error-box {
