@@ -364,6 +364,10 @@ const ConnectionsPage: React.FC = () => {
   const isSyncingRef = useRef<boolean>(true);
   const activeTabRef = useRef<TabKey>(initialTab);
 
+  // ★追加：各ページ（1枚目/2枚目）を直接参照するref
+  const pageFollowingRef = useRef<HTMLElement | null>(null);
+  const pageFollowersRef = useRef<HTMLElement | null>(null);
+
   // data
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
   const [following, setFollowing] = useState<ConnectionUser[]>([]);
@@ -466,26 +470,18 @@ const ConnectionsPage: React.FC = () => {
     let raf = 0;
 
     const onScroll = () => {
+      if (isSyncingRef.current) return;
+
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const width = el.clientWidth || 1;
-
-        // ★ 1) バーは「同期中でも」必ず更新する（ここが肝）
-        const raw = el.scrollLeft / width;
-        const p = Math.max(0, Math.min(1, raw));
-        setTabProgress(p);
-
-        // ★ 2) タブ判定も同期中でも更新してOK（表示整合のため）
         const idx = Math.round(el.scrollLeft / width);
         const next: TabKey = idx <= 0 ? "following" : "followers";
 
-        if (activeTabRef.current !== next) {
-          activeTabRef.current = next;
-          setActiveTab(next);
-        }
+        if (activeTabRef.current === next) return;
 
-        // ★ 3) ただしURL更新だけは同期中はしない（無限ループ防止）
-        if (isSyncingRef.current) return;
+        activeTabRef.current = next;
+        setActiveTab(next);
 
         if (isValidTarget && targetUserId) {
           router.replace(`/connections/${targetUserId}?tab=${next}`);
@@ -494,16 +490,12 @@ const ConnectionsPage: React.FC = () => {
     };
 
     el.addEventListener("scroll", onScroll, { passive: true });
-
-    // 初期位置でバーを確定
-    requestAnimationFrame(onScroll);
-
     return () => {
       cancelAnimationFrame(raf);
       el.removeEventListener("scroll", onScroll as any);
     };
   }, [router, isValidTarget, targetUserId]);
-  
+
   // ------------------------------
   // tab click handler
   // ------------------------------
@@ -933,7 +925,13 @@ const ConnectionsPage: React.FC = () => {
         )}
 
         <div className="pager" ref={pagerRef}>
-          <section className="page">
+          {/* following */}
+          <section
+            className="page"
+            ref={(el) => {
+              pageFollowingRef.current = el;
+            }}
+          >
             {loadingFollowing ? (
               <div className="empty">読み込んでいます…</div>
             ) : following.length === 0 ? (
@@ -953,7 +951,13 @@ const ConnectionsPage: React.FC = () => {
             )}
           </section>
 
-          <section className="page">
+          {/* followers */}
+          <section
+            className="page"
+            ref={(el) => {
+              pageFollowersRef.current = el;
+            }}
+          >
             {loadingFollowers ? (
               <div className="empty">読み込んでいます…</div>
             ) : followers.length === 0 ? (
