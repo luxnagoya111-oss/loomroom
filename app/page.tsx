@@ -42,7 +42,7 @@ type Post = {
   /** プロフィール遷移先（therapist/storeは role id 優先） */
   profilePath: string | null;
 
-  /** ★ 追加：投稿画像（public URL配列） */
+  /** ★ 投稿画像（表示用 public URL 配列） */
   imageUrls: string[];
 };
 
@@ -55,9 +55,12 @@ type DbPostRow = {
   like_count: number | null;
   reply_count: number | null;
 
-  // ★ 追加：DB側のカラム名がどちらでも落ちないように optional
-  image_urls?: string[] | null; // 推奨
-  imageUrls?: string[] | null; // フロント寄り命名がもしある場合の保険
+  // ★ Compose は image_paths（Storage path 配列）を入れる想定
+  image_paths?: string[] | null;
+
+  // 保険（昔の揺れがあっても落とさない）
+  image_urls?: string[] | null; // public URL 配列（もし存在すれば）
+  imageUrls?: string[] | null;
 };
 
 type DbUserRow = {
@@ -161,16 +164,46 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 }
 
 /**
- * ★ 投稿画像（imageUrls）の簡易サニタイズ
- * - http(s) のみ許可
- * - 最大4枚（表示上は4枚まで）
+ * ★ 投稿画像 bucket（/compose と合わせる）
  */
-function sanitizeImageUrls(raw: unknown): string[] {
+const POST_IMAGES_BUCKET = "post-images";
+
+/**
+ * ★ 投稿画像を「表示用 public URL 配列」に正規化
+ * - http(s) はそのまま
+ * - storage path は post-images の public URL に変換
+ * - 最大4枚
+ */
+function resolvePostImageUrls(raw: unknown): string[] {
   const arr = Array.isArray(raw) ? raw : [];
-  const urls = arr
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .filter((s) => !!s && /^https?:\/\//i.test(s));
-  return urls.slice(0, 4);
+  const out: string[] = [];
+
+  for (const v of arr) {
+    const s = typeof v === "string" ? v.trim() : "";
+    if (!s) continue;
+
+    // すでにURLならそのまま
+    if (/^https?:\/\//i.test(s)) {
+      out.push(s);
+      if (out.length >= 4) break;
+      continue;
+    }
+
+    // "post-images/xxx/yyy.jpg" のような値が来ても耐える
+    const path = s.startsWith(`${POST_IMAGES_BUCKET}/`)
+      ? s.slice(POST_IMAGES_BUCKET.length + 1)
+      : s;
+
+    const { data } = supabase.storage.from(POST_IMAGES_BUCKET).getPublicUrl(path);
+    const url = data?.publicUrl ?? "";
+
+    if (url && /^https?:\/\//i.test(url)) {
+      out.push(url);
+      if (out.length >= 4) break;
+    }
+  }
+
+  return out;
 }
 
 export default function LoomRoomHome() {
@@ -252,11 +285,11 @@ export default function LoomRoomHome() {
       setError(null);
 
       try {
-        // ★ image_urls を含める（無い環境でも落ちない）
+        // ★ image_paths を含める（/compose と整合）
         const { data: postData, error: postError } = await supabase
           .from("posts")
           .select(
-            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_urls"
+            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_paths"
           )
           .order("created_at", { ascending: false })
           .limit(100);
@@ -503,9 +536,14 @@ export default function LoomRoomHome() {
             ? resolveAvatarUrl(userRaw)
             : null;
 
-          // ★ 画像URL配列（DB命名揺れに対応）
-          const rawImages = (row as any).image_urls ?? (row as any).imageUrls ?? null;
-          const imageUrls = sanitizeImageUrls(rawImages);
+          // ★ 投稿画像：image_paths（path配列）を正として public URL 配列へ
+          const rawImages =
+            (row as any).image_paths ??
+            (row as any).image_urls ??
+            (row as any).imageUrls ??
+            null;
+
+          const imageUrls = resolvePostImageUrls(rawImages);
 
           return {
             id: row.id,
@@ -767,7 +805,7 @@ export default function LoomRoomHome() {
                       ))}
                     </div>
 
-                    {/* ★ 追加：正方形タイル統一の画像グリッド（表示のみ） */}
+                    {/* ★ 画像グリッド（表示のみ） */}
                     {post.imageUrls.length > 0 && (
                       <div
                         className={`media-grid media-grid--${post.imageUrls.length}`}
@@ -775,6 +813,7 @@ export default function LoomRoomHome() {
                       >
                         {post.imageUrls.map((src, idx) => (
                           <div className="media-tile" key={`${post.id}_${idx}`}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
                               src={src}
                               alt="投稿画像"
@@ -1044,9 +1083,7 @@ export default function LoomRoomHome() {
         }
 
         /* =========================
-           ★ 画像グリッド（方式A）
-           - 全部正方形タイル
-           - object-fit: cover
+           画像グリッド（方式A）
            ========================= */
         .media-grid {
           margin-top: 8px;
@@ -1058,26 +1095,18 @@ export default function LoomRoomHome() {
           gap: 2px;
         }
 
-        /* 1枚：1x1（正方形） */
         .media-grid--1 {
           grid-template-columns: 1fr;
         }
 
-        /* 2枚：2カラム */
         .media-grid--2 {
           grid-template-columns: 1fr 1fr;
         }
 
-        /* 3枚：2カラム（正方形タイルで統一するため、上段2枚＋下段1枚にする）
-           - Xの「1+2」ではなく「同一タイル優先」を守る
-           - 3枚目は横幅いっぱいにしたい場合は span も可能だが、
-             “全部同じサイズ”を優先して 2x2 の1マス欠けにする
-         */
         .media-grid--3 {
           grid-template-columns: 1fr 1fr;
         }
 
-        /* 4枚：2x2 */
         .media-grid--4 {
           grid-template-columns: 1fr 1fr;
         }
