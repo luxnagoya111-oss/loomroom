@@ -937,13 +937,6 @@ const PublicMyPage: React.FC = () => {
           </section>
 
           <section className="therapist-posts-section">
-            <h2 className="therapist-section-title">このページについて</h2>
-            <div className="empty-hint">
-              LRoomの中で、その人の雰囲気や、どんなペースで過ごしたいかをふんわり共有するためのページです。
-            </div>
-          </section>
-
-          <section className="therapist-posts-section">
             <h2 className="therapist-section-title">投稿</h2>
 
             {blockedView && (
@@ -964,7 +957,7 @@ const PublicMyPage: React.FC = () => {
 
             {!blockedView && !loadingPosts && !postError && posts.length === 0 && (
               <div className="empty-hint">
-                まだ投稿はありません。気が向いたタイミングで、短いことばから残してみてください。
+                まだ投稿はありません。
               </div>
             )}
 

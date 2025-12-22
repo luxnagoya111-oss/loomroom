@@ -361,6 +361,11 @@ export default function TherapistProfilePage() {
             body: row.body ?? "",
             imageUrls,
 
+            // ★ 追加：所有者判定のために canonical user uuid を入れる
+            // therapists.user_id（= users.id / auth uuid）を PostCard 側で比較できる形にする
+            authorId: tuid ?? "",
+            canonicalUserId: tuid ?? "",
+
             // PostCard 用
             authorKind: "therapist",
             authorName: displayName,
@@ -374,7 +379,7 @@ export default function TherapistProfilePage() {
             replyCount: safeNumber((row as any).reply_count, 0),
 
             liked: likedSet.has(row.id),
-          } as UiPost;
+          } as any; // UiPost に authorId/canonicalUserId が無い場合の暫定
         });
 
         setPosts(mapped);
