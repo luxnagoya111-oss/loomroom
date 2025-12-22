@@ -819,7 +819,7 @@ const ConnectionsPage: React.FC = () => {
 
   // transform: 0..1 => 0%..-50%? ではなく、トラックは 2画面分なので -progress*50vw…ではなく -progress*100%
   const trackStyle: React.CSSProperties = {
-    transform: `translate3d(${-(progress * 100)}%, 0, 0)`,
+     transform: `translate3d(${-(progress * 50)}%, 0, 0)`,
   };
 
   return (
