@@ -30,6 +30,11 @@ function isUuid(v: string | null | undefined): v is string {
 
 type TabKey = "following" | "followers";
 
+/**
+ * URL tab のゆれを吸収して内部は必ず followers/following に統一
+ * - followers / following を受ける
+ * - 過去互換: follows / follow / followings なども following 扱い
+ */
 function normalizeTab(v: string | null): TabKey {
   const s = (v ?? "").toLowerCase().trim();
   if (s === "following" || s === "followings" || s === "follows" || s === "follow")
@@ -37,18 +42,21 @@ function normalizeTab(v: string | null): TabKey {
   return "followers";
 }
 
+// ★ relations.type 互換読み取り（過去の "following" を吸収）
 const FOLLOW_TYPES = ["follow", "following"] as const;
 
-// ===== Avatar URL =====
+// ===== Avatar URL 正規化 =====
 const AVATAR_BUCKET = "avatars";
 
 function normalizeAvatarUrl(v: any): string | null {
   const s = typeof v === "string" ? v.trim() : "";
   return s ? s : null;
 }
+
 function isProbablyHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
+
 function looksValidAvatarUrl(v: string | null | undefined): boolean {
   const s = (v ?? "").trim();
   if (!s) return false;
@@ -57,6 +65,7 @@ function looksValidAvatarUrl(v: string | null | undefined): boolean {
   }
   return true;
 }
+
 function resolveAvatarUrl(raw: string | null | undefined): string | null {
   const v = normalizeAvatarUrl(raw);
   if (!v) return null;
@@ -69,6 +78,7 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
   return data?.publicUrl ?? null;
 }
+
 function normalizeFreeText(v: any): string {
   return typeof v === "string" ? v.trim() : "";
 }
@@ -77,16 +87,17 @@ function normalizeFreeText(v: any): string {
 // Types
 // ==============================
 type ConnectionUser = {
-  userId: string;
+  userId: string; // users.id (uuid)
   role: "user" | "therapist" | "store";
   displayName: string;
   handle: string;
   intro: string;
   area?: string | null;
-  avatar_url?: string | null;
-  isFollowing: boolean;
+  avatar_url?: string | null; // raw
+  isFollowing: boolean; // viewer目線
 };
 
+// users（正）
 type DbUserRow = {
   id: string;
   name: string | null;
@@ -96,6 +107,7 @@ type DbUserRow = {
   description: string | null;
 };
 
+// therapists（補完用）
 type DbTherapistMini = {
   user_id: string;
   display_name: string | null;
@@ -104,6 +116,7 @@ type DbTherapistMini = {
   avatar_url: string | null;
 };
 
+// stores（補完用）
 type DbStoreMini = {
   owner_user_id: string;
   name: string | null;
@@ -112,6 +125,7 @@ type DbStoreMini = {
   avatar_url: string | null;
 };
 
+// relations（follow）
 type DbRelationRow = {
   user_id: string;
   target_id: string;
@@ -130,7 +144,7 @@ function buildHandle(userId: string): string {
 }
 
 // ==============================
-// Row
+// Row Component (X風)
 // ==============================
 function ConnectionRow(props: {
   item: ConnectionUser;
@@ -158,12 +172,7 @@ function ConnectionRow(props: {
         aria-label="プロフィールを開く"
       >
         <div className="avatar-col">
-          <AvatarCircle
-            size={56}
-            avatarUrl={avatarUrl}
-            displayName={item.displayName}
-            alt=""
-          />
+          <AvatarCircle size={56} avatarUrl={avatarUrl} displayName={item.displayName} alt="" />
         </div>
 
         <div className="mid-col">
@@ -297,7 +306,7 @@ function ConnectionRow(props: {
 }
 
 // ==============================
-// Page (scroll pager)
+// Page
 // ==============================
 const ConnectionsPage: React.FC = () => {
   const router = useRouter();
@@ -316,14 +325,26 @@ const ConnectionsPage: React.FC = () => {
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
-  // tab + indicator progress
-  const [activeTab, setActiveTab] = useState<TabKey>("following");
-  const [progress, setProgress] = useState(0); // 0..1
+  // tab
+  const initialTab: TabKey = normalizeTab(searchParams.get("tab"));
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
 
-  // pager refs
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const vpWRef = useRef(1);
-  const rafRef = useRef<number | null>(null);
+  // ★ インジケータ用：0〜1（following→followers）
+  const [progress, setProgress] = useState<number>(initialTab === "following" ? 0 : 1);
+
+  // refs
+  const pagerRef = useRef<HTMLDivElement | null>(null);
+  const activeTabRef = useRef<TabKey>(initialTab);
+  const isSyncingRef = useRef<boolean>(false);
+
+  // ★ 幅参照を常に最新にする（scrollLeft/width のズレ防止）
+  const vpWRef = useRef<number>(1);
+
+  // ★ onScroll 取りこぼし防止（ticking方式）
+  const tickingRef = useRef<boolean>(false);
+
+  // ★ snap確定後の最終位置読み（followers→following遅れ対策）
+  const snapTimerRef = useRef<any>(null);
 
   // data
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
@@ -333,10 +354,11 @@ const ConnectionsPage: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // ------------------------------
-  // auth
+  // auth check
   // ------------------------------
   useEffect(() => {
     let cancelled = false;
+
     const init = async () => {
       try {
         const { data } = await supabase.auth.getUser();
@@ -347,6 +369,7 @@ const ConnectionsPage: React.FC = () => {
         if (!cancelled) setCheckingAuth(false);
       }
     };
+
     void init();
     return () => {
       cancelled = true;
@@ -356,15 +379,72 @@ const ConnectionsPage: React.FC = () => {
   const isLoggedIn = !!authUserId;
 
   // ------------------------------
-  // viewport width watch
+  // URL 正規化（tab無指定なら followers/following そのまま）
   // ------------------------------
   useEffect(() => {
-    const el = viewportRef.current;
+    if (!isValidTarget || !targetUserId) return;
+
+    const raw = searchParams.get("tab");
+    if (!raw) return; // ★ rawなしは触らない（勝手にfollowingに戻す事故防止）
+
+    const normalized = normalizeTab(raw);
+    if (raw !== normalized) {
+      const sp = new URLSearchParams(searchParams.toString());
+      sp.set("tab", normalized);
+      router.replace(`/connections/${targetUserId}?${sp.toString()}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isValidTarget, targetUserId]);
+
+  // ------------------------------
+  // pager snap
+  // ------------------------------
+  const snapPagerToTab = useCallback((tab: TabKey, behavior: ScrollBehavior) => {
+    const el = pagerRef.current;
+    if (!el) return;
+
+    const width = el.clientWidth || 0;
+    if (!width) return;
+
+    isSyncingRef.current = true;
+
+    el.scrollTo({
+      left: tab === "following" ? 0 : width,
+      behavior,
+    });
+
+    // ちょい遅れて解除（scroll-snap吸い込みの間はsync扱い）
+    window.setTimeout(() => {
+      isSyncingRef.current = false;
+    }, behavior === "smooth" ? 260 : 0);
+  }, []);
+
+  // ------------------------------
+  // URL -> state 同期
+  // ------------------------------
+  useEffect(() => {
+    const raw = searchParams.get("tab");
+    const next = raw ? normalizeTab(raw) : initialTab;
+
+    if (activeTabRef.current !== next) {
+      activeTabRef.current = next;
+      setActiveTab(next);
+      const p = next === "following" ? 0 : 1;
+      setProgress(p);
+      snapPagerToTab(next, "auto");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, snapPagerToTab]);
+
+  // ------------------------------
+  // サイズ変化追従（vpWRef 更新）
+  // ------------------------------
+  useEffect(() => {
+    const el = pagerRef.current;
     if (!el) return;
 
     const update = () => {
-      const w = el.clientWidth || 1;
-      vpWRef.current = w;
+      vpWRef.current = el.clientWidth || 1;
     };
     update();
 
@@ -374,94 +454,98 @@ const ConnectionsPage: React.FC = () => {
   }, []);
 
   // ------------------------------
-  // URL -> tab (初期位置を scroll で反映)
+  // scroll -> indicator / tab / URL
   // ------------------------------
+  const finalizeAfterSnap = useCallback(() => {
+    if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
+
+    // scroll-snapが確定した「最後」を拾う
+    snapTimerRef.current = setTimeout(() => {
+      const el = pagerRef.current;
+      if (!el) return;
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const width = vpWRef.current || 1;
+          const p = Math.max(0, Math.min(1, el.scrollLeft / width));
+
+          setProgress(p);
+
+          const next: TabKey = p >= 0.5 ? "followers" : "following";
+          if (activeTabRef.current !== next) {
+            activeTabRef.current = next;
+            setActiveTab(next);
+
+            if (isValidTarget && targetUserId) {
+              router.replace(`/connections/${targetUserId}?tab=${next}`);
+            }
+          }
+        });
+      });
+    }, 80);
+  }, [router, isValidTarget, targetUserId]);
+
   useEffect(() => {
-    if (!isValidTarget || !targetUserId) return;
+    const el = pagerRef.current;
+    if (!el) return;
 
-    const raw = searchParams.get("tab");
-    const normalized = raw ? normalizeTab(raw) : "following";
+    const onScroll = () => {
+      if (tickingRef.current) return;
+      tickingRef.current = true;
 
-    if (raw && raw !== normalized) {
-      const sp = new URLSearchParams(searchParams.toString());
-      sp.set("tab", normalized);
-      router.replace(`/connections/${targetUserId}?${sp.toString()}`);
-      return;
-    }
+      requestAnimationFrame(() => {
+        tickingRef.current = false;
 
-    setActiveTab(normalized);
+        const width = vpWRef.current || 1;
+        const raw = el.scrollLeft / width;
+        const p = Math.max(0, Math.min(1, raw));
 
-    // 初期位置をスクロールに反映（瞬間移動）
-    const el = viewportRef.current;
-    if (el) {
-      const w = el.clientWidth || 1;
-      const left = normalized === "followers" ? w : 0;
-      el.scrollLeft = left;
-      setProgress(normalized === "followers" ? 1 : 0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams, isValidTarget, targetUserId]);
+        // ★ インジケータは常に scroll に追従
+        setProgress(p);
 
+        // snap確定後の最終位置も拾う（followers→following遅れ対策）
+        finalizeAfterSnap();
+
+        if (isSyncingRef.current) return;
+
+        const next: TabKey = p >= 0.5 ? "followers" : "following";
+        if (activeTabRef.current !== next) {
+          activeTabRef.current = next;
+          setActiveTab(next);
+
+          if (isValidTarget && targetUserId) {
+            router.replace(`/connections/${targetUserId}?tab=${next}`);
+          }
+        }
+      });
+    };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll as any);
+      if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
+    };
+  }, [router, isValidTarget, targetUserId, finalizeAfterSnap]);
+
+  // ------------------------------
+  // tab click
+  // ------------------------------
   const goTab = useCallback(
     (tab: TabKey) => {
       if (!isValidTarget || !targetUserId) return;
-      const el = viewportRef.current;
-      const w = vpWRef.current || 1;
-      const left = tab === "followers" ? w : 0;
 
+      activeTabRef.current = tab;
       setActiveTab(tab);
-      setProgress(tab === "followers" ? 1 : 0);
+      setProgress(tab === "following" ? 0 : 1);
 
-      if (el) {
-        el.scrollTo({ left, behavior: "smooth" });
-      }
       router.replace(`/connections/${targetUserId}?tab=${tab}`);
+      snapPagerToTab(tab, "smooth");
     },
-    [router, isValidTarget, targetUserId]
+    [router, isValidTarget, targetUserId, snapPagerToTab]
   );
 
   // ------------------------------
-  // scroll -> indicator/progress (指追従)
-  // ------------------------------
-  const onScroll = useCallback(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      const w = vpWRef.current || 1;
-      const p = Math.max(0, Math.min(1, el.scrollLeft / w));
-      setProgress(p);
-    });
-  }, []);
-
-  // ------------------------------
-  // scroll end -> snap後に tab 確定 & URL 更新（ガタつき防止）
-  // ------------------------------
-  const snapTimerRef = useRef<any>(null);
-
-  const onScrollEndHeuristic = useCallback(() => {
-    // scroll-snap は “end event” がないので、停止をタイマーで推定
-    if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
-
-    snapTimerRef.current = setTimeout(() => {
-      const el = viewportRef.current;
-      if (!el || !isValidTarget || !targetUserId) return;
-
-      const w = vpWRef.current || 1;
-      const p = el.scrollLeft / w;
-
-      const tab: TabKey = p >= 0.5 ? "followers" : "following";
-      setActiveTab(tab);
-      setProgress(tab === "followers" ? 1 : 0);
-
-      // ここでURL確定（指で中途半端に動かした途中では更新しない）
-      router.replace(`/connections/${targetUserId}?tab=${tab}`);
-    }, 120);
-  }, [router, isValidTarget, targetUserId]);
-
-  // ------------------------------
-  // DB hydrate
+  // DB helpers
   // ------------------------------
   async function hydrateUsers(idsInOrder: string[], viewerId: string): Promise<ConnectionUser[]> {
     const ids = idsInOrder.filter((id) => id !== viewerId);
@@ -523,7 +607,7 @@ const ConnectionsPage: React.FC = () => {
       (myFollowing ?? []).map((r: any) => r.target_id).filter(Boolean)
     );
 
-    return ids.map((id) => {
+    const result: ConnectionUser[] = ids.map((id) => {
       const u = userMap.get(id);
       const role = (u?.role ?? "user") as "user" | "therapist" | "store";
 
@@ -542,20 +626,25 @@ const ConnectionsPage: React.FC = () => {
       if (role === "therapist") {
         const t = therapistMap.get(id);
         if (t) {
-          if (!baseDisplayName && normalizeFreeText(t.display_name)) displayName = normalizeFreeText(t.display_name);
+          if (!baseDisplayName && normalizeFreeText(t.display_name))
+            displayName = normalizeFreeText(t.display_name);
           if (!baseArea && normalizeFreeText(t.area)) area = normalizeFreeText(t.area);
           if (!baseIntro && normalizeFreeText(t.profile)) intro = normalizeFreeText(t.profile);
-          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(t.avatar_url)) avatarRaw = t.avatar_url;
+          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(t.avatar_url))
+            avatarRaw = t.avatar_url;
         }
       }
 
       if (role === "store") {
         const s = storeMap.get(id);
         if (s) {
-          if (!baseDisplayName && normalizeFreeText(s.name)) displayName = normalizeFreeText(s.name);
+          if (!baseDisplayName && normalizeFreeText(s.name))
+            displayName = normalizeFreeText(s.name);
           if (!baseArea && normalizeFreeText(s.area)) area = normalizeFreeText(s.area);
-          if (!baseIntro && normalizeFreeText(s.description)) intro = normalizeFreeText(s.description);
-          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(s.avatar_url)) avatarRaw = s.avatar_url;
+          if (!baseIntro && normalizeFreeText(s.description))
+            intro = normalizeFreeText(s.description);
+          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(s.avatar_url))
+            avatarRaw = s.avatar_url;
         }
       }
 
@@ -570,6 +659,8 @@ const ConnectionsPage: React.FC = () => {
         isFollowing: followingSet.has(id),
       };
     });
+
+    return result;
   }
 
   // ------------------------------
@@ -594,7 +685,7 @@ const ConnectionsPage: React.FC = () => {
         if (error) throw error;
 
         const rows = (data ?? []) as DbRelationRow[];
-        const idsInOrder = rows.map((r) => r.user_id).filter(Boolean) as string[];
+        const idsInOrder = rows.map((r) => r.user_id).filter((x): x is string => !!x);
 
         const seen = new Set<string>();
         const uniqIds = idsInOrder.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
@@ -604,7 +695,9 @@ const ConnectionsPage: React.FC = () => {
       } catch (e: any) {
         console.error("[Connections] loadFollowers error:", e);
         if (!cancelled)
-          setErrorMsg(e?.message ?? "フォロワーの取得に失敗しました。時間をおいて再度お試しください。");
+          setErrorMsg(
+            e?.message ?? "フォロワーの取得に失敗しました。時間をおいて再度お試しください。"
+          );
       } finally {
         if (!cancelled) setLoadingFollowers(false);
       }
@@ -635,7 +728,7 @@ const ConnectionsPage: React.FC = () => {
         if (error) throw error;
 
         const rows = (data ?? []) as DbRelationRow[];
-        const idsInOrder = rows.map((r) => r.target_id).filter(Boolean) as string[];
+        const idsInOrder = rows.map((r) => r.target_id).filter((x): x is string => !!x);
 
         const seen = new Set<string>();
         const uniqIds = idsInOrder.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
@@ -645,7 +738,9 @@ const ConnectionsPage: React.FC = () => {
       } catch (e: any) {
         console.error("[Connections] loadFollowing error:", e);
         if (!cancelled)
-          setErrorMsg(e?.message ?? "フォロー中の取得に失敗しました。時間をおいて再度お試しください。");
+          setErrorMsg(
+            e?.message ?? "フォロー中の取得に失敗しました。時間をおいて再度お試しください。"
+          );
       } finally {
         if (!cancelled) setLoadingFollowing(false);
       }
@@ -669,8 +764,12 @@ const ConnectionsPage: React.FC = () => {
     if (!isUuid(authUserId) || !isUuid(targetId)) return;
     if (authUserId === targetId) return;
 
-    setFollowers((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x)));
-    setFollowing((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x)));
+    setFollowers((prev) =>
+      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
+    );
+    setFollowing((prev) =>
+      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
+    );
 
     const ok = await setRelationOnServer({
       userId: authUserId as UserId,
@@ -679,13 +778,17 @@ const ConnectionsPage: React.FC = () => {
     });
 
     if (!ok) {
-      setFollowers((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x)));
-      setFollowing((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x)));
+      setFollowers((prev) =>
+        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
+      );
+      setFollowing((prev) =>
+        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
+      );
     }
   };
 
   // ------------------------------
-  // Guards
+  // Guards render
   // ------------------------------
   if (!isValidTarget) {
     return (
@@ -806,15 +909,7 @@ const ConnectionsPage: React.FC = () => {
           </div>
         )}
 
-        {/* ★ scroll pager（Xっぽい “画面が動く”） */}
-        <div
-          className="viewport"
-          ref={viewportRef}
-          onScroll={() => {
-            onScroll();
-            onScrollEndHeuristic();
-          }}
-        >
+        <div className="pager" ref={pagerRef}>
           <section className="page">
             {loadingFollowing ? (
               <div className="empty">読み込んでいます…</div>
@@ -909,6 +1004,10 @@ const ConnectionsPage: React.FC = () => {
           opacity: 0.95;
         }
 
+        .tab.active::after {
+          content: none;
+        }
+
         .tabIndicator {
           position: absolute;
           left: 0;
@@ -932,27 +1031,21 @@ const ConnectionsPage: React.FC = () => {
           line-height: 1.6;
         }
 
-        /* ★ 横スクロールが本体 */
-        .viewport {
-          margin-top: 6px;
+        .pager {
           display: flex;
-          width: 100%;
           overflow-x: auto;
-          overflow-y: hidden;
           scroll-snap-type: x mandatory;
           -webkit-overflow-scrolling: touch;
           scrollbar-width: none;
-          touch-action: pan-x pan-y; /* 指の動きはブラウザのスクロールに任せる */
         }
-        .viewport::-webkit-scrollbar {
+        .pager::-webkit-scrollbar {
           display: none;
         }
 
         .page {
-          flex: 0 0 100%;
-          width: 100%;
+          min-width: 100%;
           scroll-snap-align: start;
-          padding-bottom: 12px;
+          padding-top: 6px;
         }
 
         .list {
