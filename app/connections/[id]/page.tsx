@@ -347,7 +347,6 @@ const ConnectionsPage: React.FC = () => {
 
   // viewer
   const [authUserId, setAuthUserId] = useState<string | null>(null);
-  const [guestUserId, setGuestUserId] = useState<string | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
   // tab
@@ -359,19 +358,14 @@ const ConnectionsPage: React.FC = () => {
     initialTab === "following" ? 0 : 1
   );
 
-  // refs for stable sync
+  // refs
   const pagerRef = useRef<HTMLDivElement | null>(null);
-  const isSyncingRef = useRef<boolean>(true);
   const activeTabRef = useRef<TabKey>(initialTab);
-
-  // ★追加：各ページ（1枚目/2枚目）を直接参照するref
-  const pageFollowingRef = useRef<HTMLElement | null>(null);
-  const pageFollowersRef = useRef<HTMLElement | null>(null);
+  const isSyncingRef = useRef<boolean>(false);
 
   // data
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
   const [following, setFollowing] = useState<ConnectionUser[]>([]);
-
   const [loadingFollowers, setLoadingFollowers] = useState(false);
   const [loadingFollowing, setLoadingFollowing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -384,7 +378,6 @@ const ConnectionsPage: React.FC = () => {
 
     const init = async () => {
       try {
-        setGuestUserId(getCurrentUserId());
         const { data } = await supabase.auth.getUser();
         if (!cancelled) setAuthUserId(data.user?.id ?? null);
       } catch {
@@ -403,7 +396,7 @@ const ConnectionsPage: React.FC = () => {
   const isLoggedIn = !!authUserId;
 
   // ------------------------------
-  // URL tab を正規化して固定
+  // URL 正規化
   // ------------------------------
   useEffect(() => {
     if (!isValidTarget || !targetUserId) return;
@@ -411,9 +404,7 @@ const ConnectionsPage: React.FC = () => {
     const raw = searchParams.get("tab");
     const normalized = normalizeTab(raw);
 
-    const shouldReplace = raw !== normalized;
-
-    if (shouldReplace) {
+    if (raw !== normalized) {
       const sp = new URLSearchParams(searchParams.toString());
       sp.set("tab", normalized);
       router.replace(`/connections/${targetUserId}?${sp.toString()}`);
@@ -422,7 +413,7 @@ const ConnectionsPage: React.FC = () => {
   }, [isValidTarget, targetUserId]);
 
   // ------------------------------
-  // pager snap helpers
+  // pager snap
   // ------------------------------
   const snapPagerToTab = useCallback((tab: TabKey, behavior: ScrollBehavior) => {
     const el = pagerRef.current;
@@ -433,8 +424,10 @@ const ConnectionsPage: React.FC = () => {
 
     isSyncingRef.current = true;
 
-    const left = tab === "following" ? 0 : width;
-    el.scrollTo({ left, behavior });
+    el.scrollTo({
+      left: tab === "following" ? 0 : width,
+      behavior,
+    });
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -452,16 +445,13 @@ const ConnectionsPage: React.FC = () => {
     if (activeTabRef.current !== next) {
       activeTabRef.current = next;
       setActiveTab(next);
+      setTabProgress(next === "following" ? 0 : 1);
+      snapPagerToTab(next, "auto");
     }
-
-    // ★ URL反映時は見た目も合わせる（即時）
-    setTabProgress(next === "following" ? 0 : 1);
-
-    snapPagerToTab(next, "auto");
   }, [searchParams, snapPagerToTab]);
 
   // ------------------------------
-  // scroll -> state/URL 同期
+  // scroll -> indicator / tab / URL
   // ------------------------------
   useEffect(() => {
     const el = pagerRef.current;
@@ -470,21 +460,27 @@ const ConnectionsPage: React.FC = () => {
     let raf = 0;
 
     const onScroll = () => {
-      if (isSyncingRef.current) return;
-
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const width = el.clientWidth || 1;
-        const idx = Math.round(el.scrollLeft / width);
-        const next: TabKey = idx <= 0 ? "following" : "followers";
+        const raw = el.scrollLeft / width;
 
-        if (activeTabRef.current === next) return;
+        // ★ インジケータは常に scroll に追従
+        const progress = Math.max(0, Math.min(1, raw));
+        setTabProgress(progress);
 
-        activeTabRef.current = next;
-        setActiveTab(next);
+        if (isSyncingRef.current) return;
 
-        if (isValidTarget && targetUserId) {
-          router.replace(`/connections/${targetUserId}?tab=${next}`);
+        const idx = Math.round(progress);
+        const next: TabKey = idx === 0 ? "following" : "followers";
+
+        if (activeTabRef.current !== next) {
+          activeTabRef.current = next;
+          setActiveTab(next);
+
+          if (isValidTarget && targetUserId) {
+            router.replace(`/connections/${targetUserId}?tab=${next}`);
+          }
         }
       });
     };
@@ -497,7 +493,7 @@ const ConnectionsPage: React.FC = () => {
   }, [router, isValidTarget, targetUserId]);
 
   // ------------------------------
-  // tab click handler
+  // tab click
   // ------------------------------
   const goTab = useCallback(
     (tab: TabKey) => {
@@ -505,8 +501,6 @@ const ConnectionsPage: React.FC = () => {
 
       activeTabRef.current = tab;
       setActiveTab(tab);
-
-      // ★ クリック時は見た目も即時
       setTabProgress(tab === "following" ? 0 : 1);
 
       router.replace(`/connections/${targetUserId}?tab=${tab}`);
@@ -926,12 +920,7 @@ const ConnectionsPage: React.FC = () => {
 
         <div className="pager" ref={pagerRef}>
           {/* following */}
-          <section
-            className="page"
-            ref={(el) => {
-              pageFollowingRef.current = el;
-            }}
-          >
+          <section className="page">
             {loadingFollowing ? (
               <div className="empty">読み込んでいます…</div>
             ) : following.length === 0 ? (
@@ -952,12 +941,7 @@ const ConnectionsPage: React.FC = () => {
           </section>
 
           {/* followers */}
-          <section
-            className="page"
-            ref={(el) => {
-              pageFollowersRef.current = el;
-            }}
-          >
+          <section className="page">
             {loadingFollowers ? (
               <div className="empty">読み込んでいます…</div>
             ) : followers.length === 0 ? (
@@ -986,7 +970,7 @@ const ConnectionsPage: React.FC = () => {
           padding: 0 16px 120px;
         }
 
-        /* ★ stickyのラッパーを relative にして absoluteの基準を固定 */
+        /* ★ sticky 用ラッパー（absolute の基準は .tabs 側） */
         .tabsWrap {
           position: sticky;
           top: 0;
