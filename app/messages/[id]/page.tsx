@@ -1,7 +1,13 @@
 // app/messages/[id]/page.tsx
 "use client";
 
-import React, { useState, useEffect, useRef, ChangeEvent, KeyboardEvent } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  ChangeEvent,
+  KeyboardEvent,
+} from "react";
 import { useParams } from "next/navigation";
 
 import AppHeader from "@/components/AppHeader";
@@ -11,7 +17,12 @@ import AvatarCircle from "@/components/AvatarCircle";
 import { getCurrentUserId, getCurrentUserRole } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
 
-import { getThreadById, getMessagesForThread, sendMessage, markThreadAsRead } from "@/lib/repositories/dmRepository";
+import {
+  getThreadById,
+  getMessagesForThread,
+  sendMessage,
+  markThreadAsRead,
+} from "@/lib/repositories/dmRepository";
 import { canSendDm } from "@/lib/dmPolicy";
 
 import type { UserId, Role } from "@/types/user";
@@ -28,15 +39,38 @@ type Message = {
   date: string;
 };
 
-type DbTherapistRowForStatus = { id: string; user_id: string; store_id: string | null };
-type DbUserMini = { id: string; name: string | null; role: string | null; avatar_url: string | null };
-type DbTherapistMini = { user_id: string; display_name: string | null; avatar_url: string | null };
-type DbStoreMini = { id: string; owner_user_id: string | null; name: string | null; avatar_url: string | null };
+type DbTherapistRowForStatus = {
+  id: string;
+  user_id: string;
+  store_id: string | null;
+};
+type DbUserMini = {
+  id: string;
+  name: string | null;
+  role: string | null;
+  avatar_url: string | null; // raw (http or storage path)
+};
+type DbTherapistMini = {
+  user_id: string;
+  display_name: string | null;
+  avatar_url: string | null; // raw
+};
+type DbStoreMini = {
+  id: string;
+  owner_user_id: string | null;
+  name: string | null;
+  avatar_url: string | null; // raw
+};
 
+// uuid 判定
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
+}
+
+function safeText(v: any): string {
+  return typeof v === "string" ? v.trim() : String(v ?? "").trim();
 }
 
 function formatTime(date: Date): string {
@@ -50,15 +84,13 @@ function formatDateString(date: Date): string {
   const d = date.getDate().toString().padStart(2, "0");
   return `${y}.${m}.${d}`;
 }
-function safeUrl(v: string | null | undefined): string | null {
-  const s = (v ?? "").trim();
-  return s.length > 0 ? s : null;
-}
+
 function normalizeRole(raw: string | null | undefined): Role {
   const v = (raw ?? "").toString();
   if (v === "store" || v === "therapist" || v === "user") return v;
   return "guest";
 }
+
 function mapDbToUi(msg: DbDmMessageRow, currentUserId: string): Message {
   const d = new Date(msg.created_at);
   return {
@@ -68,6 +100,41 @@ function mapDbToUi(msg: DbDmMessageRow, currentUserId: string): Message {
     time: formatTime(d),
     date: formatDateString(d),
   };
+}
+
+/**
+ * ★ 6桁ID（表示用）
+ * - uuid なら "-" を除去して先頭6文字
+ * - それ以外も先頭6文字
+ */
+function toShortId(id: string): string {
+  const s = safeText(id);
+  if (!s) return "";
+  const compact = isUuid(s) ? s.replace(/-/g, "") : s;
+  return compact.slice(0, 6);
+}
+
+function isProbablyHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * ★ Avatar URL 解決（storage path / http 両対応）
+ * - raw が http(s) ならそのまま
+ * - それ以外は avatars bucket の publicUrl に変換
+ */
+const AVATAR_BUCKET = "avatars";
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  const v = safeText(raw);
+  if (!v) return null;
+  if (isProbablyHttpUrl(v)) return v;
+
+  const path = v.startsWith(`${AVATAR_BUCKET}/`)
+    ? v.slice(AVATAR_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return data?.publicUrl ?? null;
 }
 
 function DateDivider({ date }: { date: string }) {
@@ -89,7 +156,8 @@ const MessageDetailPage: React.FC = () => {
   const [myName, setMyName] = useState<string>("You");
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
 
-  const [isUnaffiliatedTherapist, setIsUnaffiliatedTherapist] = useState<boolean>(false);
+  const [isUnaffiliatedTherapist, setIsUnaffiliatedTherapist] =
+    useState<boolean>(false);
   const [checkingStatus, setCheckingStatus] = useState<boolean>(false);
 
   const [thread, setThread] = useState<DbDmThreadRow | null>(null);
@@ -189,7 +257,7 @@ const MessageDetailPage: React.FC = () => {
         return;
       }
       if (data?.name?.trim()) setMyName(data.name.trim());
-      setMyAvatarUrl(safeUrl(data?.avatar_url));
+      setMyAvatarUrl(resolveAvatarUrl(data?.avatar_url));
     })();
 
     return () => {
@@ -256,7 +324,8 @@ const MessageDetailPage: React.FC = () => {
         setThread(th);
 
         if (th) {
-          const other = th.user_a_id === currentUserId ? th.user_b_id : th.user_a_id;
+          const other =
+            th.user_a_id === currentUserId ? th.user_b_id : th.user_a_id;
           setPartnerId((other ?? "") as any);
         } else {
           setPartnerId("" as any);
@@ -301,11 +370,12 @@ const MessageDetailPage: React.FC = () => {
         const resolvedRole = normalizeRole(u?.role);
         setPartnerRole(resolvedRole);
 
-        const handle = u?.name?.trim() ? `@${u.name.trim()}` : `@${partnerId}`;
+        // ★ 変更：相手ID6桁（一覧と同ルール）
+        const handle = `@${toShortId(partnerId) || "------"}`;
         setPartnerHandle(handle);
 
         let resolvedName = u?.name?.trim() ? u.name.trim() : "メッセージ相手";
-        let resolvedAvatar: string | null = safeUrl(u?.avatar_url);
+        let resolvedAvatar: string | null = resolveAvatarUrl(u?.avatar_url);
 
         if (resolvedRole === "therapist") {
           const { data: th } = await supabase
@@ -316,7 +386,7 @@ const MessageDetailPage: React.FC = () => {
 
           if (!cancelled && th) {
             if (th.display_name?.trim()) resolvedName = th.display_name.trim();
-            if (!resolvedAvatar) resolvedAvatar = safeUrl(th.avatar_url);
+            if (!resolvedAvatar) resolvedAvatar = resolveAvatarUrl(th.avatar_url);
           }
         }
 
@@ -329,7 +399,8 @@ const MessageDetailPage: React.FC = () => {
 
           if (!cancelled && st) {
             if (st.name?.trim()) resolvedName = st.name.trim();
-            if (safeUrl(st.avatar_url)) resolvedAvatar = safeUrl(st.avatar_url);
+            const stAv = resolveAvatarUrl(st.avatar_url);
+            if (stAv) resolvedAvatar = stAv;
           }
         }
 
@@ -339,8 +410,10 @@ const MessageDetailPage: React.FC = () => {
       } catch (e) {
         if (cancelled) return;
         console.warn("[Messages] resolve partner failed:", e);
+
+        // ★ フォールバックも6桁IDへ
         setPartnerName("メッセージ相手");
-        setPartnerHandle(partnerId ? `@${partnerId}` : "");
+        setPartnerHandle(partnerId ? `@${toShortId(partnerId)}` : "");
         setPartnerRole("guest");
         setPartnerAvatarUrl(null);
       }
@@ -440,7 +513,12 @@ const MessageDetailPage: React.FC = () => {
       .channel(`dm_messages_${threadId}_${currentUserId}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "dm_messages", filter: `thread_id=eq.${threadId}` },
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "dm_messages",
+          filter: `thread_id=eq.${threadId}`,
+        },
         (payload) => {
           const row = payload.new as DbDmMessageRow;
           setMessages((prev) => {
@@ -455,7 +533,12 @@ const MessageDetailPage: React.FC = () => {
       .channel(`dm_threads_${threadId}_${currentUserId}`)
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "dm_threads", filter: `thread_id=eq.${threadId}` },
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "dm_threads",
+          filter: `thread_id=eq.${threadId}`,
+        },
         (payload) => setThread(payload.new as DbDmThreadRow)
       )
       .subscribe();
@@ -596,7 +679,10 @@ const MessageDetailPage: React.FC = () => {
                     >
                       {m.from === "partner" && (
                         <div className="avatar-wrap avatar-wrap--sm">
-                          <AvatarCircle displayName={partnerName} src={partnerAvatarUrl} />
+                          <AvatarCircle
+                            displayName={partnerName}
+                            src={partnerAvatarUrl}
+                          />
                         </div>
                       )}
 
@@ -722,18 +808,20 @@ const MessageDetailPage: React.FC = () => {
           flex-shrink: 0;
         }
 
+        /* ★ 日付：小さく、薄いグレー、中央（位置は維持） */
         .date-divider {
           display: flex;
           justify-content: center;
-          margin: 14px 0;
+          margin: 10px 0; /* 余白を少し詰める */
         }
         .date-divider span {
-          padding: 4px 10px;
+          padding: 3px 10px;
           border-radius: 999px;
-          font-size: 11px;
+          font-size: 10px; /* 小さく */
           line-height: 1;
-          background: rgba(0, 0, 0, 0.08);
-          color: var(--text-sub);
+          background: rgba(0, 0, 0, 0.06); /* 少し薄く */
+          color: var(--muted-foreground); /* よりグレー */
+          letter-spacing: 0.02em;
         }
 
         .chat-row {
