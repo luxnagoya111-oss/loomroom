@@ -8,6 +8,7 @@ import Link from "next/link";
 import AvatarCircle from "@/components/AvatarCircle";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
+import PostCard from "@/components/PostCard";
 
 import { supabase } from "@/lib/supabaseClient";
 import { getCurrentUserId, ensureViewerId } from "@/lib/auth";
@@ -34,6 +35,7 @@ import { resolveAvatarUrl, pickRawPostImages, resolvePostImageUrls } from "@/lib
 import type { UserId } from "@/types/user";
 import type { DbTherapistRow, DbUserRow, DbStoreRow } from "@/types/db";
 import { RelationActions } from "@/components/RelationActions";
+import type { UiPost } from "@/lib/postFeedHydrator";
 
 // ===== uuid 判定（relations は users.id = uuid で運用する）=====
 const UUID_REGEX =
@@ -67,21 +69,12 @@ type LinkedStoreInfo = {
   lineUrl?: string | null;
 };
 
-type UiPost = {
-  id: string;
-  body: string;
-  timeAgo: string;
-  imageUrls: string[];
-  likeCount: number;
-  replyCount: number;
-};
-
 function safeNumber(v: any, fallback = 0): number {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
 
-const TherapistProfilePage: React.FC = () => {
+export default function TherapistProfilePage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const therapistId = (params?.id as string) || ""; // therapists.id
@@ -134,12 +127,13 @@ const TherapistProfilePage: React.FC = () => {
   const [loadingProfile, setLoadingProfile] = useState<boolean>(true);
   const [profileError, setProfileError] = useState<string | null>(null);
 
+  // ★ PostCard 基準に統一：posts は UiPost[] を state にする
   const [posts, setPosts] = useState<UiPost[]>([]);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
 
-  // liked（viewerUuidがある時だけ）
-  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
+  // menu
+  const [menuPostId, setMenuPostId] = useState<string | null>(null);
 
   // ===== counts（mypage と同一思想：集計対象は users.id(uuid)）=====
   const [followingCount, setFollowingCount] = useState<number | null>(null);
@@ -157,11 +151,12 @@ const TherapistProfilePage: React.FC = () => {
       .then(({ data }) => setAuthUserId(data.user?.id ?? null))
       .catch(() => setAuthUserId(null));
 
-    // DB用の viewer uuid（未ログインなら null）
     ensureViewerId()
       .then((uid) => setViewerUuid(uid))
       .catch(() => setViewerUuid(null));
   }, []);
+
+  const viewerReady = !!viewerUuid && isUuid(viewerUuid);
 
   // relation 復元（uuid会員同士のみ / 自分のページは無効）
   useEffect(() => {
@@ -303,11 +298,8 @@ const TherapistProfilePage: React.FC = () => {
             .maybeSingle<DbUserRow>();
 
           if (!cancelled) {
-            if (uError) {
-              console.error("[TherapistProfile] user fetch error:", uError);
-            } else {
-              user = userRow;
-            }
+            if (uError) console.error("[TherapistProfile] user fetch error:", uError);
+            else user = userRow;
           }
         }
 
@@ -321,12 +313,8 @@ const TherapistProfilePage: React.FC = () => {
             : "セラピスト";
 
         const handle = tuid ? toPublicHandleFromUserId(tuid) ?? "" : "";
-
-        const area =
-          typeof (therapist as any).area === "string" ? (therapist as any).area.trim() : "";
-
-        const intro =
-          (therapist as any).profile?.trim()?.length ? (therapist as any).profile : "";
+        const area = typeof (therapist as any).area === "string" ? (therapist as any).area.trim() : "";
+        const intro = (therapist as any).profile?.trim()?.length ? (therapist as any).profile : "";
 
         // avatar: users.avatar_url 優先 → therapists.avatar_url
         const rawAvatar = (user as any)?.avatar_url ?? (therapist as any)?.avatar_url ?? null;
@@ -356,17 +344,37 @@ const TherapistProfilePage: React.FC = () => {
 
         if (cancelled) return;
 
+        // 4) likedIds（viewerReady のときだけ）
+        const likedSet =
+          viewerReady && viewerUuid ? await fetchLikedPostIdsForUser(viewUuidOrThrow(viewerUuid)) : new Set<string>();
+
+        if (cancelled) return;
+
+        // 5) UiPost に整形（PostCard が期待する形）
+        const profilePath = `/therapist/${therapistId}`;
         const mapped: UiPost[] = (rows ?? []).map((row: RepoPostRow) => {
           const rawImages = pickRawPostImages(row as any);
           const imageUrls = resolvePostImageUrls(rawImages);
+
           return {
             id: row.id,
             body: row.body ?? "",
-            timeAgo: timeAgo(row.created_at),
             imageUrls,
-            likeCount: safeNumber(row.like_count, 0),
-            replyCount: safeNumber(row.reply_count, 0),
-          };
+
+            // PostCard 用
+            authorKind: "therapist",
+            authorName: displayName,
+            authorHandle: handle,
+            avatarUrl: avatarUrl ?? null,
+            profilePath,
+
+            timeAgoText: timeAgo(row.created_at),
+
+            likeCount: safeNumber((row as any).like_count, 0),
+            replyCount: safeNumber((row as any).reply_count, 0),
+
+            liked: likedSet.has(row.id),
+          } as UiPost;
         });
 
         setPosts(mapped);
@@ -391,26 +399,12 @@ const TherapistProfilePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [therapistId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [therapistId, viewerReady, viewerUuid]);
 
-  // ===== viewerUuid が取れたら likedIds を取得 =====
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      if (!viewerUuid || !isUuid(viewerUuid)) {
-        setLikedIds(new Set());
-        return;
-      }
-      const set = await fetchLikedPostIdsForUser(viewerUuid);
-      if (cancelled) return;
-      setLikedIds(set);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [viewerUuid]);
+  function viewUuidOrThrow(uid: UserId) {
+    return uid;
+  }
 
   // ===== store_id がある場合のみ stores を取得（在籍表示用）=====
   useEffect(() => {
@@ -503,12 +497,8 @@ const TherapistProfilePage: React.FC = () => {
 
         if (cancelled) return;
 
-        if (followingRes.error) {
-          console.error("[TherapistProfile] following count error:", followingRes.error);
-        }
-        if (followersRes.error) {
-          console.error("[TherapistProfile] followers count error:", followersRes.error);
-        }
+        if (followingRes.error) console.error("[TherapistProfile] following count error:", followingRes.error);
+        if (followersRes.error) console.error("[TherapistProfile] followers count error:", followersRes.error);
 
         setFollowingCount(typeof followingRes.count === "number" ? followingRes.count : 0);
         setFollowersCount(typeof followersRes.count === "number" ? followersRes.count : 0);
@@ -555,7 +545,23 @@ const TherapistProfilePage: React.FC = () => {
     return profile.displayName?.trim()?.charAt(0)?.toUpperCase() || "T";
   }, [profile.displayName]);
 
-  const onClickPost = useCallback(
+  // ===== PostCard ハンドラ（mypage と同型）=====
+  const handleOpenDetail = useCallback(
+    (postId: string) => {
+      router.push(`/posts/${postId}`);
+    },
+    [router]
+  );
+
+  const handleOpenProfile = useCallback(
+    (path: string | null) => {
+      if (!path) return;
+      router.push(path);
+    },
+    [router]
+  );
+
+  const handleReply = useCallback(
     (postId: string) => {
       router.push(`/posts/${postId}`);
     },
@@ -563,66 +569,60 @@ const TherapistProfilePage: React.FC = () => {
   );
 
   const handleToggleLike = useCallback(
-    async (postId: string) => {
-      if (!viewerUuid || !isUuid(viewerUuid)) return;
+    async (post: UiPost) => {
+      if (!viewerReady || !viewerUuid || !isUuid(viewerUuid)) return;
 
-      const isLiked = likedIds.has(postId);
+      const nextLiked = !post.liked;
 
       // optimistic
-      setLikedIds((prev) => {
-        const next = new Set(prev);
-        if (isLiked) next.delete(postId);
-        else next.add(postId);
-        return next;
-      });
       setPosts((prev) =>
         prev.map((p) =>
-          p.id === postId
+          p.id === post.id
             ? {
                 ...p,
-                likeCount: Math.max(p.likeCount + (isLiked ? -1 : 1), 0),
+                liked: nextLiked,
+                likeCount: Math.max(p.likeCount + (nextLiked ? 1 : -1), 0),
               }
             : p
         )
       );
 
-      const target = posts.find((p) => p.id === postId);
-      const currentLikeCount = target ? target.likeCount + (isLiked ? 1 : -1) : 0; // optimistic前を概算
       const res = await toggleLike({
-        postId,
+        postId: post.id,
         userId: viewerUuid,
-        nextLiked: !isLiked,
-        currentLikeCount: Math.max(currentLikeCount, 0),
+        nextLiked,
+        currentLikeCount: Math.max(post.likeCount, 0),
       });
 
       if (!res.ok) {
         // rollback
-        setLikedIds((prev) => {
-          const next = new Set(prev);
-          if (isLiked) next.add(postId);
-          else next.delete(postId);
-          return next;
-        });
         setPosts((prev) =>
           prev.map((p) =>
-            p.id === postId
+            p.id === post.id
               ? {
                   ...p,
-                  likeCount: Math.max(p.likeCount + (isLiked ? 1 : -1), 0),
+                  liked: post.liked,
+                  likeCount: post.likeCount,
                 }
               : p
           )
         );
-      } else {
-        setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, likeCount: res.likeCount } : p)));
+        return;
       }
+
+      // server truth
+      setPosts((prev) => prev.map((p) => (p.id === post.id ? { ...p, likeCount: res.likeCount, liked: nextLiked } : p)));
     },
-    [viewerUuid, likedIds, posts]
+    [viewerReady, viewerUuid]
   );
 
-  const handleReportPost = useCallback(
+  const handleOpenMenu = useCallback((postId: string) => {
+    setMenuPostId((prev) => (prev === postId ? null : postId));
+  }, []);
+
+  const handleReport = useCallback(
     async (postId: string) => {
-      if (!viewerUuid || !isUuid(viewerUuid)) {
+      if (!viewerReady || !viewerUuid || !isUuid(viewerUuid)) {
         alert("通報はログイン後にご利用いただけます。");
         return;
       }
@@ -632,8 +632,9 @@ const TherapistProfilePage: React.FC = () => {
       const done = await reportPost({ postId, reporterId: viewerUuid, reason: null });
       if (done) alert("通報を受け付けました。ご協力ありがとうございます。");
       else alert("通報に失敗しました。時間をおいて再度お試しください。");
+      setMenuPostId(null);
     },
-    [viewerUuid]
+    [viewerReady, viewerUuid]
   );
 
   return (
@@ -841,87 +842,21 @@ const TherapistProfilePage: React.FC = () => {
 
             {!loadingPosts && !postsError && posts.length > 0 && (
               <div className="feed-list">
-                {posts.map((p) => {
-                  const liked = likedIds.has(p.id);
-                  return (
-                    <article
-                      key={p.id}
-                      className="feed-item"
-                      role="button"
-                      tabIndex={0}
-                      aria-label="投稿の詳細を見る"
-                      onClick={() => onClickPost(p.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onClickPost(p.id);
-                        }
-                      }}
-                    >
-                      <div className="feed-item-inner">
-                        <AvatarCircle
-                          avatarUrl={profile.avatarUrl ?? null}
-                          size={40}
-                          displayName={profile.displayName || profile.handle || "T"}
-                          fallbackText={avatarInitial}
-                          alt=""
-                        />
-
-                        <div className="feed-main">
-                          <div className="feed-header">
-                            <div className="feed-name-row">
-                              <span className="post-name">{profile.displayName || "名前未設定"}</span>
-                              <span className="post-username">{profile.handle || ""}</span>
-                            </div>
-
-                            <div className="post-meta">
-                              <span className="post-time">{p.timeAgo}</span>
-                            </div>
-                          </div>
-
-                          {!!p.imageUrls.length && (
-                            <div className="post-images" onClick={(e) => e.stopPropagation()}>
-                              {p.imageUrls.map((url, idx) => (
-                                <img key={`${p.id}-${idx}`} src={url} alt="" className="post-image" loading="lazy" />
-                              ))}
-                            </div>
-                          )}
-
-                          <div className="post-body">
-                            {p.body.split("\n").map((line, idx) => (
-                              <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
-                            ))}
-                          </div>
-
-                          <div className="post-actions" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              type="button"
-                              className={`action-btn ${liked ? "is-active" : ""}`}
-                              onClick={() => handleToggleLike(p.id)}
-                              disabled={!viewerUuid}
-                              title={!viewerUuid ? "いいねはログイン後に利用できます" : "いいね"}
-                            >
-                              ♥ <span className="action-count">{p.likeCount}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              className="action-btn"
-                              onClick={() => router.push(`/posts/${p.id}`)}
-                              title="返信を見る"
-                            >
-                              💬 <span className="action-count">{p.replyCount}</span>
-                            </button>
-
-                            <button type="button" className="action-btn danger" onClick={() => handleReportPost(p.id)}>
-                              通報
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
+                {posts.map((p) => (
+                  <PostCard
+                    key={p.id}
+                    post={p}
+                    viewerReady={viewerReady}
+                    onOpenDetail={handleOpenDetail}
+                    onOpenProfile={handleOpenProfile}
+                    onToggleLike={handleToggleLike}
+                    onReply={handleReply}
+                    onOpenMenu={handleOpenMenu}
+                    menuOpen={menuPostId === p.id}
+                    onReport={handleReport}
+                    showBadges={true}
+                  />
+                ))}
               </div>
             )}
           </section>
@@ -1122,112 +1057,8 @@ const TherapistProfilePage: React.FC = () => {
           line-height: 1.6;
         }
 
-        .feed-item {
-          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-          padding: 10px 16px;
-          cursor: pointer;
-        }
-
-        .feed-item:focus {
-          outline: 2px solid rgba(0, 0, 0, 0.18);
-          outline-offset: 2px;
-          border-radius: 8px;
-        }
-
-        .feed-item-inner {
-          display: flex;
-          gap: 10px;
-        }
-
-        .feed-main {
-          flex: 1;
-          min-width: 0;
-        }
-
-        .feed-header {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 2px;
-        }
-
-        .feed-name-row {
-          display: flex;
-          align-items: baseline;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
-
-        .post-name {
-          font-weight: 600;
-          font-size: 13px;
-        }
-
-        .post-username {
-          font-size: 11px;
-          color: var(--text-sub, #777777);
-        }
-
-        .post-meta {
-          font-size: 11px;
-          color: var(--text-sub, #777777);
-          margin-top: 2px;
-        }
-
-        .post-body {
-          font-size: 13px;
-          line-height: 1.7;
-          margin-top: 6px;
-          margin-bottom: 6px;
-        }
-
-        .post-images {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 6px;
-          margin-top: 8px;
-        }
-
-        .post-image {
-          width: 100%;
-          height: auto;
-          border-radius: 12px;
-          border: 1px solid rgba(0, 0, 0, 0.06);
+        .feed-list {
           display: block;
-        }
-
-        .post-actions {
-          display: flex;
-          gap: 10px;
-          align-items: center;
-          margin-top: 4px;
-        }
-
-        .action-btn {
-          border: 1px solid rgba(0, 0, 0, 0.08);
-          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
-          border-radius: 999px;
-          font-size: 12px;
-          padding: 6px 10px;
-          cursor: pointer;
-        }
-
-        .action-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .action-btn.is-active {
-          border-color: rgba(0, 0, 0, 0.18);
-          font-weight: 700;
-        }
-
-        .action-count {
-          margin-left: 4px;
-        }
-
-        .action-btn.danger {
-          border-color: rgba(176, 0, 32, 0.25);
         }
 
         .edit-inline-btn {
@@ -1247,6 +1078,4 @@ const TherapistProfilePage: React.FC = () => {
       `}</style>
     </>
   );
-};
-
-export default TherapistProfilePage;
+}
