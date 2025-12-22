@@ -738,7 +738,7 @@ const MessageDetailPage: React.FC = () => {
         <BottomNav active="messages" hasUnread={hasUnread} />
       </div>
 
-      <style jsx>{`
+      <style jsx global>{`
         .chat-main {
           padding: 12px 12px 120px;
         }
@@ -808,19 +808,19 @@ const MessageDetailPage: React.FC = () => {
           flex-shrink: 0;
         }
 
-        /* ★ 日付：小さく、薄いグレー、中央（位置は維持） */
+        /* ★ 日付：小さく、薄いグレー、中央 */
         .date-divider {
           display: flex;
           justify-content: center;
-          margin: 10px 0; /* 余白を少し詰める */
+          margin: 10px 0;
         }
         .date-divider span {
           padding: 3px 10px;
           border-radius: 999px;
-          font-size: 10px; /* 小さく */
+          font-size: 10px;
           line-height: 1;
-          background: rgba(0, 0, 0, 0.06); /* 少し薄く */
-          color: var(--muted-foreground); /* よりグレー */
+          background: rgba(0, 0, 0, 0.06);
+          color: var(--text-sub); /* ←あなたのテーマに存在する変数 */
           letter-spacing: 0.02em;
         }
 
@@ -932,7 +932,7 @@ const MessageDetailPage: React.FC = () => {
         }
         .chat-status-text {
           font-size: 12px;
-          color: var(--muted-foreground);
+          color: var(--text-sub);
           text-align: center;
         }
       `}</style>
