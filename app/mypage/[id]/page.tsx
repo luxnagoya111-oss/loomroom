@@ -39,6 +39,8 @@ import {
   type DbPostRow as RepoDbPostRow,
 } from "@/lib/repositories/postRepository";
 
+import { getConnectionCounts } from "@/lib/repositories/connectionRepository";
+
 const hasUnread = true;
 
 // 旧localStorageデータ（ゲスト互換用）
@@ -213,8 +215,8 @@ const PublicMyPage: React.FC = () => {
     return { following: false, muted: false, blocked: false };
   }
 
-  // ===== following/follower counts =====
-  const [followingCount, setFollowCount] = useState<number | null>(null);
+  // ===== following/follower counts（target = users.id(uuid)）=====
+  const [followingCount, setFollowingCount] = useState<number | null>(null);
   const [followerCount, setFollowerCount] = useState<number | null>(null);
   const [loadingCounts, setLoadingCounts] = useState<boolean>(false);
 
@@ -373,7 +375,6 @@ const PublicMyPage: React.FC = () => {
           // snsLine は現状 users に無い前提なら触らない（将来追加でOK）
         };
 
-
         // --- 3) 補助：therapists / stores は不足時のみ補完 ---
         // 補完対象：displayName / area / intro（= description 相当）
         const needsName = !normalizeFreeText(baseProfile.displayName);
@@ -449,48 +450,31 @@ const PublicMyPage: React.FC = () => {
     };
   }, [userId, storageKey]);
 
-  // ===== following/follower counts（公開SELECT前提で、ログイン不要で表示）=====
+  // ===== following/follower counts（公開SELECT前提、ログイン不要で表示）=====
   useEffect(() => {
     let cancelled = false;
 
-    // relations.type 互換（過去の "following" を吸収）
-    const FOLLOW_TYPES = ["follower", "following"] as const;
-
     async function fetchCounts() {
-      // /mypage/[id] の対象が uuid じゃないなら（ゲスト互換）数えない
       if (!isUuid(userId)) {
-        setFollowCount(null);
+        setFollowingCount(null);
         setFollowerCount(null);
         return;
       }
 
       setLoadingCounts(true);
-
       try {
-        const followingReq = supabase
-          .from("relations")
-          .select("target_id", { count: "exact", head: true })
-          .eq("user_id", userId)
-          .in("type", FOLLOW_TYPES as any);
-
-        const followersReq = supabase
-          .from("relations")
-          .select("user_id", { count: "exact", head: true })
-          .eq("target_id", userId)
-          .in("type", FOLLOW_TYPES as any);
-
-        const [followingRes, followersRes] = await Promise.all([followingReq, followersReq]);
-
+        const res = await getConnectionCounts(userId);
         if (cancelled) return;
 
-        if (followingRes.error) throw followingRes.error;
-        if (followersRes.error) throw followersRes.error;
-
-        setFollowCount(typeof followingRes.count === "number" ? followingRes.count : 0);
-        setFollowerCount(typeof followersRes.count === "number" ? followersRes.count : 0);
+        // connectionRepository の返り値:
+        // followers = target_id = userId
+        // follows    = user_id  = userId（= following）
+        setFollowerCount(res.followers ?? 0);
+        setFollowingCount(res.follows ?? 0);
       } catch (e: any) {
+        if (cancelled) return;
         console.warn("[PublicMyPage] counts fetch failed:", e);
-        setFollowCount(null);
+        setFollowingCount(null);
         setFollowerCount(null);
       } finally {
         if (!cancelled) setLoadingCounts(false);
@@ -552,6 +536,14 @@ const PublicMyPage: React.FC = () => {
       if (!ok) return;
 
       setRelations({ following: nextEnabled, muted: false, blocked: false });
+
+      // 表示対象（userId）の followerCount を楽観更新（viewerがfollow/unfollowした分）
+      setFollowerCount((prev) => {
+        if (typeof prev !== "number") return prev;
+        const next = prev + (nextEnabled ? 1 : -1);
+        return Math.max(0, next);
+      });
+
       return;
     }
 
@@ -562,6 +554,14 @@ const PublicMyPage: React.FC = () => {
       nextEnabled
     );
     setRelations(updated);
+
+    // ゲスト互換でも見た目だけは合わせる（uuid以外はそもそもcounts非表示）
+    setFollowerCount((prev) => {
+      if (!isUuid(userId)) return prev;
+      if (typeof prev !== "number") return prev;
+      const next = prev + (nextEnabled ? 1 : -1);
+      return Math.max(0, next);
+    });
   };
 
   const handleToggleMute = async () => {
@@ -969,9 +969,7 @@ const PublicMyPage: React.FC = () => {
             )}
 
             {!blockedView && !loadingPosts && !postError && posts.length === 0 && (
-              <div className="empty-hint">
-                まだ投稿はありません。
-              </div>
+              <div className="empty-hint">まだ投稿はありません。</div>
             )}
 
             {!blockedView && !loadingPosts && !postError && posts.length > 0 && (
@@ -987,7 +985,6 @@ const PublicMyPage: React.FC = () => {
                     onToggleLike={handleToggleLike}
                     onReply={handleReply}
                     onDeleted={(postId) => {
-                      // このページの state 名に合わせて下さい（例：posts / filteredPosts など）
                       setPosts((prev) => prev.filter((x) => x.id !== postId));
                     }}
                     showBadges={true}
