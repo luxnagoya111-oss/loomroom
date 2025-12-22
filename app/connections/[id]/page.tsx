@@ -457,7 +457,7 @@ const ConnectionsPage: React.FC = () => {
   }, [searchParams, snapPagerToTab]);
 
   // ------------------------------
-  // scroll -> state/URL 同期 + インジケータ追従
+  // scroll -> state/URL 同期
   // ------------------------------
   useEffect(() => {
     const el = pagerRef.current;
@@ -470,21 +470,22 @@ const ConnectionsPage: React.FC = () => {
       raf = requestAnimationFrame(() => {
         const width = el.clientWidth || 1;
 
-        // ★ ここで必ず 0〜1 を連続更新
+        // ★ 1) バーは「同期中でも」必ず更新する（ここが肝）
         const raw = el.scrollLeft / width;
         const p = Math.max(0, Math.min(1, raw));
         setTabProgress(p);
 
-        // URL切替は同期中は抑制
-        if (isSyncingRef.current) return;
-
+        // ★ 2) タブ判定も同期中でも更新してOK（表示整合のため）
         const idx = Math.round(el.scrollLeft / width);
         const next: TabKey = idx <= 0 ? "following" : "followers";
 
-        if (activeTabRef.current === next) return;
+        if (activeTabRef.current !== next) {
+          activeTabRef.current = next;
+          setActiveTab(next);
+        }
 
-        activeTabRef.current = next;
-        setActiveTab(next);
+        // ★ 3) ただしURL更新だけは同期中はしない（無限ループ防止）
+        if (isSyncingRef.current) return;
 
         if (isValidTarget && targetUserId) {
           router.replace(`/connections/${targetUserId}?tab=${next}`);
@@ -494,7 +495,7 @@ const ConnectionsPage: React.FC = () => {
 
     el.addEventListener("scroll", onScroll, { passive: true });
 
-    // ★ 初回も一度計算してインジケータ位置を確定
+    // 初期位置でバーを確定
     requestAnimationFrame(onScroll);
 
     return () => {
@@ -502,7 +503,7 @@ const ConnectionsPage: React.FC = () => {
       el.removeEventListener("scroll", onScroll as any);
     };
   }, [router, isValidTarget, targetUserId]);
-
+  
   // ------------------------------
   // tab click handler
   // ------------------------------
