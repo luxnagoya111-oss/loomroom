@@ -11,7 +11,6 @@ import AvatarCircle from "@/components/AvatarCircle";
 
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
-import { ensureViewerId } from "@/lib/auth";
 
 import {
   getRelation,
@@ -58,7 +57,7 @@ type DbPostRow = {
   // 画像：命名揺れ吸収用（anyで拾う）
   image_paths?: any;
   image_urls?: any;
-  imageUrls?: any;
+  imageUrls?: any; // ← DBには無いが、ローカルの揺れ吸収として読むのはOK
 };
 
 type DbTherapistRow = {
@@ -116,45 +115,80 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   return data?.publicUrl ?? null;
 }
 
-// ===== 投稿画像URLの正規化（Home と同じ思想）=====
-function sanitizeImageUrls(raw: any): string[] {
-  const urls: string[] = [];
+// ===== 投稿画像URLの正規化（店舗ページ用：Storage path → public URL へ変換）=====
+// ここが今回の核心：店舗ページでは sanitize だけだと「/not-found」系の 404 を踏みやすい
+const POST_IMAGE_BUCKET = "post-images"; // ★ 実bucket名に合わせて変更
 
-  const pushOne = (v: any) => {
-    if (typeof v !== "string") return;
+function normalizeImageArray(v: any): string[] {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.map(String).map((x) => x.trim()).filter(Boolean);
+
+  if (typeof v === "string") {
     const s = v.trim();
-    if (!s) return;
-    // data: は今回は拒否（必要なら許可してOK）
-    if (/^data:/i.test(s)) return;
-    urls.push(s);
-  };
-
-  if (!raw) return [];
-  if (Array.isArray(raw)) {
-    raw.forEach(pushOne);
-    return urls;
-  }
-
-  if (typeof raw === "string") {
-    // JSON配列文字列の可能性
-    const s = raw.trim();
     if (!s) return [];
+
+    // JSON配列文字列
     if (s.startsWith("[") && s.endsWith("]")) {
       try {
         const parsed = JSON.parse(s);
-        if (Array.isArray(parsed)) parsed.forEach(pushOne);
-        return urls;
+        if (Array.isArray(parsed))
+          return parsed.map(String).map((x) => x.trim()).filter(Boolean);
       } catch {
         // fallthrough
       }
     }
-    // カンマ区切りなど雑なケース
-    s.split(",").forEach((x) => pushOne(x));
-    return urls;
+
+    // カンマ区切り（雑対応）
+    return s
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
   }
 
-  // それ以外は無視
   return [];
+}
+
+/**
+ * post画像の raw (URL or Storage path) を public URL に統一
+ * - http(s) はそのまま
+ * - data: は拒否
+ * - "/storage/..." のような相対は拒否して bucket publicUrl化へ寄せる
+ */
+function resolvePostImageUrl(raw: any): string | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (!s) return null;
+
+  // data: は拒否（必要なら許可してOK）
+  if (/^data:/i.test(s)) return null;
+
+  // すでにURL
+  if (/^https?:\/\//i.test(s)) return s;
+
+  // 先頭スラッシュは落とす（アプリ内ルート扱いで 404 を踏みがち）
+  const cleaned = s.replace(/^\/+/, "").replace(/^public\//, "");
+
+  // "post-images/xxx" のように bucket prefix 付きで入っていても吸収
+  const path = cleaned.startsWith(`${POST_IMAGE_BUCKET}/`)
+    ? cleaned.slice(POST_IMAGE_BUCKET.length + 1)
+    : cleaned;
+
+  // path が空は無効
+  if (!path) return null;
+
+  const { data } = supabase.storage.from(POST_IMAGE_BUCKET).getPublicUrl(path);
+  const url = data?.publicUrl ?? null;
+  return url;
+}
+
+function sanitizePostImageUrls(rawImages: any): string[] {
+  const arr = normalizeImageArray(rawImages);
+  const resolved = arr
+    .map(resolvePostImageUrl)
+    .filter((x): x is string => !!x);
+
+  // 重複排除
+  return Array.from(new Set(resolved));
 }
 
 // 未読バッジは固定デモ
@@ -586,9 +620,10 @@ const StoreProfilePage: React.FC = () => {
           }
 
           // 3) posts (author_id=owner_user_id)
+          // ★注意：imageUrls を select しない（DBに無い）
           const { data: postRows, error: pError } = await supabase
             .from("posts")
-            .select("id, author_id, body, created_at, like_count, reply_count, image_urls, image_paths")
+            .select("id, author_id, body, created_at, like_count, reply_count, image_paths, image_urls")
             .eq("author_id", row.owner_user_id)
             .order("created_at", { ascending: false })
             .limit(50);
@@ -605,7 +640,13 @@ const StoreProfilePage: React.FC = () => {
           } else {
             const mapped: StorePost[] = (postRows ?? []).map((r: any) => {
               const rawImages =
-                (r as any).image_paths ?? (r as any).image_urls ?? (r as any).imageUrls ?? null;
+                (r as any).image_paths ??
+                (r as any).image_urls ??
+                (r as any).imageUrls ??
+                null;
+
+              // ★ここが修正ポイント：sanitize後に「Storage path→public URL」を確実にやる
+              const imageUrls = sanitizePostImageUrls(rawImages);
 
               return {
                 id: (r as DbPostRow).id,
@@ -613,7 +654,7 @@ const StoreProfilePage: React.FC = () => {
                 timeAgo: timeAgo((r as DbPostRow).created_at),
                 likeCount: typeof (r as any).like_count === "number" ? (r as any).like_count : 0,
                 replyCount: typeof (r as any).reply_count === "number" ? (r as any).reply_count : 0,
-                imageUrls: sanitizeImageUrls(rawImages),
+                imageUrls,
               };
             });
             setPosts(mapped);
@@ -795,7 +836,8 @@ const StoreProfilePage: React.FC = () => {
 
         if (pErr) throw pErr;
 
-        const current = typeof (pRow as any)?.like_count === "number" ? (pRow as any).like_count : 0;
+        const current =
+          typeof (pRow as any)?.like_count === "number" ? (pRow as any).like_count : 0;
 
         const { error: upErr } = await supabase
           .from("posts")
@@ -819,7 +861,8 @@ const StoreProfilePage: React.FC = () => {
 
         if (pErr) throw pErr;
 
-        const current = typeof (pRow as any)?.like_count === "number" ? (pRow as any).like_count : 0;
+        const current =
+          typeof (pRow as any)?.like_count === "number" ? (pRow as any).like_count : 0;
 
         const { error: upErr } = await supabase
           .from("posts")
@@ -836,7 +879,6 @@ const StoreProfilePage: React.FC = () => {
       setPosts((prev) =>
         prev.map((p) => {
           if (p.id !== postId) return p;
-          // 直前の楽観更新を元に戻す
           const next = liked ? p.likeCount + 1 : p.likeCount - 1;
           return { ...p, likeCount: Math.max(0, next) };
         })
@@ -1026,12 +1068,7 @@ const StoreProfilePage: React.FC = () => {
 
           <div className="store-links">
             {websiteUrl && (
-              <a
-                href={websiteUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="store-link-btn"
-              >
+              <a href={websiteUrl} target="_blank" rel="noopener noreferrer" className="store-link-btn">
                 公式サイトを見る
               </a>
             )}
@@ -1144,7 +1181,7 @@ const StoreProfilePage: React.FC = () => {
                             {p.imageUrls.map((url, idx) => (
                               // eslint-disable-next-line @next/next/no-img-element
                               <img
-                                key={idx}
+                                key={url + "_" + idx}
                                 src={url}
                                 alt=""
                                 className="post-image"
