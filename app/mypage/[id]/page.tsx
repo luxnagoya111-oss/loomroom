@@ -1,16 +1,17 @@
 // app/mypage/[id]/page.tsx
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import BottomNav from "@/components/BottomNav";
 import AppHeader from "@/components/AppHeader";
 import AvatarCircle from "@/components/AvatarCircle";
+import PostCard from "@/components/PostCard";
 
 import { makeThreadId } from "@/lib/dmThread";
-import { getCurrentUserId } from "@/lib/auth";
+import { getCurrentUserId, ensureViewerId } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
 
@@ -29,6 +30,14 @@ import {
 import type { UserId } from "@/types/user";
 import { RelationActions } from "@/components/RelationActions";
 import { toPublicHandleFromUserId } from "@/lib/handle";
+
+import { hydratePosts, type UiPost } from "@/lib/postFeedHydrator";
+import {
+  fetchPostsByAuthorIds,
+  toggleLike,
+  reportPost,
+  type DbPostRow as RepoDbPostRow,
+} from "@/lib/repositories/postRepository";
 
 const hasUnread = true;
 
@@ -97,21 +106,6 @@ type DbStoreRow = {
   name: string | null;
   area: string | null;
   description: string | null;
-};
-
-// posts
-type DbPostRow = {
-  id: string;
-  author_id: string | null;
-  body: string | null;
-  area: string | null;
-  created_at: string;
-};
-
-type UserPost = {
-  id: string;
-  body: string;
-  timeAgo: string;
 };
 
 // ===== uuid 判定（relations は users.id = uuid で運用）=====
@@ -198,16 +192,23 @@ const PublicMyPage: React.FC = () => {
   const [storeId, setStoreId] = useState<string | null>(null);
   const [therapistId, setTherapistId] = useState<string | null>(null);
 
-  const [posts, setPosts] = useState<UserPost[]>([]);
+  // ===== 投稿（Hydrated UI）=====
+  const [viewerUuid, setViewerUuid] = useState<UserId | null>(null);
+  const [viewerReady, setViewerReady] = useState<boolean>(false);
+
+  const [posts, setPosts] = useState<UiPost[]>([]);
   const [postError, setPostError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
 
+  // 3点メニュー
+  const [menuPostId, setMenuPostId] = useState<string | null>(null);
+
   // relations 状態
-  const [relations, setRelations] = useState<RelationFlags>({
-    following: false,
-    muted: false,
-    blocked: false,
-  });
+  const [relations, setRelations] = useState<RelationFlags>(getDefaultRelationFlags());
+
+  function getDefaultRelationFlags(): RelationFlags {
+    return { following: false, muted: false, blocked: false };
+  }
 
   // ===== following/follower counts =====
   const [followingCount, setFollowCount] = useState<number | null>(null);
@@ -224,6 +225,29 @@ const PublicMyPage: React.FC = () => {
       .getUser()
       .then(({ data }) => setAuthUserId(data.user?.id ?? null))
       .catch(() => setAuthUserId(null));
+  }, []);
+
+  // DB操作用 viewer uuid（いいね・通報・liked判定用）
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setViewerReady(false);
+        const v = await ensureViewerId();
+        if (cancelled) return;
+        setViewerUuid(v);
+        setViewerReady(true);
+      } catch {
+        if (cancelled) return;
+        setViewerUuid(null);
+        setViewerReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Owner 判定（公開ページの対象が users.id(uuid) の場合）
@@ -431,8 +455,6 @@ const PublicMyPage: React.FC = () => {
       setLoadingCounts(true);
 
       try {
-        // 重要：relations に id カラムが無い想定でも count が動くように、
-        // 実在する列を select する（head:true で実データは返さない）
         const { count: c1, error: e1 } = await supabase
           .from("relations")
           .select("target_id", { count: "exact", head: true })
@@ -475,7 +497,7 @@ const PublicMyPage: React.FC = () => {
 
     // 自分ページは relation 無効
     if (isOwner || viewerId === userId) {
-      setRelations({ following: false, muted: false, blocked: false });
+      setRelations(getDefaultRelationFlags());
       return;
     }
 
@@ -592,7 +614,16 @@ const PublicMyPage: React.FC = () => {
     setRelations(updated);
   };
 
-  // 投稿一覧を Supabase から取得（author_id = users.id）
+  // ===== 投稿一覧（author揺れ対応 → hydrate → PostCard）=====
+  const authorIdsForPosts = useMemo(() => {
+    // TL/投稿は「author_id に入ってる可能性があるID全部」を拾う
+    const set = new Set<string>();
+    if (userId) set.add(userId);
+    if (therapistId) set.add(therapistId);
+    if (storeId) set.add(storeId);
+    return Array.from(set);
+  }, [userId, therapistId, storeId]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -600,37 +631,30 @@ const PublicMyPage: React.FC = () => {
       try {
         setLoadingPosts(true);
         setPostError(null);
+        setMenuPostId(null);
 
-        // ★ 投稿の area を使わないので select から削除
-        const { data, error } = await supabase
-          .from("posts")
-          .select("id, author_id, body, created_at")
-          .eq("author_id", userId)
-          .order("created_at", { ascending: false })
-          .limit(50);
-
-        if (cancelled) return;
-
-        if (error) {
-          console.error("[PublicMyPage] posts fetch error:", error);
-          setPostError(
-            (error as any)?.message ??
-              "投稿の取得に失敗しました。時間をおいて再度お試しください。"
-          );
+        if (!authorIdsForPosts.length) {
           setPosts([]);
           return;
         }
 
-        const rows = (data ?? []) as any[];
-        const mapped: UserPost[] = rows.map((row) => {
-          return {
-            id: row.id,
-            body: row.body ?? "",
-            timeAgo: timeAgo(row.created_at),
-          };
+        // 親投稿のみ（TLと統一）
+        const rows = await fetchPostsByAuthorIds({
+          authorIds: authorIdsForPosts,
+          excludeReplies: true,
+          limit: 50,
         });
 
-        setPosts(mapped);
+        if (cancelled) return;
+
+        const hydrated = await hydratePosts({
+          rows: rows as unknown as RepoDbPostRow[],
+          viewerUuid: viewerUuid,
+        });
+
+        if (cancelled) return;
+
+        setPosts(hydrated);
       } catch (e: any) {
         if (cancelled) return;
         console.error("[PublicMyPage] posts unexpected error:", e);
@@ -649,7 +673,86 @@ const PublicMyPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, authorIdsForPosts, viewerUuid]);
+
+  // ===== PostCard handlers =====
+  const handleOpenDetail = (postId: string) => {
+    router.push(`/posts/${postId}`);
+  };
+
+  const handleOpenProfile = (profilePath: string | null) => {
+    if (!profilePath) return;
+    router.push(profilePath);
+  };
+
+  const handleToggleLike = async (post: UiPost) => {
+    if (!viewerReady) return;
+    if (!viewerUuid || !isUuid(viewerUuid)) return;
+
+    const nextLiked = !post.liked;
+
+    // optimistic
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.id === post.id
+          ? {
+              ...p,
+              liked: nextLiked,
+              likeCount: Math.max(0, (p.likeCount ?? 0) + (nextLiked ? 1 : -1)),
+            }
+          : p
+      )
+    );
+
+    const res = await toggleLike({
+      postId: post.id,
+      userId: viewerUuid,
+      nextLiked,
+      currentLikeCount: post.likeCount ?? 0,
+    });
+
+    if (!res.ok) {
+      // rollback
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === post.id
+            ? { ...p, liked: post.liked, likeCount: post.likeCount ?? 0 }
+            : p
+        )
+      );
+      return;
+    }
+
+    // server truth (count)
+    setPosts((prev) =>
+      prev.map((p) => (p.id === post.id ? { ...p, likeCount: res.likeCount } : p))
+    );
+  };
+
+  const handleReply = (postId: string) => {
+    // 返信UIは投稿詳細に集約（次フェーズで /posts/[id] 内に composer）
+    router.push(`/posts/${postId}?reply=1`);
+  };
+
+  const handleOpenMenu = (postId: string) => {
+    setMenuPostId((prev) => (prev === postId ? null : postId));
+  };
+
+  const handleReport = async (postId: string) => {
+    if (!viewerReady) return;
+    if (!viewerUuid || !isUuid(viewerUuid)) return;
+
+    const ok = window.confirm("この投稿を通報しますか？");
+    if (!ok) return;
+
+    const success = await reportPost({ postId, reporterId: viewerUuid, reason: null });
+    if (success) {
+      alert("通報を受け付けました。ご協力ありがとうございます。");
+      setMenuPostId(null);
+    } else {
+      alert("通報に失敗しました。時間をおいて再度お試しください。");
+    }
+  };
 
   const avatarInitial =
     profile.displayName?.trim()?.charAt(0)?.toUpperCase() || "U";
@@ -669,14 +772,12 @@ const PublicMyPage: React.FC = () => {
   const followingHref = `/connections/${userId}?tab=following`;
   const followerHref = `/connections/${userId}?tab=followers`;
 
+  const blockedView = !isOwner && relations.blocked;
+
   return (
     <>
       <div className="app-shell">
-        <AppHeader
-          title={profile.displayName}
-          subtitle={profile.handle}
-          showBack={true}
-        />
+        <AppHeader title={profile.displayName} subtitle={profile.handle} showBack={true} />
 
         <main className="app-main">
           <section className="therapist-hero">
@@ -779,9 +880,7 @@ const PublicMyPage: React.FC = () => {
                     onToggleMute={handleToggleMute}
                     onToggleBlock={handleToggleBlock}
                     onReport={() => {
-                      alert(
-                        "このアカウントの通報を受け付けました（現在はテスト用です）。"
-                      );
+                      alert("このアカウントの通報を受け付けました（現在はテスト用です）。");
                     }}
                   />
                 )}
@@ -847,72 +946,44 @@ const PublicMyPage: React.FC = () => {
           <section className="therapist-posts-section">
             <h2 className="therapist-section-title">投稿</h2>
 
-            {loadingPosts && (
+            {blockedView && (
+              <div className="empty-hint" style={{ color: "#b00020" }}>
+                このアカウントはブロック中のため、投稿は表示されません。
+              </div>
+            )}
+
+            {!blockedView && loadingPosts && (
               <div className="empty-hint">投稿を読み込んでいます…</div>
             )}
 
-            {postError && !loadingPosts && (
+            {!blockedView && postError && !loadingPosts && (
               <div className="empty-hint" style={{ color: "#b00020" }}>
                 {postError}
               </div>
             )}
 
-            {!loadingPosts && !postError && posts.length === 0 && (
+            {!blockedView && !loadingPosts && !postError && posts.length === 0 && (
               <div className="empty-hint">
                 まだ投稿はありません。気が向いたタイミングで、短いことばから残してみてください。
               </div>
             )}
 
-            {!loadingPosts && !postError && posts.length > 0 && (
+            {!blockedView && !loadingPosts && !postError && posts.length > 0 && (
               <div className="feed-list">
                 {posts.map((p) => (
-                  <article
+                  <PostCard
                     key={p.id}
-                    className="feed-item"
-                    role="button"
-                    tabIndex={0}
-                    aria-label="投稿の詳細を見る"
-                    onClick={() => router.push(`/posts/${p.id}`)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        router.push(`/posts/${p.id}`);
-                      }
-                    }}
-                  >
-                    <div className="feed-item-inner">
-                      <AvatarCircle
-                        className="avatar-small"
-                        size={40}
-                        avatarUrl={profile.avatarUrl ?? null}
-                        displayName={profile.displayName}
-                        fallbackText={avatarInitial}
-                        alt=""
-                      />
-
-                      <div className="feed-main">
-                        <div className="feed-header">
-                          <div className="feed-name-row">
-                            <span className="post-name">{profile.displayName}</span>
-                            <span className="post-username">{profile.handle}</span>
-                          </div>
-
-                          {/* ★ 投稿エリア表示を撤去（時間だけ） */}
-                          <div className="post-meta">
-                            <span className="post-time">{p.timeAgo}</span>
-                          </div>
-                        </div>
-
-                        <div className="post-body">
-                          {p.body.split("\n").map((line, idx) => (
-                            <p key={idx}>
-                              {line || <span style={{ opacity: 0.3 }}>　</span>}
-                            </p>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </article>
+                    post={p}
+                    viewerReady={viewerReady}
+                    onOpenDetail={handleOpenDetail}
+                    onOpenProfile={handleOpenProfile}
+                    onToggleLike={handleToggleLike}
+                    onReply={handleReply}
+                    onOpenMenu={handleOpenMenu}
+                    menuOpen={menuPostId === p.id}
+                    onReport={handleReport}
+                    showBadges={true}
+                  />
                 ))}
               </div>
             )}
@@ -1048,66 +1119,6 @@ const PublicMyPage: React.FC = () => {
         }
         .edit-inline-btn:hover {
           opacity: 1;
-        }
-
-        .feed-item {
-          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-          padding: 10px 16px;
-          cursor: pointer;
-        }
-
-        .feed-item:focus {
-          outline: 2px solid rgba(0, 0, 0, 0.18);
-          outline-offset: 2px;
-          border-radius: 8px;
-        }
-
-        /* 投稿一覧のレイアウト（このファイル内で完結させる） */
-        .feed-item-inner {
-          display: flex;
-          gap: 10px;
-        }
-
-        .feed-main {
-          flex: 1;
-          min-width: 0;
-        }
-
-        .feed-header {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 2px;
-        }
-
-        .feed-name-row {
-          display: flex;
-          align-items: baseline;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
-
-        .post-name {
-          font-weight: 600;
-          font-size: 13px;
-        }
-
-        .post-username {
-          font-size: 11px;
-          color: var(--text-sub, #777777);
-        }
-
-        .post-meta {
-          font-size: 11px;
-          color: var(--text-sub, #777777);
-          margin-top: 2px;
-        }
-
-        .post-body {
-          font-size: 13px;
-          line-height: 1.7;
-          margin-top: 4px;
-          margin-bottom: 4px;
         }
 
         :global(.no-link-style) {

@@ -1,7 +1,7 @@
 // app/therapist/[id]/page.tsx
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -10,8 +10,9 @@ import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 
 import { supabase } from "@/lib/supabaseClient";
-import { getCurrentUserId } from "@/lib/auth";
+import { getCurrentUserId, ensureViewerId } from "@/lib/auth";
 import { timeAgo } from "@/lib/timeAgo";
+import { toPublicHandleFromUserId } from "@/lib/handle";
 
 import {
   getRelation,
@@ -19,11 +20,20 @@ import {
   toRelationFlags,
   type RelationFlags,
 } from "@/lib/repositories/relationRepository";
-import type { UserId } from "@/types/user";
-import { RelationActions } from "@/components/RelationActions";
 
-import type { DbTherapistRow, DbUserRow, DbPostRow, DbStoreRow } from "@/types/db";
-import { toPublicHandleFromUserId } from "@/lib/handle";
+import {
+  fetchPostsByAuthorIds,
+  fetchLikedPostIdsForUser,
+  toggleLike,
+  reportPost,
+  type DbPostRow as RepoPostRow,
+} from "@/lib/repositories/postRepository";
+
+import { resolveAvatarUrl, pickRawPostImages, resolvePostImageUrls } from "@/lib/postMedia";
+
+import type { UserId } from "@/types/user";
+import type { DbTherapistRow, DbUserRow, DbStoreRow } from "@/types/db";
+import { RelationActions } from "@/components/RelationActions";
 
 // ===== uuid 判定（relations は users.id = uuid で運用する）=====
 const UUID_REGEX =
@@ -36,78 +46,16 @@ function isUuid(id: string | null | undefined): id is string {
 // relations.type 互換（過去の "following" を吸収）
 const FOLLOW_TYPES = ["follow", "following"] as const;
 
-// ===== Avatar URL 正規化（Home と同一思想で統一）=====
-const AVATAR_BUCKET = "avatars";
-
-function normalizeAvatarUrl(v: any): string | null {
-  const s = typeof v === "string" ? v.trim() : "";
-  return s ? s : null;
-}
-
-function isProbablyHttpUrl(url: string): boolean {
-  return /^https?:\/\//i.test(url);
-}
-
-/**
- * URLとして使う前に「それっぽいゴミ」を弾く
- * - 空
- * - ".../public/avatars" で終わってる（ファイル名なし）等
- */
-function looksValidAvatarUrl(v: string | null | undefined): boolean {
-  const s = (v ?? "").trim();
-  if (!s) return false;
-
-  // 例: https://xxxx.supabase.co/storage/v1/object/public/avatars
-  if (s.includes("/storage/v1/object/public/avatars")) {
-    if (/\/public\/avatars\/?$/i.test(s)) return false;
-  }
-  return true;
-}
-
-/**
- * avatar_url が
- * - https://... ならそのまま
- * - それ以外（storage path）なら public URL に変換
- */
-function resolveAvatarUrl(raw: string | null | undefined): string | null {
-  const v = normalizeAvatarUrl(raw);
-  if (!v) return null;
-  if (isProbablyHttpUrl(v)) return v;
-
-  // "avatars/xxx.png" のような場合にも対応（先頭の "avatars/" を外す）
-  const path = v.startsWith(`${AVATAR_BUCKET}/`)
-    ? v.slice(AVATAR_BUCKET.length + 1)
-    : v;
-
-  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
-  return data?.publicUrl ?? null;
-}
-
 type TherapistProfile = {
   displayName: string;
-
-  /**
-   * 表示ハンドルは統一：users.id(uuid) から @xxxxxx（先頭6桁）
-   */
   handle: string;
-
-  /**
-   * 対応エリアは自由入力（string）
-   */
   area: string;
-
   intro: string;
   avatarUrl?: string | null;
 
   snsX?: string;
   snsLine?: string;
   snsOther?: string;
-};
-
-type TherapistPost = {
-  id: string;
-  body: string;
-  timeAgo: string;
 };
 
 type LinkedStoreInfo = {
@@ -119,6 +67,20 @@ type LinkedStoreInfo = {
   lineUrl?: string | null;
 };
 
+type UiPost = {
+  id: string;
+  body: string;
+  timeAgo: string;
+  imageUrls: string[];
+  likeCount: number;
+  replyCount: number;
+};
+
+function safeNumber(v: any, fallback = 0): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 const TherapistProfilePage: React.FC = () => {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -128,6 +90,8 @@ const TherapistProfilePage: React.FC = () => {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   // Supabase Auth（uuid会員）
   const [authUserId, setAuthUserId] = useState<string | null>(null);
+  // DB操作に使う viewer uuid（未ログインなら null）
+  const [viewerUuid, setViewerUuid] = useState<UserId | null>(null);
 
   // therapists.user_id（= users.id / uuid）
   const [therapistUserId, setTherapistUserId] = useState<string | null>(null);
@@ -170,16 +134,19 @@ const TherapistProfilePage: React.FC = () => {
   const [loadingProfile, setLoadingProfile] = useState<boolean>(true);
   const [profileError, setProfileError] = useState<string | null>(null);
 
-  const [posts, setPosts] = useState<TherapistPost[]>([]);
+  const [posts, setPosts] = useState<UiPost[]>([]);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
+
+  // liked（viewerUuidがある時だけ）
+  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
 
   // ===== counts（mypage と同一思想：集計対象は users.id(uuid)）=====
   const [followingCount, setFollowingCount] = useState<number | null>(null);
   const [followersCount, setFollowersCount] = useState<number | null>(null);
   const [loadingCounts, setLoadingCounts] = useState<boolean>(false);
 
-  // currentUserId / authUserId 初期化
+  // currentUserId / authUserId / viewerUuid 初期化
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -189,6 +156,11 @@ const TherapistProfilePage: React.FC = () => {
       .getUser()
       .then(({ data }) => setAuthUserId(data.user?.id ?? null))
       .catch(() => setAuthUserId(null));
+
+    // DB用の viewer uuid（未ログインなら null）
+    ensureViewerId()
+      .then((uid) => setViewerUuid(uid))
+      .catch(() => setViewerUuid(null));
   }, []);
 
   // relation 復元（uuid会員同士のみ / 自分のページは無効）
@@ -233,7 +205,7 @@ const TherapistProfilePage: React.FC = () => {
 
     setRelations({ following: nextEnabled, muted: false, blocked: false });
 
-    // counts の体感を揃える：楽観更新（後続の再集計で整合）
+    // counts の体感：フォロワー数を楽観更新（後続再集計で整合）
     setFollowersCount((prev) => {
       if (typeof prev !== "number") return prev;
       const next = nextEnabled ? prev + 1 : prev - 1;
@@ -280,7 +252,7 @@ const TherapistProfilePage: React.FC = () => {
     setRelations({ following: false, muted: false, blocked: nextEnabled });
   };
 
-  // ===== therapists / users / posts を取得 =====
+  // ===== therapists / users / posts を取得（author_id 揺れに備えて authorIds を作る）=====
   useEffect(() => {
     let cancelled = false;
 
@@ -300,7 +272,7 @@ const TherapistProfilePage: React.FC = () => {
         // 1) therapists
         const { data: therapist, error: tError } = await supabase
           .from("therapists")
-          .select("id, user_id, store_id, display_name, area, profile, avatar_url")
+          .select("id, user_id, store_id, display_name, area, profile, avatar_url, sns_x, sns_line, sns_other")
           .eq("id", therapistId)
           .maybeSingle<DbTherapistRow>();
 
@@ -308,9 +280,7 @@ const TherapistProfilePage: React.FC = () => {
 
         if (tError) {
           console.error("[TherapistProfile] therapist fetch error:", tError);
-          setProfileError(
-            (tError as any)?.message ?? "セラピスト情報の取得に失敗しました。"
-          );
+          setProfileError((tError as any)?.message ?? "セラピスト情報の取得に失敗しました。");
           return;
         }
 
@@ -344,70 +314,62 @@ const TherapistProfilePage: React.FC = () => {
         if (cancelled) return;
 
         const displayName =
-          (therapist as any).display_name?.trim().length
+          (therapist as any).display_name?.trim()?.length
             ? (therapist as any).display_name
+            : (user as any)?.name?.trim()?.length
+            ? (user as any).name
             : "セラピスト";
 
-        // handle統一：users.id(uuid) → @xxxxxx
         const handle = tuid ? toPublicHandleFromUserId(tuid) ?? "" : "";
 
         const area =
-          typeof (therapist as any).area === "string"
-            ? (therapist as any).area.trim()
-            : "";
+          typeof (therapist as any).area === "string" ? (therapist as any).area.trim() : "";
 
         const intro =
-          (therapist as any).profile && (therapist as any).profile.trim().length
-            ? (therapist as any).profile
-            : "";
+          (therapist as any).profile?.trim()?.length ? (therapist as any).profile : "";
 
         // avatar: users.avatar_url 優先 → therapists.avatar_url
-        const rawAvatar =
-          (user as any)?.avatar_url ?? (therapist as any)?.avatar_url ?? null;
+        const rawAvatar = (user as any)?.avatar_url ?? (therapist as any)?.avatar_url ?? null;
+        const avatarUrl = resolveAvatarUrl(rawAvatar);
 
-        const avatarUrl = looksValidAvatarUrl(rawAvatar)
-          ? resolveAvatarUrl(rawAvatar)
-          : null;
-
-        setProfile((prev) => ({
-          ...prev,
+        setProfile({
           displayName,
           handle,
           area,
           intro,
           avatarUrl,
-        }));
+          snsX: (therapist as any)?.sns_x ?? "",
+          snsLine: (therapist as any)?.sns_line ?? "",
+          snsOther: (therapist as any)?.sns_other ?? "",
+        });
 
-        // 3) posts（posts.author_id = users.id(uuid) 前提）
-        if (tuid) {
-          const { data: postRows, error: pError } = await supabase
-            .from("posts")
-            .select("id, author_id, body, created_at")
-            .eq("author_id", tuid)
-            .order("created_at", { ascending: false })
-            .limit(50);
+        // 3) posts（author_id 揺れ対策：users.id + therapists.id の両方を候補に）
+        const authorIds: string[] = [];
+        if (tuid) authorIds.push(tuid);
+        authorIds.push(therapistId);
 
-          if (cancelled) return;
+        const rows = await fetchPostsByAuthorIds({
+          authorIds,
+          excludeReplies: true,
+          limit: 50,
+        });
 
-          if (pError) {
-            console.error("[TherapistProfile] posts fetch error:", pError);
-            setPostsError(
-              (pError as any)?.message ??
-                "投稿の取得に失敗しました。時間をおいて再度お試しください。"
-            );
-            setPosts([]);
-          } else {
-            const rows = (postRows ?? []) as DbPostRow[];
-            const mapped: TherapistPost[] = rows.map((row: any) => ({
-              id: row.id,
-              body: row.body ?? "",
-              timeAgo: timeAgo(row.created_at),
-            }));
-            setPosts(mapped);
-          }
-        } else {
-          setPosts([]);
-        }
+        if (cancelled) return;
+
+        const mapped: UiPost[] = (rows ?? []).map((row: RepoPostRow) => {
+          const rawImages = pickRawPostImages(row as any);
+          const imageUrls = resolvePostImageUrls(rawImages);
+          return {
+            id: row.id,
+            body: row.body ?? "",
+            timeAgo: timeAgo(row.created_at),
+            imageUrls,
+            likeCount: safeNumber(row.like_count, 0),
+            replyCount: safeNumber(row.reply_count, 0),
+          };
+        });
+
+        setPosts(mapped);
       } catch (e: any) {
         if (cancelled) return;
         console.error("[TherapistProfile] unexpected error:", e);
@@ -430,6 +392,25 @@ const TherapistProfilePage: React.FC = () => {
       cancelled = true;
     };
   }, [therapistId]);
+
+  // ===== viewerUuid が取れたら likedIds を取得 =====
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      if (!viewerUuid || !isUuid(viewerUuid)) {
+        setLikedIds(new Set());
+        return;
+      }
+      const set = await fetchLikedPostIdsForUser(viewerUuid);
+      if (cancelled) return;
+      setLikedIds(set);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [viewerUuid]);
 
   // ===== store_id がある場合のみ stores を取得（在籍表示用）=====
   useEffect(() => {
@@ -460,15 +441,11 @@ const TherapistProfilePage: React.FC = () => {
           return;
         }
 
-        const rawStoreAvatar = (data as any).avatar_url ?? null;
-
         setLinkedStore({
           id: data.id,
           name: (data as any).name ?? "店舗",
           area: (data as any).area ?? null,
-          avatarUrl: looksValidAvatarUrl(rawStoreAvatar)
-            ? resolveAvatarUrl(rawStoreAvatar)
-            : null,
+          avatarUrl: resolveAvatarUrl((data as any).avatar_url ?? null),
           websiteUrl: (data as any).website_url ?? null,
           lineUrl: (data as any).line_url ?? null,
         });
@@ -482,9 +459,8 @@ const TherapistProfilePage: React.FC = () => {
       }
     };
 
-    if (linkedStoreId) {
-      void loadStore(linkedStoreId);
-    } else {
+    if (linkedStoreId) void loadStore(linkedStoreId);
+    else {
       setLinkedStore(null);
       setStoreError(null);
       setLoadingStore(false);
@@ -523,24 +499,15 @@ const TherapistProfilePage: React.FC = () => {
           .eq("target_id", uid)
           .in("type", FOLLOW_TYPES as any);
 
-        const [followingRes, followersRes] = await Promise.all([
-          followingReq,
-          followersReq,
-        ]);
+        const [followingRes, followersRes] = await Promise.all([followingReq, followersReq]);
 
         if (cancelled) return;
 
         if (followingRes.error) {
-          console.error(
-            "[TherapistProfile] following count error:",
-            followingRes.error
-          );
+          console.error("[TherapistProfile] following count error:", followingRes.error);
         }
         if (followersRes.error) {
-          console.error(
-            "[TherapistProfile] followers count error:",
-            followersRes.error
-          );
+          console.error("[TherapistProfile] followers count error:", followersRes.error);
         }
 
         setFollowingCount(typeof followingRes.count === "number" ? followingRes.count : 0);
@@ -570,36 +537,109 @@ const TherapistProfilePage: React.FC = () => {
   const canShowCounts = isUuid(therapistUserId);
 
   const followingHref =
-    therapistUserId && isUuid(therapistUserId)
-      ? `/connections/${therapistUserId}?tab=following`
-      : "#";
+    therapistUserId && isUuid(therapistUserId) ? `/connections/${therapistUserId}?tab=following` : "#";
   const followerHref =
-    therapistUserId && isUuid(therapistUserId)
-      ? `/connections/${therapistUserId}?tab=followers`
-      : "#";
+    therapistUserId && isUuid(therapistUserId) ? `/connections/${therapistUserId}?tab=followers` : "#";
 
   // Relation UI は uuid会員同士 + 自分以外 のときだけ
   const canShowRelationUi = !isOwner && isUuid(authUserId) && isUuid(therapistUserId);
 
   // DMボタンは「店舗に紐づいていて」「会員ログイン済み」「相手uuid」「自分ではなく」「ブロックしていない」場合のみ
   const canShowDmButton =
-    isStoreLinked &&
-    !relations.blocked &&
-    !isOwner &&
-    isUuid(authUserId) &&
-    isUuid(therapistUserId);
+    isStoreLinked && !relations.blocked && !isOwner && isUuid(authUserId) && isUuid(therapistUserId);
 
   const showSnsBlock = !!(profile.snsX || profile.snsLine || profile.snsOther);
   const areaLabel = profile.area?.trim() ? profile.area.trim() : "未設定";
 
+  const avatarInitial = useMemo(() => {
+    return profile.displayName?.trim()?.charAt(0)?.toUpperCase() || "T";
+  }, [profile.displayName]);
+
+  const onClickPost = useCallback(
+    (postId: string) => {
+      router.push(`/posts/${postId}`);
+    },
+    [router]
+  );
+
+  const handleToggleLike = useCallback(
+    async (postId: string) => {
+      if (!viewerUuid || !isUuid(viewerUuid)) return;
+
+      const isLiked = likedIds.has(postId);
+
+      // optimistic
+      setLikedIds((prev) => {
+        const next = new Set(prev);
+        if (isLiked) next.delete(postId);
+        else next.add(postId);
+        return next;
+      });
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId
+            ? {
+                ...p,
+                likeCount: Math.max(p.likeCount + (isLiked ? -1 : 1), 0),
+              }
+            : p
+        )
+      );
+
+      const target = posts.find((p) => p.id === postId);
+      const currentLikeCount = target ? target.likeCount + (isLiked ? 1 : -1) : 0; // optimistic前を概算
+      const res = await toggleLike({
+        postId,
+        userId: viewerUuid,
+        nextLiked: !isLiked,
+        currentLikeCount: Math.max(currentLikeCount, 0),
+      });
+
+      if (!res.ok) {
+        // rollback
+        setLikedIds((prev) => {
+          const next = new Set(prev);
+          if (isLiked) next.add(postId);
+          else next.delete(postId);
+          return next;
+        });
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId
+              ? {
+                  ...p,
+                  likeCount: Math.max(p.likeCount + (isLiked ? 1 : -1), 0),
+                }
+              : p
+          )
+        );
+      } else {
+        setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, likeCount: res.likeCount } : p)));
+      }
+    },
+    [viewerUuid, likedIds, posts]
+  );
+
+  const handleReportPost = useCallback(
+    async (postId: string) => {
+      if (!viewerUuid || !isUuid(viewerUuid)) {
+        alert("通報はログイン後にご利用いただけます。");
+        return;
+      }
+      const ok = window.confirm("この投稿を通報しますか？");
+      if (!ok) return;
+
+      const done = await reportPost({ postId, reporterId: viewerUuid, reason: null });
+      if (done) alert("通報を受け付けました。ご協力ありがとうございます。");
+      else alert("通報に失敗しました。時間をおいて再度お試しください。");
+    },
+    [viewerUuid]
+  );
+
   return (
     <>
       <div className="app-shell">
-        <AppHeader
-          title={profile.displayName || "セラピスト"}
-          subtitle={profile.handle || ""}
-          showBack={true}
-        />
+        <AppHeader title={profile.displayName || "セラピスト"} subtitle={profile.handle || ""} showBack={true} />
 
         <main className="app-main">
           <section className="profile-hero">
@@ -608,31 +648,24 @@ const TherapistProfilePage: React.FC = () => {
                 avatarUrl={profile.avatarUrl}
                 size={48}
                 displayName={profile.displayName || profile.handle || "T"}
+                fallbackText={avatarInitial}
               />
 
               <div className="profile-hero-main">
                 <div className="profile-name-row">
-                  <span className="profile-name">
-                    {profile.displayName || "名前未設定"}
-                  </span>
+                  <span className="profile-name">{profile.displayName || "名前未設定"}</span>
 
                   <span className="profile-handle">
                     {profile.handle || ""}
 
                     {canShowDmButton && therapistUserId && (
-                      <Link
-                        href={`/messages/new?to=${therapistUserId}`}
-                        className="dm-inline-btn no-link-style"
-                      >
+                      <Link href={`/messages/new?to=${therapistUserId}`} className="dm-inline-btn no-link-style">
                         ✉
                       </Link>
                     )}
 
                     {isOwner && (
-                      <Link
-                        href={`/therapist/${therapistId}/console`}
-                        className="edit-inline-btn no-link-style"
-                      >
+                      <Link href={`/therapist/${therapistId}/console`} className="edit-inline-btn no-link-style">
                         ✎
                       </Link>
                     )}
@@ -643,12 +676,9 @@ const TherapistProfilePage: React.FC = () => {
                   <span className="profile-meta-item">アカウント種別：セラピスト</span>
                   <span className="profile-meta-item">対応エリア：{areaLabel}</span>
 
-                  {!isStoreLinked && (
-                    <span className="profile-tag">テスト参加中（店舗と紐づけ前）</span>
-                  )}
+                  {!isStoreLinked && <span className="profile-tag">テスト参加中（店舗と紐づけ前）</span>}
                 </div>
 
-                {/* フォロー統一（mypageと同じ：users.id を正に connections へ） */}
                 <div className="profile-stats-row">
                   <span>
                     投稿 <strong>{posts.length}</strong>
@@ -697,54 +727,34 @@ const TherapistProfilePage: React.FC = () => {
 
             {!isStoreLinked && (
               <p className="profile-notice">
-                このセラピストは現在テスト参加中です。店舗と紐づくまで、
-                LRoomからのDMはご利用いただけません。
+                このセラピストは現在テスト参加中です。店舗と紐づくまで、LRoomからのDMはご利用いただけません。
               </p>
             )}
 
-            {loadingProfile && (
-              <p className="profile-intro">プロフィールを読み込んでいます…</p>
-            )}
+            {loadingProfile && <p className="profile-intro">プロフィールを読み込んでいます…</p>}
             {profileError && (
               <p className="profile-intro" style={{ color: "#b00020" }}>
                 {profileError}
               </p>
             )}
-            {!loadingProfile && profile.intro && (
-              <p className="profile-intro">{profile.intro}</p>
-            )}
+            {!loadingProfile && profile.intro && <p className="profile-intro">{profile.intro}</p>}
 
             {showSnsBlock && (
               <div className="profile-sns-block">
                 <div className="profile-sns-title">関連リンク</div>
                 <div className="profile-sns-list">
                   {profile.snsX && (
-                    <a
-                      href={profile.snsX}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="profile-sns-chip"
-                    >
+                    <a href={profile.snsX} target="_blank" rel="noreferrer" className="profile-sns-chip">
                       X（旧Twitter）
                     </a>
                   )}
                   {profile.snsLine && (
-                    <a
-                      href={profile.snsLine}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="profile-sns-chip"
-                    >
+                    <a href={profile.snsLine} target="_blank" rel="noreferrer" className="profile-sns-chip">
                       LINE
                     </a>
                   )}
                   {profile.snsOther && (
-                    <a
-                      href={profile.snsOther}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="profile-sns-chip"
-                    >
+                    <a href={profile.snsOther} target="_blank" rel="noreferrer" className="profile-sns-chip">
                       その他のリンク
                     </a>
                   )}
@@ -784,10 +794,7 @@ const TherapistProfilePage: React.FC = () => {
                 )}
 
                 {!loadingStore && !storeError && linkedStore && (
-                  <Link
-                    href={`/store/${linkedStore.id}`}
-                    className="linked-store-card linked-store-link-wrapper"
-                  >
+                  <Link href={`/store/${linkedStore.id}`} className="linked-store-card linked-store-link-wrapper">
                     <div className="linked-store-row">
                       <AvatarCircle
                         avatarUrl={linkedStore.avatarUrl}
@@ -797,9 +804,7 @@ const TherapistProfilePage: React.FC = () => {
                       />
                       <div className="linked-store-main">
                         <div className="linked-store-name">{linkedStore.name}</div>
-                        <div className="linked-store-meta">
-                          {linkedStore.area || "エリア未設定"}
-                        </div>
+                        <div className="linked-store-meta">{linkedStore.area || "エリア未設定"}</div>
                       </div>
                     </div>
                   </Link>
@@ -836,53 +841,87 @@ const TherapistProfilePage: React.FC = () => {
 
             {!loadingPosts && !postsError && posts.length > 0 && (
               <div className="feed-list">
-                {posts.map((p) => (
-                  <article
-                    key={p.id}
-                    className="feed-item"
-                    role="button"
-                    tabIndex={0}
-                    aria-label="投稿の詳細を見る"
-                    onClick={() => router.push(`/posts/${p.id}`)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        router.push(`/posts/${p.id}`);
-                      }
-                    }}
-                  >
-                    <div className="feed-item-inner">
-                      <AvatarCircle
-                        avatarUrl={profile.avatarUrl}
-                        size={40}
-                        displayName={profile.displayName || profile.handle || "T"}
-                      />
+                {posts.map((p) => {
+                  const liked = likedIds.has(p.id);
+                  return (
+                    <article
+                      key={p.id}
+                      className="feed-item"
+                      role="button"
+                      tabIndex={0}
+                      aria-label="投稿の詳細を見る"
+                      onClick={() => onClickPost(p.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onClickPost(p.id);
+                        }
+                      }}
+                    >
+                      <div className="feed-item-inner">
+                        <AvatarCircle
+                          avatarUrl={profile.avatarUrl ?? null}
+                          size={40}
+                          displayName={profile.displayName || profile.handle || "T"}
+                          fallbackText={avatarInitial}
+                          alt=""
+                        />
 
-                      <div className="feed-main">
-                        <div className="feed-header">
-                          <div className="feed-name-row">
-                            <span className="post-name">
-                              {profile.displayName || "名前未設定"}
-                            </span>
-                            <span className="post-username">{profile.handle || ""}</span>
+                        <div className="feed-main">
+                          <div className="feed-header">
+                            <div className="feed-name-row">
+                              <span className="post-name">{profile.displayName || "名前未設定"}</span>
+                              <span className="post-username">{profile.handle || ""}</span>
+                            </div>
+
+                            <div className="post-meta">
+                              <span className="post-time">{p.timeAgo}</span>
+                            </div>
                           </div>
 
-                          <div className="post-meta">
-                            <span>{p.timeAgo}</span>
-                          </div>
-                        </div>
+                          {!!p.imageUrls.length && (
+                            <div className="post-images" onClick={(e) => e.stopPropagation()}>
+                              {p.imageUrls.map((url, idx) => (
+                                <img key={`${p.id}-${idx}`} src={url} alt="" className="post-image" loading="lazy" />
+                              ))}
+                            </div>
+                          )}
 
-                        <div className="post-body">
-                          {p.body.split("\n").map((line, idx) => (
-                            <p key={idx}>
-                              {line || <span style={{ opacity: 0.3 }}>　</span>}
-                            </p>
-                          ))}
+                          <div className="post-body">
+                            {p.body.split("\n").map((line, idx) => (
+                              <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
+                            ))}
+                          </div>
+
+                          <div className="post-actions" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              className={`action-btn ${liked ? "is-active" : ""}`}
+                              onClick={() => handleToggleLike(p.id)}
+                              disabled={!viewerUuid}
+                              title={!viewerUuid ? "いいねはログイン後に利用できます" : "いいね"}
+                            >
+                              ♥ <span className="action-count">{p.likeCount}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              className="action-btn"
+                              onClick={() => router.push(`/posts/${p.id}`)}
+                              title="返信を見る"
+                            >
+                              💬 <span className="action-count">{p.replyCount}</span>
+                            </button>
+
+                            <button type="button" className="action-btn danger" onClick={() => handleReportPost(p.id)}>
+                              通報
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </article>
-                ))}
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>
@@ -958,13 +997,11 @@ const TherapistProfilePage: React.FC = () => {
           flex-wrap: wrap;
         }
 
-        /* ★ 下線いらない：リンクっぽく見せない */
         .stats-link {
           color: inherit;
           text-decoration: none;
         }
         .stats-link:hover {
-          text-decoration: none;
           opacity: 0.9;
         }
 
@@ -1140,8 +1177,57 @@ const TherapistProfilePage: React.FC = () => {
         .post-body {
           font-size: 13px;
           line-height: 1.7;
+          margin-top: 6px;
+          margin-bottom: 6px;
+        }
+
+        .post-images {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 6px;
+          margin-top: 8px;
+        }
+
+        .post-image {
+          width: 100%;
+          height: auto;
+          border-radius: 12px;
+          border: 1px solid rgba(0, 0, 0, 0.06);
+          display: block;
+        }
+
+        .post-actions {
+          display: flex;
+          gap: 10px;
+          align-items: center;
           margin-top: 4px;
-          margin-bottom: 4px;
+        }
+
+        .action-btn {
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
+          border-radius: 999px;
+          font-size: 12px;
+          padding: 6px 10px;
+          cursor: pointer;
+        }
+
+        .action-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .action-btn.is-active {
+          border-color: rgba(0, 0, 0, 0.18);
+          font-weight: 700;
+        }
+
+        .action-count {
+          margin-left: 4px;
+        }
+
+        .action-btn.danger {
+          border-color: rgba(176, 0, 32, 0.25);
         }
 
         .edit-inline-btn {

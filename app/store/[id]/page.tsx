@@ -1,7 +1,7 @@
 // app/store/[id]/page.tsx
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -11,6 +11,7 @@ import AvatarCircle from "@/components/AvatarCircle";
 
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
+import { ensureViewerId } from "@/lib/auth";
 
 import {
   getRelation,
@@ -45,14 +46,19 @@ type DbUserRow = {
   avatar_url: string | null;
 };
 
-/**
- * ★ 投稿の area はこのページでは使わない
- */
 type DbPostRow = {
   id: string;
   author_id: string | null;
   body: string | null;
   created_at: string;
+
+  like_count?: number | null;
+  reply_count?: number | null;
+
+  // 画像：命名揺れ吸収用（anyで拾う）
+  image_paths?: any;
+  image_urls?: any;
+  imageUrls?: any;
 };
 
 type DbTherapistRow = {
@@ -110,6 +116,47 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   return data?.publicUrl ?? null;
 }
 
+// ===== 投稿画像URLの正規化（Home と同じ思想）=====
+function sanitizeImageUrls(raw: any): string[] {
+  const urls: string[] = [];
+
+  const pushOne = (v: any) => {
+    if (typeof v !== "string") return;
+    const s = v.trim();
+    if (!s) return;
+    // data: は今回は拒否（必要なら許可してOK）
+    if (/^data:/i.test(s)) return;
+    urls.push(s);
+  };
+
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    raw.forEach(pushOne);
+    return urls;
+  }
+
+  if (typeof raw === "string") {
+    // JSON配列文字列の可能性
+    const s = raw.trim();
+    if (!s) return [];
+    if (s.startsWith("[") && s.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(s);
+        if (Array.isArray(parsed)) parsed.forEach(pushOne);
+        return urls;
+      } catch {
+        // fallthrough
+      }
+    }
+    // カンマ区切りなど雑なケース
+    s.split(",").forEach((x) => pushOne(x));
+    return urls;
+  }
+
+  // それ以外は無視
+  return [];
+}
+
 // 未読バッジは固定デモ
 const hasUnread = true;
 
@@ -117,6 +164,9 @@ type StorePost = {
   id: string;
   body: string;
   timeAgo: string;
+  likeCount: number;
+  replyCount: number;
+  imageUrls: string[];
 };
 
 type TherapistHit = {
@@ -207,11 +257,14 @@ const StoreProfilePage: React.FC = () => {
   // 在籍セラピスト（DB）
   const [therapists, setTherapists] = useState<TherapistHit[]>([]);
 
-  const [likes, setLikes] = useState<Record<string, boolean>>({});
-
+  // 投稿
   const [posts, setPosts] = useState<StorePost[]>([]);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
+
+  // いいね（viewerが押しているか）
+  const [likes, setLikes] = useState<Record<string, boolean>>({});
+  const [likeBusy, setLikeBusy] = useState<Record<string, boolean>>({});
 
   // 在籍申請
   const [canApplyMembership, setCanApplyMembership] = useState(false);
@@ -535,7 +588,9 @@ const StoreProfilePage: React.FC = () => {
           // 3) posts (author_id=owner_user_id)
           const { data: postRows, error: pError } = await supabase
             .from("posts")
-            .select("id, author_id, body, created_at")
+            .select(
+              "id, author_id, body, created_at, like_count, reply_count, image_paths, image_urls, imageUrls"
+            )
             .eq("author_id", row.owner_user_id)
             .order("created_at", { ascending: false })
             .limit(50);
@@ -550,11 +605,19 @@ const StoreProfilePage: React.FC = () => {
             );
             setPosts([]);
           } else {
-            const mapped: StorePost[] = (postRows ?? []).map((r: any) => ({
-              id: (r as DbPostRow).id,
-              body: (r as DbPostRow).body ?? "",
-              timeAgo: timeAgo((r as DbPostRow).created_at),
-            }));
+            const mapped: StorePost[] = (postRows ?? []).map((r: any) => {
+              const rawImages =
+                (r as any).image_paths ?? (r as any).image_urls ?? (r as any).imageUrls ?? null;
+
+              return {
+                id: (r as DbPostRow).id,
+                body: (r as DbPostRow).body ?? "",
+                timeAgo: timeAgo((r as DbPostRow).created_at),
+                likeCount: typeof (r as any).like_count === "number" ? (r as any).like_count : 0,
+                replyCount: typeof (r as any).reply_count === "number" ? (r as any).reply_count : 0,
+                imageUrls: sanitizeImageUrls(rawImages),
+              };
+            });
             setPosts(mapped);
           }
         } else {
@@ -623,20 +686,67 @@ const StoreProfilePage: React.FC = () => {
     };
   }, [storeId]);
 
+  // ===== viewer が押している「いいね」状態の復元（uuid会員のみ）=====
+  const postIds = useMemo(() => posts.map((p) => p.id), [posts]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadLikes = async () => {
+      // uuid会員以外は常にfalse扱い（表示だけ）
+      if (!isUuid(authUserId)) {
+        if (!cancelled) setLikes({});
+        return;
+      }
+      if (!postIds.length) {
+        if (!cancelled) setLikes({});
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from("post_likes")
+          .select("post_id")
+          .eq("user_id", authUserId)
+          .in("post_id", postIds);
+
+        if (cancelled) return;
+
+        if (error) {
+          console.error("[StoreProfile] load likes error:", error);
+          setLikes({});
+          return;
+        }
+
+        const map: Record<string, boolean> = {};
+        (data ?? []).forEach((r: any) => {
+          if (r?.post_id) map[String(r.post_id)] = true;
+        });
+        setLikes(map);
+      } catch (e) {
+        if (cancelled) return;
+        console.error("[StoreProfile] load likes unexpected error:", e);
+        setLikes({});
+      }
+    };
+
+    void loadLikes();
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, postIds.join("|")]);
+
   const storeInitial = storeName?.trim()?.charAt(0)?.toUpperCase() || "?";
 
   // ★ 表示に使う店舗アバターは「stores.avatar_url 優先 → owner users.avatar_url」
   const effectiveStoreAvatarUrl = storeAvatarUrl || ownerAvatarUrl || null;
 
-  const toggleLike = (postId: string) => {
-    setLikes((prev) => ({ ...prev, [postId]: !prev[postId] }));
-  };
-
   // ★ Relation UI は uuid会員同士 + 自分以外 のときだけ
   const canShowRelationUi = !isOwner && isUuid(authUserId) && isUuid(storeOwnerUserId);
 
   // ★ DM は uuidログイン済み + 相手uuid + 自分以外 + ブロックしてない ときだけ
-  const canShowDmButton = !isOwner && !relations.blocked && isUuid(authUserId) && isUuid(storeOwnerUserId);
+  const canShowDmButton =
+    !isOwner && !relations.blocked && isUuid(authUserId) && isUuid(storeOwnerUserId);
 
   // counts 表示は「対象がuuidなら表示」（ログイン不要）
   const canShowCounts = isUuid(storeOwnerUserId);
@@ -644,6 +754,101 @@ const StoreProfilePage: React.FC = () => {
   // Link の href（storeOwnerUserId を正として connections を開く）
   const followingHref = canShowCounts ? `/connections/${storeOwnerUserId}?tab=following` : "#";
   const followersHref = canShowCounts ? `/connections/${storeOwnerUserId}?tab=followers` : "#";
+
+  // ==============================
+  // Like toggle（DB: post_likes + posts.like_count）
+  // ==============================
+  const toggleLike = async (postId: string) => {
+    if (likeBusy[postId]) return;
+
+    const viewerId = authUserId && isUuid(authUserId) ? authUserId : null;
+    if (!viewerId) {
+      alert("いいねをするにはログインが必要です。");
+      return;
+    }
+
+    const liked = !!likes[postId];
+    const nextLiked = !liked;
+
+    // 楽観更新（UI体感）
+    setLikeBusy((prev) => ({ ...prev, [postId]: true }));
+    setLikes((prev) => ({ ...prev, [postId]: nextLiked }));
+    setPosts((prev) =>
+      prev.map((p) => {
+        if (p.id !== postId) return p;
+        const next = nextLiked ? p.likeCount + 1 : p.likeCount - 1;
+        return { ...p, likeCount: next < 0 ? 0 : next };
+      })
+    );
+
+    try {
+      if (nextLiked) {
+        const { error: insErr } = await supabase
+          .from("post_likes")
+          .insert([{ post_id: postId, user_id: viewerId }]);
+        if (insErr) throw insErr;
+
+        // like_count を read→write で同期
+        const { data: pRow, error: pErr } = await supabase
+          .from("posts")
+          .select("like_count")
+          .eq("id", postId)
+          .maybeSingle();
+
+        if (pErr) throw pErr;
+
+        const current = typeof (pRow as any)?.like_count === "number" ? (pRow as any).like_count : 0;
+
+        const { error: upErr } = await supabase
+          .from("posts")
+          .update({ like_count: current + 1 })
+          .eq("id", postId);
+
+        if (upErr) throw upErr;
+      } else {
+        const { error: delErr } = await supabase
+          .from("post_likes")
+          .delete()
+          .eq("post_id", postId)
+          .eq("user_id", viewerId);
+        if (delErr) throw delErr;
+
+        const { data: pRow, error: pErr } = await supabase
+          .from("posts")
+          .select("like_count")
+          .eq("id", postId)
+          .maybeSingle();
+
+        if (pErr) throw pErr;
+
+        const current = typeof (pRow as any)?.like_count === "number" ? (pRow as any).like_count : 0;
+
+        const { error: upErr } = await supabase
+          .from("posts")
+          .update({ like_count: Math.max(0, current - 1) })
+          .eq("id", postId);
+
+        if (upErr) throw upErr;
+      }
+    } catch (e) {
+      console.error("[StoreProfile] toggleLike error:", e);
+
+      // 失敗時は巻き戻し
+      setLikes((prev) => ({ ...prev, [postId]: liked }));
+      setPosts((prev) =>
+        prev.map((p) => {
+          if (p.id !== postId) return p;
+          // 直前の楽観更新を元に戻す
+          const next = liked ? p.likeCount + 1 : p.likeCount - 1;
+          return { ...p, likeCount: Math.max(0, next) };
+        })
+      );
+
+      alert("いいねの反映に失敗しました。時間をおいて再度お試しください。");
+    } finally {
+      setLikeBusy((prev) => ({ ...prev, [postId]: false }));
+    }
+  };
 
   return (
     <div className="app-shell">
@@ -823,7 +1028,12 @@ const StoreProfilePage: React.FC = () => {
 
           <div className="store-links">
             {websiteUrl && (
-              <a href={websiteUrl} target="_blank" rel="noopener noreferrer" className="store-link-btn">
+              <a
+                href={websiteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="store-link-btn"
+              >
                 公式サイトを見る
               </a>
             )}
@@ -887,7 +1097,6 @@ const StoreProfilePage: React.FC = () => {
             <div className="feed-list">
               {posts.map((p: StorePost) => {
                 const liked = !!likes[p.id];
-                const likeCount = liked ? 1 : 0;
 
                 return (
                   <article
@@ -931,19 +1140,52 @@ const StoreProfilePage: React.FC = () => {
                           ))}
                         </div>
 
+                        {/* 画像 */}
+                        {p.imageUrls.length > 0 && (
+                          <div className="post-images">
+                            {p.imageUrls.map((url, idx) => (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                key={idx}
+                                src={url}
+                                alt=""
+                                className="post-image"
+                                loading="lazy"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  router.push(`/posts/${p.id}`);
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+
+                        {/* いいね・返信 */}
                         <div className="post-actions">
                           <button
                             type="button"
-                            className={"post-like-btn" + (liked ? " post-like-btn--liked" : "")}
+                            className={"post-action-btn" + (liked ? " post-action-btn--liked" : "")}
+                            disabled={!!likeBusy[p.id]}
                             onClick={(e) => {
                               e.stopPropagation();
-                              toggleLike(p.id);
+                              void toggleLike(p.id);
                             }}
                           >
-                            <span className="post-like-icon">{liked ? "♥" : "♡"}</span>
-                            <span className="post-like-count">{likeCount}</span>
+                            <span className="post-action-icon">{liked ? "♥" : "♡"}</span>
+                            <span className="post-action-count">{p.likeCount}</span>
                           </button>
-                          <span className="post-action-text">コメント</span>
+
+                          <button
+                            type="button"
+                            className="post-action-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              router.push(`/posts/${p.id}`);
+                            }}
+                          >
+                            <span className="post-action-icon">💬</span>
+                            <span className="post-action-count">{p.replyCount}</span>
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -1147,6 +1389,108 @@ const StoreProfilePage: React.FC = () => {
           outline: 2px solid rgba(0, 0, 0, 0.18);
           outline-offset: 2px;
           border-radius: 8px;
+        }
+
+        .feed-item-inner {
+          display: flex;
+          gap: 10px;
+        }
+
+        .feed-main {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .feed-header {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 2px;
+        }
+
+        .feed-name-row {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+
+        .post-name {
+          font-weight: 600;
+          font-size: 13px;
+        }
+
+        .post-username {
+          font-size: 11px;
+          color: var(--text-sub, #777777);
+        }
+
+        .post-meta {
+          font-size: 11px;
+          color: var(--text-sub, #777777);
+          margin-top: 2px;
+        }
+
+        .post-body {
+          font-size: 13px;
+          line-height: 1.7;
+          margin-top: 4px;
+          margin-bottom: 4px;
+        }
+
+        .post-images {
+          margin-top: 8px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .post-image {
+          width: 100%;
+          height: auto;
+          border-radius: 14px;
+          border: 1px solid rgba(0, 0, 0, 0.06);
+          background: rgba(0, 0, 0, 0.02);
+        }
+
+        .post-actions {
+          margin-top: 8px;
+          display: flex;
+          gap: 10px;
+          align-items: center;
+        }
+
+        .post-action-btn {
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          background: rgba(255, 255, 255, 0.9);
+          border-radius: 999px;
+          padding: 6px 10px;
+          font-size: 12px;
+          display: inline-flex;
+          gap: 6px;
+          align-items: center;
+          cursor: pointer;
+          color: var(--text-main);
+        }
+
+        .post-action-btn:disabled {
+          opacity: 0.6;
+          cursor: default;
+        }
+
+        .post-action-btn--liked {
+          border-color: rgba(215, 185, 118, 0.55);
+          background: rgba(215, 185, 118, 0.12);
+        }
+
+        .post-action-icon {
+          font-size: 13px;
+          line-height: 1;
+        }
+
+        .post-action-count {
+          font-size: 12px;
+          color: var(--text-sub);
         }
 
         :global(.no-link-style) {
