@@ -13,22 +13,18 @@ import type { UserId } from "@/types/user";
 import type { DbRelationRow } from "@/types/db";
 import { getCurrentUserId, ensureViewerId } from "@/lib/auth";
 import { toPublicHandleFromUserId } from "@/lib/handle";
+import { resolvePostImageUrl } from "@/lib/postImageStorage";
 
 type AuthorKind = "therapist" | "store" | "user";
+type Visibility = "public" | "followers" | "private";
 
 type Post = {
   id: string;
 
-  /**
-   * relations（mute/block）に合わせて users.id（uuid）へ正規化したID
-   * therapist/store 投稿でも canonical user id を入れる
-   */
-  authorId: string;
-
+  authorId: string; // canonical users.id
   authorName: string;
   authorKind: AuthorKind;
 
-  /** 表示用のURL（http or public url） */
   avatarUrl?: string | null;
 
   body: string;
@@ -39,18 +35,26 @@ type Post = {
 
   replyCount: number;
 
-  /** プロフィール遷移先（therapist/storeは role id 優先） */
   profilePath: string | null;
+
+  // new
+  imageUrls?: string[] | null;
+  visibility?: Visibility | null;
+  parentPostId?: string | null;
 };
 
 type DbPostRow = {
   id: string;
-  author_id: string | null; // users.id or therapists.id or stores.id の可能性あり
+  author_id: string | null;
   author_kind: "therapist" | "store" | "user" | null;
   body: string | null;
   created_at: string;
   like_count: number | null;
   reply_count: number | null;
+
+  image_urls?: string[] | null;
+  visibility?: string | null;
+  parent_post_id?: string | null;
 };
 
 type DbUserRow = {
@@ -61,15 +65,15 @@ type DbUserRow = {
 };
 
 type DbTherapistLite = {
-  id: string; // therapists.id
-  user_id: string | null; // users.id
+  id: string;
+  user_id: string | null;
   display_name?: string | null;
   avatar_url?: string | null;
 };
 
 type DbStoreLite = {
-  id: string; // stores.id
-  owner_user_id: string | null; // users.id
+  id: string;
+  owner_user_id: string | null;
   name?: string | null;
   avatar_url?: string | null;
 };
@@ -93,11 +97,6 @@ const renderGoldBadge = (kind: AuthorKind) => {
   return null;
 };
 
-/**
- * handle生成：canonical users.id(uuid) から一律 @xxxxxx（先頭6桁）
- * - role prefix（store_/therapist_/user_）は廃止
- * - role はバッジで判別
- */
 function getHandle(_kind: AuthorKind, authorId: unknown): string | null {
   const s = typeof authorId === "string" ? authorId.trim() : "";
   return toPublicHandleFromUserId(s);
@@ -118,14 +117,8 @@ function isProbablyHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
 
-/**
- * ★ avatars bucket
- */
 const AVATAR_BUCKET = "avatars";
 
-/**
- * URLとして使う前に「それっぽいゴミ」を弾く
- */
 function looksValidAvatarUrl(v: string | null | undefined): boolean {
   const s = (v ?? "").trim();
   if (!s) return false;
@@ -137,11 +130,6 @@ function looksValidAvatarUrl(v: string | null | undefined): boolean {
   return true;
 }
 
-/**
- * avatar_url が
- * - https://... ならそのまま
- * - それ以外（storage path）なら public URL に変換
- */
 function resolveAvatarUrl(raw: string | null | undefined): string | null {
   const v = normalizeAvatarUrl(raw);
   if (!v) return null;
@@ -155,13 +143,16 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   return data?.publicUrl ?? null;
 }
 
+function normalizeVisibility(v: any): Visibility | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (!s) return null;
+  if (s === "public" || s === "followers" || s === "private") return s;
+  return null;
+}
+
 export default function LoomRoomHome() {
   const router = useRouter();
 
-  /**
-   * currentUserId = 画面識別用（guest-xxxx or uuid）
-   * viewerUuid    = DB操作用（uuidのみ / 未ログインは null）
-   */
   const [currentUserId, setCurrentUserId] = useState<UserId>("");
   const [viewerUuid, setViewerUuid] = useState<UserId | null>(null);
 
@@ -173,24 +164,21 @@ export default function LoomRoomHome() {
   const [kindFilter, setKindFilter] = useState<AuthorKind | "all">("all");
   const [openPostMenuId, setOpenPostMenuId] = useState<string | null>(null);
 
-  // 1) 画面IDは常に（ゲストでも）確定
   useEffect(() => {
     setCurrentUserId(getCurrentUserId());
   }, []);
 
-  // 2) DB操作用 uuid を確定（未ログインなら null）
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const uid = await ensureViewerId(); // uuid or null
+        const uid = await ensureViewerId();
         if (cancelled) return;
         setViewerUuid(uid);
       } catch (e: any) {
         console.error("[home.ensureViewerId] error:", e);
         if (cancelled) return;
-        // DB操作の初期化失敗は致命ではないので、TLは動かす
         setViewerUuid(null);
       }
     })();
@@ -200,7 +188,6 @@ export default function LoomRoomHome() {
     };
   }, []);
 
-  // 3) relations は uuid のときだけ取得
   useEffect(() => {
     if (!viewerUuid || !isUuid(viewerUuid)) {
       setRelations([]);
@@ -226,7 +213,6 @@ export default function LoomRoomHome() {
     };
   }, [viewerUuid]);
 
-  // 4) タイムラインは「誰でも」取得（viewerUuid は likes 取得にだけ使う）
   useEffect(() => {
     let cancelled = false;
 
@@ -238,7 +224,7 @@ export default function LoomRoomHome() {
         const { data: postData, error: postError } = await supabase
           .from("posts")
           .select(
-            "id, author_id, author_kind, body, created_at, like_count, reply_count"
+            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_urls, visibility, parent_post_id"
           )
           .order("created_at", { ascending: false })
           .limit(100);
@@ -252,14 +238,23 @@ export default function LoomRoomHome() {
           return;
         }
 
-        const rows = (postData ?? []) as DbPostRow[];
-        if (!rows.length) {
+        const rowsAll = (postData ?? []) as DbPostRow[];
+
+        // (A) 返信はTLに出さない（壊さない）
+        const rows = rowsAll.filter((r) => !r.parent_post_id);
+
+        // (B) 公開範囲はまず public のみ（NULLはpublic扱い）
+        const rowsVisible = rows.filter((r) => {
+          const vis = normalizeVisibility(r.visibility);
+          return !vis || vis === "public";
+        });
+
+        if (!rowsVisible.length) {
           setPosts([]);
           return;
         }
 
-        // ★ author_id は uuid とは限らない（therapists/stores id の場合あり）
-        const rowsWithAuthor = rows.filter((r) => !!r.author_id);
+        const rowsWithAuthor = rowsVisible.filter((r) => !!r.author_id);
         if (!rowsWithAuthor.length) {
           setPosts([]);
           return;
@@ -278,7 +273,6 @@ export default function LoomRoomHome() {
         const storeByOwnerId = new Map<string, DbStoreLite>();
         const storeById = new Map<string, DbStoreLite>();
 
-        // therapists / stores を「user_id / owner_user_id と id」両方で引けるようにする
         if (authorIds.length) {
           const { data: therByUserData, error: therByUserError } = await supabase
             .from("therapists")
@@ -286,10 +280,7 @@ export default function LoomRoomHome() {
             .in("user_id", authorIds);
 
           if (therByUserError) {
-            console.error(
-              "Supabase therapists(user_id) error:",
-              therByUserError
-            );
+            console.error("Supabase therapists(user_id) error:", therByUserError);
           } else {
             (therByUserData ?? []).forEach((t: any) => {
               const r = t as DbTherapistLite;
@@ -320,10 +311,7 @@ export default function LoomRoomHome() {
               .in("owner_user_id", authorIds);
 
           if (storeByOwnerError) {
-            console.error(
-              "Supabase stores(owner_user_id) error:",
-              storeByOwnerError
-            );
+            console.error("Supabase stores(owner_user_id) error:", storeByOwnerError);
           } else {
             (storeByOwnerData ?? []).forEach((s: any) => {
               const r = s as DbStoreLite;
@@ -348,7 +336,6 @@ export default function LoomRoomHome() {
           }
         }
 
-        // users は uuid だけ fetch
         const resolvedUserIds = new Set<string>();
         authorIds.forEach((id) => {
           if (isUuid(id)) resolvedUserIds.add(id);
@@ -357,8 +344,7 @@ export default function LoomRoomHome() {
           if (t.user_id && isUuid(t.user_id)) resolvedUserIds.add(t.user_id);
         });
         storeById.forEach((s) => {
-          if (s.owner_user_id && isUuid(s.owner_user_id))
-            resolvedUserIds.add(s.owner_user_id);
+          if (s.owner_user_id && isUuid(s.owner_user_id)) resolvedUserIds.add(s.owner_user_id);
         });
 
         const userMap = new Map<string, DbUserRow>();
@@ -376,7 +362,6 @@ export default function LoomRoomHome() {
           }
         }
 
-        // likes は viewerUuid があるときだけ取得（未ログインは全部 false）
         let likedIdSet = new Set<string>();
         if (viewerUuid && isUuid(viewerUuid)) {
           const { data: likeData, error: likeError } = await supabase
@@ -408,19 +393,14 @@ export default function LoomRoomHome() {
 
           const therapist =
             inferredKind === "therapist"
-              ? therapistById.get(rawAuthorId) ??
-                therapistByUserId.get(rawAuthorId) ??
-                null
+              ? therapistById.get(rawAuthorId) ?? therapistByUserId.get(rawAuthorId) ?? null
               : null;
 
           const store =
             inferredKind === "store"
-              ? storeById.get(rawAuthorId) ??
-                storeByOwnerId.get(rawAuthorId) ??
-                null
+              ? storeById.get(rawAuthorId) ?? storeByOwnerId.get(rawAuthorId) ?? null
               : null;
 
-          // canonical user id（mute/block判定に使う）
           let canonicalUserId = rawAuthorId;
           if (inferredKind === "therapist") {
             if (therapist?.user_id) canonicalUserId = therapist.user_id;
@@ -428,8 +408,7 @@ export default function LoomRoomHome() {
             if (store?.owner_user_id) canonicalUserId = store.owner_user_id;
           }
 
-          const user =
-            isUuid(canonicalUserId) ? userMap.get(canonicalUserId) ?? null : null;
+          const user = isUuid(canonicalUserId) ? userMap.get(canonicalUserId) ?? null : null;
 
           const likeCount = row.like_count ?? 0;
           const liked = likedIdSet.has(row.id);
@@ -478,12 +457,8 @@ export default function LoomRoomHome() {
 
           const userRaw = user?.avatar_url ?? null;
 
-          const roleAvatar = looksValidAvatarUrl(roleRaw)
-            ? resolveAvatarUrl(roleRaw)
-            : null;
-          const userAvatar = looksValidAvatarUrl(userRaw)
-            ? resolveAvatarUrl(userRaw)
-            : null;
+          const roleAvatar = looksValidAvatarUrl(roleRaw) ? resolveAvatarUrl(roleRaw) : null;
+          const userAvatar = looksValidAvatarUrl(userRaw) ? resolveAvatarUrl(userRaw) : null;
 
           return {
             id: row.id,
@@ -497,6 +472,10 @@ export default function LoomRoomHome() {
             liked,
             replyCount: row.reply_count ?? 0,
             profilePath,
+
+            imageUrls: row.image_urls ?? null,
+            visibility: normalizeVisibility(row.visibility),
+            parentPostId: row.parent_post_id ?? null,
           };
         });
 
@@ -517,7 +496,7 @@ export default function LoomRoomHome() {
     return () => {
       cancelled = true;
     };
-  }, [viewerUuid]); // viewerUuid が入ったら liked を反映し直すため再取得
+  }, [viewerUuid]);
 
   const handleToggleLike = async (post: Post) => {
     if (!viewerUuid || !isUuid(viewerUuid)) return;
@@ -528,11 +507,7 @@ export default function LoomRoomHome() {
     setPosts((prev) =>
       prev.map((p) =>
         p.id === post.id
-          ? {
-              ...p,
-              liked: !previousLiked,
-              likeCount: previousCount + (!previousLiked ? 1 : -1),
-            }
+          ? { ...p, liked: !previousLiked, likeCount: previousCount + (!previousLiked ? 1 : -1) }
           : p
       )
     );
@@ -568,9 +543,7 @@ export default function LoomRoomHome() {
 
       setPosts((prev) =>
         prev.map((p) =>
-          p.id === post.id
-            ? { ...p, liked: previousLiked, likeCount: previousCount }
-            : p
+          p.id === post.id ? { ...p, liked: previousLiked, likeCount: previousCount } : p
         )
       );
 
@@ -647,9 +620,7 @@ export default function LoomRoomHome() {
               value={kindFilter}
               onChange={(e) =>
                 setKindFilter(
-                  e.target.value === "all"
-                    ? "all"
-                    : (e.target.value as AuthorKind)
+                  e.target.value === "all" ? "all" : (e.target.value as AuthorKind)
                 )
               }
             >
@@ -669,9 +640,7 @@ export default function LoomRoomHome() {
           )}
 
           {loading && !error && (
-            <div className="feed-message feed-loading">
-              タイムラインを読み込んでいます…
-            </div>
+            <div className="feed-message feed-loading">タイムラインを読み込んでいます…</div>
           )}
 
           {!loading && !error && filteredPosts.length === 0 && (
@@ -681,6 +650,12 @@ export default function LoomRoomHome() {
           {filteredPosts.map((post) => {
             const handle = getHandle(post.authorKind, post.authorId);
             const profileClickable = !!post.profilePath;
+
+            // 画像（publicUrl化）
+            const resolvedImages =
+              (post.imageUrls ?? [])
+                .map((raw) => resolvePostImageUrl(raw))
+                .filter((u): u is string => !!u) ?? [];
 
             return (
               <article
@@ -738,11 +713,17 @@ export default function LoomRoomHome() {
 
                     <div className="post-body">
                       {post.body.split("\n").map((line, idx) => (
-                        <p key={idx}>
-                          {line || <span style={{ opacity: 0.3 }}>　</span>}
-                        </p>
+                        <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
                       ))}
                     </div>
+
+                    {resolvedImages.length > 0 && (
+                      <div className="post-images">
+                        {resolvedImages.map((src, idx) => (
+                          <img key={idx} src={src} alt={`post image ${idx + 1}`} />
+                        ))}
+                      </div>
+                    )}
 
                     <div className="post-footer">
                       <button
@@ -763,9 +744,7 @@ export default function LoomRoomHome() {
                         className="post-reply-btn"
                         onClick={(e) => {
                           e.stopPropagation();
-                          alert(
-                            "返信機能はこれから実装予定です（現在はテスト用です）。"
-                          );
+                          router.push(`/posts/${post.id}`);
                         }}
                       >
                         <span className="post-reply-icon">💬</span>
@@ -778,9 +757,7 @@ export default function LoomRoomHome() {
                           className="post-more-btn"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setOpenPostMenuId(
-                              openPostMenuId === post.id ? null : post.id
-                            );
+                            setOpenPostMenuId(openPostMenuId === post.id ? null : post.id);
                           }}
                         >
                           ⋯
@@ -805,10 +782,7 @@ export default function LoomRoomHome() {
                     </div>
 
                     {!viewerReady && (
-                      <div
-                        className="feed-message"
-                        style={{ padding: "6px 0 0", fontSize: 11 }}
-                      >
+                      <div className="feed-message" style={{ padding: "6px 0 0", fontSize: 11 }}>
                         いいね・通報はログイン後に利用できます。
                       </div>
                     )}
@@ -924,6 +898,31 @@ export default function LoomRoomHome() {
           margin-top: 2px;
         }
 
+        .post-body {
+          font-size: 13px;
+          line-height: 1.7;
+          margin-top: 4px;
+          margin-bottom: 4px;
+        }
+
+        .post-images {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+          margin-top: 8px;
+          margin-bottom: 6px;
+        }
+
+        .post-images img {
+          width: 100%;
+          height: 150px;
+          object-fit: cover;
+          border-radius: 12px;
+          border: 1px solid rgba(0, 0, 0, 0.06);
+          background: #fafafa;
+          display: block;
+        }
+
         .post-footer {
           display: flex;
           align-items: center;
@@ -982,13 +981,6 @@ export default function LoomRoomHome() {
 
         .post-report-btn:hover {
           background: rgba(176, 0, 32, 0.06);
-        }
-
-        .post-body {
-          font-size: 13px;
-          line-height: 1.7;
-          margin-top: 4px;
-          margin-bottom: 4px;
         }
 
         .feed-message {
