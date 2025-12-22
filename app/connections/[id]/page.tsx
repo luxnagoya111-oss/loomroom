@@ -485,47 +485,43 @@ const ConnectionsPage: React.FC = () => {
     }, 80);
   }, [router, isValidTarget, targetUserId]);
 
-  useEffect(() => {
+  const handlePagerScroll = useCallback(() => {
     const el = pagerRef.current;
     if (!el) return;
 
-    const onScroll = () => {
-      if (tickingRef.current) return;
-      tickingRef.current = true;
+    if (tickingRef.current) return;
+    tickingRef.current = true;
 
-      requestAnimationFrame(() => {
-        tickingRef.current = false;
+    requestAnimationFrame(() => {
+      tickingRef.current = false;
 
-        const width = vpWRef.current || 1;
-        const raw = el.scrollLeft / width;
-        const p = Math.max(0, Math.min(1, raw));
+      // ResizeObserver が効かない環境でもズレない保険
+      const width = el.clientWidth || vpWRef.current || 1;
+      vpWRef.current = width;
 
-        // ★ インジケータは常に scroll に追従
-        setProgress(p);
+      const p = Math.max(0, Math.min(1, el.scrollLeft / width));
 
-        // snap確定後の最終位置も拾う（followers→following遅れ対策）
-        finalizeAfterSnap();
+      // ★ 指の動きに追従（バーが動く本体）
+      setProgress(p);
 
-        if (isSyncingRef.current) return;
+      // ★ snap確定後の最終位置も拾う
+      finalizeAfterSnap();
 
-        const next: TabKey = p >= 0.5 ? "followers" : "following";
-        if (activeTabRef.current !== next) {
-          activeTabRef.current = next;
-          setActiveTab(next);
+      // ★ snap中はURL更新しない
+      if (isSyncingRef.current) return;
 
-          if (isValidTarget && targetUserId) {
-            router.replace(`/connections/${targetUserId}?tab=${next}`);
-          }
+      const next: TabKey = p >= 0.5 ? "followers" : "following";
+      if (activeTabRef.current !== next) {
+        activeTabRef.current = next;
+        setActiveTab(next);
+
+        if (isValidTarget && targetUserId) {
+          router.replace(`/connections/${targetUserId}?tab=${next}`);
         }
-      });
-    };
+      }
+    });
+  }, [finalizeAfterSnap, router, isValidTarget, targetUserId]);
 
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      el.removeEventListener("scroll", onScroll as any);
-      if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
-    };
-  }, [router, isValidTarget, targetUserId, finalizeAfterSnap]);
 
   // ------------------------------
   // tab click
@@ -909,7 +905,7 @@ const ConnectionsPage: React.FC = () => {
           </div>
         )}
 
-        <div className="pager" ref={pagerRef}>
+        <div className="pager" ref={pagerRef} onScroll={handlePagerScroll}>
           <section className="page">
             {loadingFollowing ? (
               <div className="empty">読み込んでいます…</div>
