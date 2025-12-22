@@ -87,9 +87,12 @@ type DbUserRow = {
   role: "user" | "therapist" | "store" | null;
   avatar_url: string | null;
 
-  // ★ consoleで保存済み
   area: string | null;
   description: string | null;
+
+  // ★ consoleで保存する前提のSNS
+  sns_x?: string | null;
+  sns_other?: string | null;
 };
 
 // therapists（補完用）
@@ -325,7 +328,7 @@ const PublicMyPage: React.FC = () => {
         // --- 2) uuid会員ページ：users を正として取得 ---
         const { data: user, error: userError } = await supabase
           .from("users")
-          .select("id, name, role, avatar_url, area, description")
+          .select("id, name, role, avatar_url, area, description, sns_x, sns_other")
           .eq("id", userId)
           .maybeSingle<DbUserRow>();
 
@@ -346,7 +349,7 @@ const PublicMyPage: React.FC = () => {
         // users正：ここで完成形を作る（不足は後で補完）
         let baseProfile: UserProfile = {
           ...DEFAULT_PROFILE,
-          handle: toDisplayHandleFromPageId(userId), // ★ @xxxxxx
+          handle: toDisplayHandleFromPageId(userId),
           displayName:
             (user.name && user.name.trim().length > 0
               ? user.name
@@ -363,7 +366,13 @@ const PublicMyPage: React.FC = () => {
             user.description && user.description.trim().length > 0
               ? user.description
               : DEFAULT_PROFILE.intro,
+
+          // ★ ここが無いと表示されない
+          snsX: normalizeFreeText((user as any).sns_x),
+          snsOther: normalizeFreeText((user as any).sns_other),
+          // snsLine は現状 users に無い前提なら触らない（将来追加でOK）
         };
+
 
         // --- 3) 補助：therapists / stores は不足時のみ補完 ---
         // 補完対象：displayName / area / intro（= description 相当）

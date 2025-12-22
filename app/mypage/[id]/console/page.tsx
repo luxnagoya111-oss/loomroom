@@ -1,4 +1,3 @@
-// app/mypage/[id]/console/page.tsx
 "use client";
 
 import React, { useState, useEffect, ChangeEvent } from "react";
@@ -7,7 +6,6 @@ import AvatarUploader from "@/components/AvatarUploader";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import { supabase } from "@/lib/supabaseClient";
-import { uploadAvatar } from "@/lib/avatarStorage";
 
 type AccountType = "ゲスト" | "会員";
 
@@ -42,10 +40,11 @@ type DbUserRow = {
   id: string;
   name: string | null;
   avatar_url: string | null;
-  sns_x: string | null;
-  sns_other: string | null;
 
-  // ★ 追加カラム
+  // users 側に追加した想定（無いならSQLが必要）
+  sns_x?: string | null;
+  sns_other?: string | null;
+
   area: string | null;
   description: string | null;
 };
@@ -61,14 +60,12 @@ const MyPageConsole: React.FC = () => {
   const STORAGE_KEY = `${STORAGE_PREFIX}${userId}`;
 
   const [nickname, setNickname] = useState<string>("あなた");
-  const [area, setArea] = useState<string>(""); // ★自由入力
-  const [intro, setIntro] = useState<string>(""); // ★UI上の intro は users.description に保存
+  const [area, setArea] = useState<string>("");
+  const [intro, setIntro] = useState<string>("");
 
-  // SNS系リンク
   const [snsX, setSnsX] = useState<string>("");
   const [snsOther, setSnsOther] = useState<string>("");
 
-  // 通知設定
   const [notifyFavPosts, setNotifyFavPosts] = useState<boolean>(true);
   const [notifyDm, setNotifyDm] = useState<boolean>(true);
   const [notifyNews, setNotifyNews] = useState<boolean>(false);
@@ -125,11 +122,19 @@ const MyPageConsole: React.FC = () => {
 
     const loadUser = async () => {
       try {
+        // セキュリティ：自分以外のURL(id)で開かれた場合はDB同期しない
+        const { data: userRes } = await supabase.auth.getUser();
+        const uid = userRes.user?.id;
+        if (!uid || uid !== userId) {
+          // ローカルだけで表示は続行する（ただしDBからは読まない）
+          return;
+        }
+
         const { data, error } = await supabase
           .from("users")
           .select("id, name, avatar_url, area, description, sns_x, sns_other")
           .eq("id", userId)
-          .maybeSingle<DbUserRow & { sns_x?: string | null; sns_other?: string | null }>();
+          .maybeSingle<DbUserRow>();
 
         if (cancelled) return;
 
@@ -147,7 +152,6 @@ const MyPageConsole: React.FC = () => {
           setAvatarDataUrl(data.avatar_url);
         }
 
-        // ★ DB優先で反映（空文字も許容）
         if (typeof data.area === "string") {
           setArea(data.area);
         }
@@ -156,7 +160,6 @@ const MyPageConsole: React.FC = () => {
           setIntro(data.description);
         }
 
-        // ★ SNS（ここが今まで抜けていた復元処理）
         if (typeof data.sns_x === "string") {
           setSnsX(data.sns_x);
         }
@@ -212,7 +215,13 @@ const MyPageConsole: React.FC = () => {
       if (!uid) {
         throw new Error("ログイン状態が切れています。ログインし直してください。");
       }
+      if (uid !== userId) {
+        throw new Error("このページのIDとログインユーザーが一致しません。");
+      }
 
+      // 既存の AvatarUploader/Storage 実装に合わせてください（uploadAvatar関数がある場合はそれを呼ぶ）
+      // ここはプロジェクト側の実装に依存するため、既存の uploadAvatar / avatarStorage.ts を使う前提で残します。
+      const { uploadAvatar } = await import("@/lib/avatarStorage");
       const publicUrl = await uploadAvatar(file, uid);
 
       const { error } = await supabase.from("users").update({ avatar_url: publicUrl }).eq("id", userId);
@@ -233,7 +242,7 @@ const MyPageConsole: React.FC = () => {
     }
   };
 
-  // 保存処理：localStorage ＋ 会員なら users（name/area/description）を保存
+  // 保存処理：localStorage ＋ 会員なら users（name/area/description/sns）を保存
   const handleSave = async () => {
     if (typeof window === "undefined") return;
 
@@ -264,14 +273,28 @@ const MyPageConsole: React.FC = () => {
       try {
         setSaving(true);
 
-        const { error } = await supabase
-          .from("users")
-          .update({
-            name: nickname?.trim() ? nickname.trim() : null,
-            area: area?.trim() ? area.trim() : null,
-            description: intro?.trim() ? intro.trim() : null,
-          })
-          .eq("id", userId);
+        const { data: userRes } = await supabase.auth.getUser();
+        const uid = userRes.user?.id;
+        if (!uid) {
+          alert("ログイン状態が切れています。ログインし直してください。");
+          return;
+        }
+        if (uid !== userId) {
+          alert("このページのIDとログインユーザーが一致しません。");
+          return;
+        }
+
+        const updatePayload: any = {
+          name: nickname?.trim() ? nickname.trim() : null,
+          area: area?.trim() ? area.trim() : null,
+          description: intro?.trim() ? intro.trim() : null,
+
+          // ★ これが抜けてたので追加
+          sns_x: snsX?.trim() ? snsX.trim() : null,
+          sns_other: snsOther?.trim() ? snsOther.trim() : null,
+        };
+
+        const { error } = await supabase.from("users").update(updatePayload).eq("id", userId);
 
         if (error) {
           console.error("[MyPageConsole] failed to update users:", error);
@@ -315,7 +338,7 @@ const MyPageConsole: React.FC = () => {
 
   return (
     <div className="app-root">
-      <AppHeader title="マイページ設定"/>
+      <AppHeader title="マイページ設定" />
 
       <main className="app-main">
         {/* 表示情報 */}
