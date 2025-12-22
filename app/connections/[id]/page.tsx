@@ -32,12 +32,7 @@ type TabKey = "following" | "followers";
 
 function normalizeTab(v: string | null): TabKey {
   const s = (v ?? "").toLowerCase().trim();
-  if (
-    s === "following" ||
-    s === "followings" ||
-    s === "follows" ||
-    s === "follow"
-  )
+  if (s === "following" || s === "followings" || s === "follows" || s === "follow")
     return "following";
   return "followers";
 }
@@ -129,6 +124,7 @@ function roleLabel(role: ConnectionUser["role"]) {
   if (role === "therapist") return "セラピスト";
   return "ユーザー";
 }
+
 function buildHandle(userId: string): string {
   return toPublicHandleFromUserId(userId) ?? "@user";
 }
@@ -301,7 +297,7 @@ function ConnectionRow(props: {
 }
 
 // ==============================
-// Page
+// Page (scroll pager)
 // ==============================
 const ConnectionsPage: React.FC = () => {
   const router = useRouter();
@@ -320,43 +316,14 @@ const ConnectionsPage: React.FC = () => {
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
-  // tab/progress
+  // tab + indicator progress
   const [activeTab, setActiveTab] = useState<TabKey>("following");
   const [progress, setProgress] = useState(0); // 0..1
-  const progressRef = useRef(0);
 
-  // drag UI
-  const [isDragging, setIsDragging] = useState(false);
-
-  // viewport width
+  // pager refs
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  const [vpW, setVpW] = useState(1);
-
-  // drag state
-  const dragRef = useRef<{
-    dragging: boolean;
-    horizontal: boolean;
-    startX: number;
-    startY: number;
-    startProgress: number;
-    pointerId: number | null;
-
-    // velocity
-    lastX: number;
-    lastT: number;
-    velocityX: number; // px/ms (右+)
-  }>({
-    dragging: false,
-    horizontal: false,
-    startX: 0,
-    startY: 0,
-    startProgress: 0,
-    pointerId: null,
-
-    lastX: 0,
-    lastT: 0,
-    velocityX: 0,
-  });
+  const vpWRef = useRef(1);
+  const rafRef = useRef<number | null>(null);
 
   // data
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
@@ -395,7 +362,10 @@ const ConnectionsPage: React.FC = () => {
     const el = viewportRef.current;
     if (!el) return;
 
-    const update = () => setVpW(el.clientWidth || 1);
+    const update = () => {
+      const w = el.clientWidth || 1;
+      vpWRef.current = w;
+    };
     update();
 
     const ro = new ResizeObserver(() => update());
@@ -404,7 +374,7 @@ const ConnectionsPage: React.FC = () => {
   }, []);
 
   // ------------------------------
-  // URL 正規化 + URL -> state (一本化)
+  // URL -> tab (初期位置を scroll で反映)
   // ------------------------------
   useEffect(() => {
     if (!isValidTarget || !targetUserId) return;
@@ -419,156 +389,81 @@ const ConnectionsPage: React.FC = () => {
       return;
     }
 
-    // ここで state を確定（URLが正）
     setActiveTab(normalized);
-    const p = normalized === "following" ? 0 : 1;
-    setProgress(p);
-    progressRef.current = p;
+
+    // 初期位置をスクロールに反映（瞬間移動）
+    const el = viewportRef.current;
+    if (el) {
+      const w = el.clientWidth || 1;
+      const left = normalized === "followers" ? w : 0;
+      el.scrollLeft = left;
+      setProgress(normalized === "followers" ? 1 : 0);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, isValidTarget, targetUserId]);
 
   const goTab = useCallback(
     (tab: TabKey) => {
       if (!isValidTarget || !targetUserId) return;
+      const el = viewportRef.current;
+      const w = vpWRef.current || 1;
+      const left = tab === "followers" ? w : 0;
+
       setActiveTab(tab);
-      const p = tab === "following" ? 0 : 1;
-      setProgress(p);
-      progressRef.current = p;
+      setProgress(tab === "followers" ? 1 : 0);
+
+      if (el) {
+        el.scrollTo({ left, behavior: "smooth" });
+      }
       router.replace(`/connections/${targetUserId}?tab=${tab}`);
     },
     [router, isValidTarget, targetUserId]
   );
 
   // ------------------------------
-  // gesture: 指追従 -> 離したら閾値で確定
+  // scroll -> indicator/progress (指追従)
   // ------------------------------
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    const st = dragRef.current;
-    st.dragging = true;
-    st.horizontal = false;
-    st.startX = e.clientX;
-    st.startY = e.clientY;
-    st.startProgress = progressRef.current;
-    st.pointerId = e.pointerId;
+  const onScroll = useCallback(() => {
+    const el = viewportRef.current;
+    if (!el) return;
 
-    st.lastX = e.clientX;
-    st.lastT = performance.now();
-    st.velocityX = 0;
-
-    // まだドラッグ確定前なので isDragging は立てない（縦優先判定のため）
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      const w = vpWRef.current || 1;
+      const p = Math.max(0, Math.min(1, el.scrollLeft / w));
+      setProgress(p);
+    });
   }, []);
 
-  const onPointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      const st = dragRef.current;
-      if (!st.dragging) return;
+  // ------------------------------
+  // scroll end -> snap後に tab 確定 & URL 更新（ガタつき防止）
+  // ------------------------------
+  const snapTimerRef = useRef<any>(null);
 
-      const dx = e.clientX - st.startX;
-      const dy = e.clientY - st.startY;
+  const onScrollEndHeuristic = useCallback(() => {
+    // scroll-snap は “end event” がないので、停止をタイマーで推定
+    if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
 
-      // 横確定の閾値（これ未満は“タッチのブレ”として扱う）
-      const DECIDE = 10;
+    snapTimerRef.current = setTimeout(() => {
+      const el = viewportRef.current;
+      if (!el || !isValidTarget || !targetUserId) return;
 
-      if (!st.horizontal) {
-        if (Math.abs(dx) < DECIDE && Math.abs(dy) < DECIDE) return;
+      const w = vpWRef.current || 1;
+      const p = el.scrollLeft / w;
 
-        // 縦が勝つならスクロールに任せる
-        if (Math.abs(dy) > Math.abs(dx)) {
-          st.dragging = false;
-          st.pointerId = null;
-          return;
-        }
-
-        // ここで横ドラッグ確定
-        st.horizontal = true;
-        setIsDragging(true);
-
-        // capture（横確定してから取るのが安全）
-        (e.currentTarget as any).setPointerCapture?.(e.pointerId);
-      }
-
-      // 横ドラッグ中：指に追従させるので preventDefault
-      e.preventDefault();
-
-      // velocity 更新（簡易）
-      const now = performance.now();
-      const dt = Math.max(1, now - st.lastT);
-      const vx = (e.clientX - st.lastX) / dt; // px/ms
-      st.velocityX = vx;
-      st.lastX = e.clientX;
-      st.lastT = now;
-
-      // dx右 = followers方向へ進めたい → progressを増やす
-      const next = Math.max(
-        0,
-        Math.min(1, st.startProgress + dx / (vpW || 1))
-      );
-      setProgress(next);
-      progressRef.current = next;
-    },
-    [vpW]
-  );
-
-  const settleTo = useCallback(
-    (tab: TabKey) => {
+      const tab: TabKey = p >= 0.5 ? "followers" : "following";
       setActiveTab(tab);
-      const p = tab === "following" ? 0 : 1;
-      setProgress(p);
-      progressRef.current = p;
+      setProgress(tab === "followers" ? 1 : 0);
 
-      if (isValidTarget && targetUserId) {
-        router.replace(`/connections/${targetUserId}?tab=${tab}`);
-      }
-    },
-    [router, isValidTarget, targetUserId]
-  );
-
-  const endGesture = useCallback(() => {
-    const st = dragRef.current;
-
-    if (!st.horizontal) {
-      st.dragging = false;
-      st.pointerId = null;
-      return;
-    }
-
-    // 距離閾値（“一定値超えたら切替”）
-    const dx = st.lastX - st.startX;
-    const distRatio = Math.abs(dx) / (vpW || 1);
-
-    const DIST_THRESHOLD = 0.3; // 30%
-    const FLICK_VELOCITY = 0.75; // px/ms（速いフリックで切替）
-
-    let nextTab: TabKey = activeTab;
-
-    // 速度 or 距離 で確定
-    if (Math.abs(st.velocityX) > FLICK_VELOCITY) {
-      nextTab = st.velocityX > 0 ? "followers" : "following";
-    } else if (distRatio >= DIST_THRESHOLD) {
-      nextTab = dx > 0 ? "followers" : "following";
-    } else {
-      // 閾値未満は元のタブへ戻す
-      nextTab = activeTab;
-    }
-
-    settleTo(nextTab);
-
-    st.dragging = false;
-    st.pointerId = null;
-    st.horizontal = false;
-    setIsDragging(false);
-  }, [activeTab, vpW, settleTo]);
-
-  const onPointerUp = useCallback(() => endGesture(), [endGesture]);
-  const onPointerCancel = useCallback(() => endGesture(), [endGesture]);
+      // ここでURL確定（指で中途半端に動かした途中では更新しない）
+      router.replace(`/connections/${targetUserId}?tab=${tab}`);
+    }, 120);
+  }, [router, isValidTarget, targetUserId]);
 
   // ------------------------------
   // DB hydrate
   // ------------------------------
-  async function hydrateUsers(
-    idsInOrder: string[],
-    viewerId: string
-  ): Promise<ConnectionUser[]> {
+  async function hydrateUsers(idsInOrder: string[], viewerId: string): Promise<ConnectionUser[]> {
     const ids = idsInOrder.filter((id) => id !== viewerId);
     if (ids.length === 0) return [];
 
@@ -601,9 +496,7 @@ const ConnectionsPage: React.FC = () => {
         .in("user_id", therapistUserIds);
 
       if (tErr) throw tErr;
-      ((ts ?? []) as DbTherapistMini[]).forEach((t) =>
-        therapistMap.set(t.user_id, t)
-      );
+      ((ts ?? []) as DbTherapistMini[]).forEach((t) => therapistMap.set(t.user_id, t));
     }
 
     const storeMap = new Map<string, DbStoreMini>();
@@ -614,9 +507,7 @@ const ConnectionsPage: React.FC = () => {
         .in("owner_user_id", storeOwnerIds);
 
       if (sErr) throw sErr;
-      ((ss ?? []) as DbStoreMini[]).forEach((s) =>
-        storeMap.set(s.owner_user_id, s)
-      );
+      ((ss ?? []) as DbStoreMini[]).forEach((s) => storeMap.set(s.owner_user_id, s));
     }
 
     const { data: myFollowing, error: fErr } = await supabase
@@ -642,11 +533,7 @@ const ConnectionsPage: React.FC = () => {
 
       let displayName =
         baseDisplayName ||
-        (role === "store"
-          ? "店舗アカウント"
-          : role === "therapist"
-          ? "セラピスト"
-          : "ユーザー");
+        (role === "store" ? "店舗アカウント" : role === "therapist" ? "セラピスト" : "ユーザー");
 
       let area = baseArea || null;
       let intro = baseIntro || "";
@@ -655,34 +542,20 @@ const ConnectionsPage: React.FC = () => {
       if (role === "therapist") {
         const t = therapistMap.get(id);
         if (t) {
-          if (!baseDisplayName && normalizeFreeText(t.display_name))
-            displayName = normalizeFreeText(t.display_name);
-          if (!baseArea && normalizeFreeText(t.area))
-            area = normalizeFreeText(t.area);
-          if (!baseIntro && normalizeFreeText(t.profile))
-            intro = normalizeFreeText(t.profile);
-          if (
-            !looksValidAvatarUrl(avatarRaw) &&
-            looksValidAvatarUrl(t.avatar_url)
-          )
-            avatarRaw = t.avatar_url;
+          if (!baseDisplayName && normalizeFreeText(t.display_name)) displayName = normalizeFreeText(t.display_name);
+          if (!baseArea && normalizeFreeText(t.area)) area = normalizeFreeText(t.area);
+          if (!baseIntro && normalizeFreeText(t.profile)) intro = normalizeFreeText(t.profile);
+          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(t.avatar_url)) avatarRaw = t.avatar_url;
         }
       }
 
       if (role === "store") {
         const s = storeMap.get(id);
         if (s) {
-          if (!baseDisplayName && normalizeFreeText(s.name))
-            displayName = normalizeFreeText(s.name);
-          if (!baseArea && normalizeFreeText(s.area))
-            area = normalizeFreeText(s.area);
-          if (!baseIntro && normalizeFreeText(s.description))
-            intro = normalizeFreeText(s.description);
-          if (
-            !looksValidAvatarUrl(avatarRaw) &&
-            looksValidAvatarUrl(s.avatar_url)
-          )
-            avatarRaw = s.avatar_url;
+          if (!baseDisplayName && normalizeFreeText(s.name)) displayName = normalizeFreeText(s.name);
+          if (!baseArea && normalizeFreeText(s.area)) area = normalizeFreeText(s.area);
+          if (!baseIntro && normalizeFreeText(s.description)) intro = normalizeFreeText(s.description);
+          if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(s.avatar_url)) avatarRaw = s.avatar_url;
         }
       }
 
@@ -724,19 +597,14 @@ const ConnectionsPage: React.FC = () => {
         const idsInOrder = rows.map((r) => r.user_id).filter(Boolean) as string[];
 
         const seen = new Set<string>();
-        const uniqIds = idsInOrder.filter((id) =>
-          seen.has(id) ? false : (seen.add(id), true)
-        );
+        const uniqIds = idsInOrder.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
 
         const list = await hydrateUsers(uniqIds, authUserId);
         if (!cancelled) setFollowers(list);
       } catch (e: any) {
         console.error("[Connections] loadFollowers error:", e);
         if (!cancelled)
-          setErrorMsg(
-            e?.message ??
-              "フォロワーの取得に失敗しました。時間をおいて再度お試しください。"
-          );
+          setErrorMsg(e?.message ?? "フォロワーの取得に失敗しました。時間をおいて再度お試しください。");
       } finally {
         if (!cancelled) setLoadingFollowers(false);
       }
@@ -770,19 +638,14 @@ const ConnectionsPage: React.FC = () => {
         const idsInOrder = rows.map((r) => r.target_id).filter(Boolean) as string[];
 
         const seen = new Set<string>();
-        const uniqIds = idsInOrder.filter((id) =>
-          seen.has(id) ? false : (seen.add(id), true)
-        );
+        const uniqIds = idsInOrder.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
 
         const list = await hydrateUsers(uniqIds, authUserId);
         if (!cancelled) setFollowing(list);
       } catch (e: any) {
         console.error("[Connections] loadFollowing error:", e);
         if (!cancelled)
-          setErrorMsg(
-            e?.message ??
-              "フォロー中の取得に失敗しました。時間をおいて再度お試しください。"
-          );
+          setErrorMsg(e?.message ?? "フォロー中の取得に失敗しました。時間をおいて再度お試しください。");
       } finally {
         if (!cancelled) setLoadingFollowing(false);
       }
@@ -806,12 +669,8 @@ const ConnectionsPage: React.FC = () => {
     if (!isUuid(authUserId) || !isUuid(targetId)) return;
     if (authUserId === targetId) return;
 
-    setFollowers((prev) =>
-      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
-    );
-    setFollowing((prev) =>
-      prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x))
-    );
+    setFollowers((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x)));
+    setFollowing((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: nextEnabled } : x)));
 
     const ok = await setRelationOnServer({
       userId: authUserId as UserId,
@@ -820,12 +679,8 @@ const ConnectionsPage: React.FC = () => {
     });
 
     if (!ok) {
-      setFollowers((prev) =>
-        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
-      );
-      setFollowing((prev) =>
-        prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x))
-      );
+      setFollowers((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x)));
+      setFollowing((prev) => prev.map((x) => (x.userId === targetId ? { ...x, isFollowing: !nextEnabled } : x)));
     }
   };
 
@@ -912,11 +767,6 @@ const ConnectionsPage: React.FC = () => {
   const followersCount = followers.length;
   const followingCount = following.length;
 
-  // track transform: 0 -> 0%, 1 -> -50%（2ページ/200%のうち後半へ）
-  const trackStyle: React.CSSProperties = {
-    transform: `translate3d(${-(progress * 50)}%, 0, 0)`,
-  };
-
   return (
     <div className="app-shell">
       <AppHeader title="つながり" subtitle={targetHandle} showBack />
@@ -956,59 +806,54 @@ const ConnectionsPage: React.FC = () => {
           </div>
         )}
 
+        {/* ★ scroll pager（Xっぽい “画面が動く”） */}
         <div
           className="viewport"
           ref={viewportRef}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerCancel}
+          onScroll={() => {
+            onScroll();
+            onScrollEndHeuristic();
+          }}
         >
-          <div className={`track ${isDragging ? "dragging" : ""}`} style={trackStyle}>
-            <section className="page">
-              <div className="pageInner">
-                {loadingFollowing ? (
-                  <div className="empty">読み込んでいます…</div>
-                ) : following.length === 0 ? (
-                  <div className="empty">フォロー中はまだありません。</div>
-                ) : (
-                  <div className="list">
-                    {following.map((u) => (
-                      <ConnectionRow
-                        key={`following:${u.userId}`}
-                        item={u}
-                        onOpenProfile={openProfile}
-                        onToggleFollow={toggleFollow}
-                        hideFollow={authUserId === u.userId}
-                      />
-                    ))}
-                  </div>
-                )}
+          <section className="page">
+            {loadingFollowing ? (
+              <div className="empty">読み込んでいます…</div>
+            ) : following.length === 0 ? (
+              <div className="empty">フォロー中はまだありません。</div>
+            ) : (
+              <div className="list">
+                {following.map((u) => (
+                  <ConnectionRow
+                    key={`following:${u.userId}`}
+                    item={u}
+                    onOpenProfile={openProfile}
+                    onToggleFollow={toggleFollow}
+                    hideFollow={authUserId === u.userId}
+                  />
+                ))}
               </div>
-            </section>
+            )}
+          </section>
 
-            <section className="page">
-              <div className="pageInner">
-                {loadingFollowers ? (
-                  <div className="empty">読み込んでいます…</div>
-                ) : followers.length === 0 ? (
-                  <div className="empty">フォロワーはまだいません。</div>
-                ) : (
-                  <div className="list">
-                    {followers.map((u) => (
-                      <ConnectionRow
-                        key={`followers:${u.userId}`}
-                        item={u}
-                        onOpenProfile={openProfile}
-                        onToggleFollow={toggleFollow}
-                        hideFollow={authUserId === u.userId}
-                      />
-                    ))}
-                  </div>
-                )}
+          <section className="page">
+            {loadingFollowers ? (
+              <div className="empty">読み込んでいます…</div>
+            ) : followers.length === 0 ? (
+              <div className="empty">フォロワーはまだいません。</div>
+            ) : (
+              <div className="list">
+                {followers.map((u) => (
+                  <ConnectionRow
+                    key={`followers:${u.userId}`}
+                    item={u}
+                    onOpenProfile={openProfile}
+                    onToggleFollow={toggleFollow}
+                    hideFollow={authUserId === u.userId}
+                  />
+                ))}
               </div>
-            </section>
-          </div>
+            )}
+          </section>
         </div>
       </main>
 
@@ -1064,10 +909,6 @@ const ConnectionsPage: React.FC = () => {
           opacity: 0.95;
         }
 
-        .tab.active::after {
-          content: none;
-        }
-
         .tabIndicator {
           position: absolute;
           left: 0;
@@ -1091,33 +932,26 @@ const ConnectionsPage: React.FC = () => {
           line-height: 1.6;
         }
 
+        /* ★ 横スクロールが本体 */
         .viewport {
-          position: relative;
-          width: 100%;
-          overflow: hidden;
-          touch-action: pan-y;
           margin-top: 6px;
-        }
-
-        .track {
           display: flex;
-          width: 200%;
-          will-change: transform;
-          transition: transform 220ms cubic-bezier(0.2, 0.9, 0.2, 1);
+          width: 100%;
+          overflow-x: auto;
+          overflow-y: hidden;
+          scroll-snap-type: x mandatory;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+          touch-action: pan-x pan-y; /* 指の動きはブラウザのスクロールに任せる */
         }
-        .track.dragging {
-          transition: none; /* ★ 指追従を最優先 */
+        .viewport::-webkit-scrollbar {
+          display: none;
         }
 
         .page {
-          flex: 0 0 50%;
-          width: 50%;
-        }
-
-        .pageInner {
-          max-height: calc(100vh - 180px);
-          overflow-y: auto;
-          -webkit-overflow-scrolling: touch;
+          flex: 0 0 100%;
+          width: 100%;
+          scroll-snap-align: start;
           padding-bottom: 12px;
         }
 
@@ -1131,12 +965,6 @@ const ConnectionsPage: React.FC = () => {
           font-size: 13px;
           color: var(--text-sub);
           line-height: 1.6;
-        }
-
-        @media (min-width: 768px) {
-          .pageInner {
-            max-height: calc(100vh - 200px);
-          }
         }
       `}</style>
     </div>
