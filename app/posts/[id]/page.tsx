@@ -9,6 +9,7 @@ import AvatarCircle from "@/components/AvatarCircle";
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
 import { toPublicHandleFromUserId } from "@/lib/handle";
+import { ensureViewerId } from "@/lib/auth";
 
 type AuthorRole = "therapist" | "store" | "user";
 
@@ -31,52 +32,14 @@ type DetailPost = {
 
   profile_path: string | null;
 
-  // ★ 追加
-  image_paths: string[] | null;
+  // ★ 投稿画像（public URLに変換済み）
+  image_urls: string[];
+
+  // ★ いいね/返信
+  like_count: number;
+  reply_count: number;
+  liked: boolean;
 };
-
-const hasUnread = false;
-
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isUuid(id: string | null | undefined): id is string {
-  return !!id && UUID_REGEX.test(id);
-}
-
-function normalizeAvatarUrl(v: any): string | null {
-  const s = typeof v === "string" ? v.trim() : "";
-  return s ? s : null;
-}
-
-function isProbablyHttpUrl(url: string): boolean {
-  return /^https?:\/\//i.test(url);
-}
-
-const AVATAR_BUCKET = "avatars";
-
-function resolveAvatarUrl(raw: string | null | undefined): string | null {
-  const v = normalizeAvatarUrl(raw);
-  if (!v) return null;
-  if (isProbablyHttpUrl(v)) return v;
-
-  const path = v.startsWith(`${AVATAR_BUCKET}/`)
-    ? v.slice(AVATAR_BUCKET.length + 1)
-    : v;
-
-  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
-  return data?.publicUrl ?? null;
-}
-
-// ★ post-images のURL解決
-const POST_IMAGES_BUCKET = "post-images";
-function resolvePostImageUrl(raw: string | null | undefined): string | null {
-  const v = (raw ?? "").trim();
-  if (!v) return null;
-  if (isProbablyHttpUrl(v)) return v;
-  const { data } = supabase.storage.from(POST_IMAGES_BUCKET).getPublicUrl(v);
-  return data?.publicUrl ?? null;
-}
 
 type DbPostRow = {
   id: string;
@@ -85,8 +48,15 @@ type DbPostRow = {
   author_id: string | null;
   author_kind: AuthorRole | null;
 
-  // ★ 追加
-  image_paths: string[] | null;
+  like_count: number | null;
+  reply_count: number | null;
+
+  // 正：Storage path配列
+  image_paths?: string[] | null;
+
+  // 保険（古い揺れ）
+  image_urls?: string[] | null;
+  imageUrls?: string[] | null;
 };
 
 type DbUserRow = {
@@ -110,10 +80,101 @@ type DbStoreLite = {
   avatar_url: string | null;
 };
 
+type DbPostLikeRow = {
+  post_id: string;
+};
+
+const hasUnread = false;
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(id: string | null | undefined): id is string {
+  return !!id && UUID_REGEX.test(id);
+}
+
+function normalizeUrl(v: any): string | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s ? s : null;
+}
+
+function isProbablyHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * avatars bucket
+ */
+const AVATAR_BUCKET = "avatars";
+
+/**
+ * avatar_url が
+ * - https://... ならそのまま
+ * - それ以外（storage path）なら public URL に変換
+ */
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  const v = normalizeUrl(raw);
+  if (!v) return null;
+  if (isProbablyHttpUrl(v)) return v;
+
+  const path = v.startsWith(`${AVATAR_BUCKET}/`)
+    ? v.slice(AVATAR_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return data?.publicUrl ?? null;
+}
+
+/**
+ * post-images bucket
+ */
+const POST_IMAGES_BUCKET = "post-images";
+
+/**
+ * 投稿画像を「表示用 public URL 配列」に正規化
+ * - http(s) はそのまま
+ * - storage path は post-images の public URL に変換
+ * - "post-images/xxx" のような値でも耐える
+ * - 最大4枚
+ */
+function resolvePostImageUrls(raw: unknown): string[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  const out: string[] = [];
+
+  for (const v of arr) {
+    const s = typeof v === "string" ? v.trim() : "";
+    if (!s) continue;
+
+    // すでにURLならそのまま
+    if (isProbablyHttpUrl(s)) {
+      out.push(s);
+      if (out.length >= 4) break;
+      continue;
+    }
+
+    // "post-images/xxx/yyy.jpg" でも耐える
+    const path = s.startsWith(`${POST_IMAGES_BUCKET}/`)
+      ? s.slice(POST_IMAGES_BUCKET.length + 1)
+      : s;
+
+    const { data } = supabase.storage.from(POST_IMAGES_BUCKET).getPublicUrl(path);
+    const url = data?.publicUrl ?? "";
+
+    if (url && isProbablyHttpUrl(url)) {
+      out.push(url);
+      if (out.length >= 4) break;
+    }
+  }
+
+  return out;
+}
+
 export default function PostDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const postId = params?.id;
+
+  const [viewerUuid, setViewerUuid] = useState<string | null>(null);
 
   const [post, setPost] = useState<DetailPost | null>(null);
   const [loading, setLoading] = useState(true);
@@ -124,6 +185,27 @@ export default function PostDetailPage() {
     [post?.profile_path]
   );
 
+  const viewerReady = !!viewerUuid && isUuid(viewerUuid);
+
+  // viewerUuid（uuidのみ）確定
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const uid = await ensureViewerId(); // uuid or null
+        if (cancelled) return;
+        setViewerUuid(uid);
+      } catch (e) {
+        if (cancelled) return;
+        setViewerUuid(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 投稿詳細ロード
   useEffect(() => {
     if (!postId) return;
 
@@ -142,7 +224,9 @@ export default function PostDetailPage() {
 
         const { data: postRow, error: postErr } = await supabase
           .from("posts")
-          .select("id, body, created_at, author_id, author_kind, image_paths")
+          .select(
+            "id, body, created_at, author_id, author_kind, like_count, reply_count, image_paths"
+          )
           .eq("id", postId)
           .maybeSingle();
 
@@ -159,6 +243,24 @@ export default function PostDetailPage() {
         const rawAuthorId = row.author_id;
         const rawKind: AuthorRole = (row.author_kind ?? "user") as AuthorRole;
 
+        // like済み判定（ログイン時のみ）
+        let liked = false;
+        if (viewerUuid && isUuid(viewerUuid)) {
+          const { data: likeRow, error: likeErr } = await supabase
+            .from("post_likes")
+            .select("post_id")
+            .eq("user_id", viewerUuid)
+            .eq("post_id", row.id)
+            .maybeSingle<DbPostLikeRow>();
+
+          if (likeErr) {
+            console.error("[postDetail.post_likes] error:", likeErr);
+          } else {
+            liked = !!likeRow;
+          }
+        }
+
+        // user / therapist / store 解決
         let user: DbUserRow | null = null;
         if (rawAuthorId && isUuid(rawAuthorId)) {
           const { data: userRow, error: userErr } = await supabase
@@ -258,7 +360,7 @@ export default function PostDetailPage() {
 
         const userAvatarRaw = user?.avatar_url ?? null;
         const avatarUrl =
-          resolveAvatarUrl(roleAvatarRaw) ?? resolveAvatarUrl(userAvatarRaw);
+          resolveAvatarUrl(roleAvatarRaw) ?? resolveAvatarUrl(userAvatarRaw) ?? null;
 
         let profilePath: string | null = null;
         if (inferredKind === "therapist") {
@@ -270,6 +372,11 @@ export default function PostDetailPage() {
         } else {
           if (canonicalUserId) profilePath = `/mypage/${canonicalUserId}`;
         }
+
+        // 画像：image_paths を正としてURL配列に変換
+        const rawImages =
+          (row as any).image_paths ?? (row as any).image_urls ?? (row as any).imageUrls ?? null;
+        const imageUrls = resolvePostImageUrls(rawImages);
 
         if (cancelled) return;
 
@@ -283,9 +390,12 @@ export default function PostDetailPage() {
           author_role: inferredKind,
           author_name: authorName,
           author_handle: authorHandle ?? null,
-          avatar_url: avatarUrl ?? null,
+          avatar_url: avatarUrl,
           profile_path: profilePath,
-          image_paths: row.image_paths ?? null,
+          image_urls: imageUrls,
+          like_count: row.like_count ?? 0,
+          reply_count: row.reply_count ?? 0,
+          liked,
         });
 
         setLoading(false);
@@ -300,11 +410,75 @@ export default function PostDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [postId]);
+  }, [postId, viewerUuid]);
 
   const goToProfile = () => {
     if (!post?.profile_path) return;
     router.push(post.profile_path);
+  };
+
+  const handleToggleLike = async () => {
+    if (!post) return;
+    if (!viewerUuid || !isUuid(viewerUuid)) return;
+
+    const previousLiked = post.liked;
+    const previousCount = post.like_count;
+
+    // 楽観更新
+    setPost((prev) =>
+      prev
+        ? {
+            ...prev,
+            liked: !previousLiked,
+            like_count: previousCount + (!previousLiked ? 1 : -1),
+          }
+        : prev
+    );
+
+    try {
+      if (!previousLiked) {
+        const { error: likeError } = await supabase
+          .from("post_likes")
+          .insert([{ post_id: post.id, user_id: viewerUuid }]);
+        if (likeError) throw likeError;
+
+        const { error: updateError } = await supabase
+          .from("posts")
+          .update({ like_count: previousCount + 1 })
+          .eq("id", post.id);
+        if (updateError) throw updateError;
+      } else {
+        const { error: deleteError } = await supabase
+          .from("post_likes")
+          .delete()
+          .eq("post_id", post.id)
+          .eq("user_id", viewerUuid);
+        if (deleteError) throw deleteError;
+
+        const { error: updateError } = await supabase
+          .from("posts")
+          .update({ like_count: Math.max(previousCount - 1, 0) })
+          .eq("id", post.id);
+        if (updateError) throw updateError;
+      }
+    } catch (e: any) {
+      console.error("Supabase like toggle error:", e);
+
+      // ロールバック
+      setPost((prev) =>
+        prev ? { ...prev, liked: previousLiked, like_count: previousCount } : prev
+      );
+
+      alert(
+        e?.message ??
+          "いいねの反映中にエラーが発生しました。時間をおいて再度お試しください。"
+      );
+    }
+  };
+
+  const handleReply = () => {
+    // 返信機能は今後実装（Homeと同じ暫定）
+    alert("返信機能はこれから実装予定です（現在はテスト用です）。");
   };
 
   return (
@@ -355,25 +529,25 @@ export default function PostDetailPage() {
               </div>
             </div>
 
-            {/* ★ 画像ギャラリー */}
-            {Array.isArray(post.image_paths) && post.image_paths.length > 0 && (
-              <div className="post-images">
-                {post.image_paths.map((p, idx) => {
-                  const url = resolvePostImageUrl(p);
-                  if (!url) return null;
-                  return (
-                    <a
-                      key={`${p}_${idx}`}
-                      href={url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="post-image-link"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <img src={url} alt="投稿画像" className="post-image" />
-                    </a>
-                  );
-                })}
+            {/* ★ 画像ギャラリー（Homeと同じ発想：URL配列） */}
+            {post.image_urls.length > 0 && (
+              <div
+                className={`media-grid media-grid--${post.image_urls.length}`}
+                aria-label="投稿画像"
+              >
+                {post.image_urls.map((url, idx) => (
+                  <a
+                    key={`${post.id}_${idx}`}
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="media-tile"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={url} alt="投稿画像" loading="lazy" decoding="async" />
+                  </a>
+                ))}
               </div>
             )}
 
@@ -381,6 +555,40 @@ export default function PostDetailPage() {
               {post.body.split("\n").map((line, i) => (
                 <p key={i}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
               ))}
+            </div>
+
+            {/* ★ いいね/返信（Home同等） */}
+            <div className="post-footer">
+              <button
+                type="button"
+                className={`post-like-btn ${post.liked ? "liked" : ""}`}
+                disabled={!viewerReady}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleToggleLike();
+                }}
+              >
+                <span className="post-like-icon">♥</span>
+                <span className="post-like-count">{post.like_count}</span>
+              </button>
+
+              <button
+                type="button"
+                className="post-reply-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleReply();
+                }}
+              >
+                <span className="post-reply-icon">💬</span>
+                <span className="post-reply-count">{post.reply_count}</span>
+              </button>
+
+              {!viewerReady && (
+                <div className="post-footer-note">
+                  いいね・通報・返信はログイン後に利用できます。
+                </div>
+              )}
             </div>
           </article>
         )}
@@ -446,28 +654,6 @@ export default function PostDetailPage() {
           margin-top: 2px;
         }
 
-        .post-images {
-          display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          gap: 8px;
-          margin: 10px 0 6px;
-        }
-
-        .post-image-link {
-          border-radius: 12px;
-          overflow: hidden;
-          border: 1px solid rgba(0, 0, 0, 0.06);
-          display: block;
-          background: #fff;
-        }
-
-        .post-image {
-          width: 100%;
-          height: 180px;
-          object-fit: cover;
-          display: block;
-        }
-
         .post-body {
           font-size: 14px;
           line-height: 1.8;
@@ -482,6 +668,88 @@ export default function PostDetailPage() {
 
         .page-error {
           color: #b00020;
+        }
+
+        /* =========================
+           画像グリッド（Homeと同等）
+           ========================= */
+        .media-grid {
+          margin-top: 10px;
+          border-radius: 14px;
+          overflow: hidden;
+          border: 1px solid rgba(0, 0, 0, 0.06);
+          background: #f6f6f6;
+          display: grid;
+          gap: 2px;
+        }
+
+        .media-grid--1 {
+          grid-template-columns: 1fr;
+        }
+        .media-grid--2 {
+          grid-template-columns: 1fr 1fr;
+        }
+        .media-grid--3 {
+          grid-template-columns: 1fr 1fr;
+        }
+        .media-grid--4 {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .media-tile {
+          position: relative;
+          width: 100%;
+          aspect-ratio: 1 / 1;
+          background: #eee;
+          display: block;
+        }
+
+        .media-tile img {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+        }
+
+        /* =========================
+           フッター（いいね/返信）
+           ========================= */
+        .post-footer {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: 10px;
+        }
+
+        .post-like-btn,
+        .post-reply-btn {
+          border: none;
+          background: transparent;
+          padding: 2px 4px;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 12px;
+          color: var(--text-sub, #777777);
+          cursor: pointer;
+        }
+
+        .post-like-btn:disabled,
+        .post-reply-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .post-like-btn.liked .post-like-icon {
+          color: #e0245e;
+        }
+
+        .post-footer-note {
+          margin-left: auto;
+          font-size: 11px;
+          color: var(--text-sub, #777);
         }
       `}</style>
     </div>
