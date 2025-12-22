@@ -55,6 +55,9 @@ type DbPostRow = {
   like_count: number | null;
   reply_count: number | null;
 
+  // ★ A案（返信）用：select していないので任意でOK（将来の保険）
+  reply_to_id?: string | null;
+
   // ★ Compose は image_paths（Storage path 配列）を入れる想定（text[]）
   image_paths?: string[] | string | null;
 
@@ -329,11 +332,13 @@ export default function LoomRoomHome() {
         // ★ DBに存在が確定している列だけを select する
         // - image_paths: composeの正
         // - image_urls : 互換（既存があるなら拾う）
+        // ★ 返信（reply_to_id != null）は TL から除外する
         const { data: postData, error: postError } = await supabase
           .from("posts")
           .select(
             "id, author_id, author_kind, body, created_at, like_count, reply_count, image_paths, image_urls"
           )
+          .is("reply_to_id", null) // ★追加：TLは親投稿のみ表示
           .order("created_at", { ascending: false })
           .limit(100);
 
