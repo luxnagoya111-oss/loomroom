@@ -55,12 +55,15 @@ type DbPostRow = {
   like_count: number | null;
   reply_count: number | null;
 
-  // ★ Compose は image_paths（Storage path 配列）を入れる想定
-  image_paths?: string[] | null;
+  // ★ Compose は image_paths（Storage path 配列）を入れる想定（text[]）
+  image_paths?: string[] | string | null;
 
   // 保険（昔の揺れがあっても落とさない）
-  image_urls?: string[] | null; // public URL 配列（もし存在すれば）
-  imageUrls?: string[] | null;
+  image_urls?: string[] | string | null; // public URL 配列（もし存在すれば）
+  image_url?: string | null; // ★ DBに存在している可能性が高い（スクショの列）
+  imageUrls?: string[] | string | null; // 旧camel
+  imageUrl?: string | null; // 旧camel単数
+  image_path?: string | null; // 旧単数
 };
 
 type DbUserRow = {
@@ -169,13 +172,35 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 const POST_IMAGES_BUCKET = "post-images";
 
 /**
+ * raw を string[] に正規化（揺れ吸収）
+ */
+function toStringArrayLoose(raw: unknown): string[] {
+  if (!raw) return [];
+
+  // すでに配列
+  if (Array.isArray(raw)) {
+    return raw
+      .map((v) => (typeof v === "string" ? v.trim() : ""))
+      .filter(Boolean);
+  }
+
+  // 単一文字列
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    return s ? [s] : [];
+  }
+
+  return [];
+}
+
+/**
  * ★ 投稿画像を「表示用 public URL 配列」に正規化
  * - http(s) はそのまま
  * - storage path は post-images の public URL に変換
  * - 最大4枚
  */
 function resolvePostImageUrls(raw: unknown): string[] {
-  const arr = Array.isArray(raw) ? raw : [];
+  const arr = toStringArrayLoose(raw);
   const out: string[] = [];
 
   for (const v of arr) {
@@ -204,6 +229,25 @@ function resolvePostImageUrls(raw: unknown): string[] {
   }
 
   return out;
+}
+
+/**
+ * ★ row から「画像元」を最優先順で拾う（DB揺れ完全吸収）
+ * - 正：image_paths（text[] / path配列）
+ * - 互換：image_urls（配列/文字列）
+ * - 互換：image_url（単数）
+ * - 互換：imageUrls / imageUrl / image_path
+ */
+function pickRawPostImages(row: any): unknown {
+  return (
+    row?.image_paths ??
+    row?.image_urls ??
+    row?.image_url ??
+    row?.imageUrls ??
+    row?.imageUrl ??
+    row?.image_path ??
+    null
+  );
 }
 
 export default function LoomRoomHome() {
@@ -285,11 +329,11 @@ export default function LoomRoomHome() {
       setError(null);
 
       try {
-        // ★ image_paths を含める（/compose と整合）
+        // ★ image_paths を正として取りつつ、過去互換で image_url / image_urls も取る
         const { data: postData, error: postError } = await supabase
           .from("posts")
           .select(
-            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_paths"
+            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_paths, image_url, image_urls"
           )
           .order("created_at", { ascending: false })
           .limit(100);
@@ -536,13 +580,8 @@ export default function LoomRoomHome() {
             ? resolveAvatarUrl(userRaw)
             : null;
 
-          // ★ 投稿画像：image_paths（path配列）を正として public URL 配列へ
-          const rawImages =
-            (row as any).image_paths ??
-            (row as any).image_urls ??
-            (row as any).imageUrls ??
-            null;
-
+          // ★ 画像：image_paths 正、ただし DBの揺れ(image_url等)を全部拾う
+          const rawImages = pickRawPostImages(row as any);
           const imageUrls = resolvePostImageUrls(rawImages);
 
           return {

@@ -1,7 +1,13 @@
 // app/compose/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState, ChangeEvent, FormEvent } from "react";
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+  ChangeEvent,
+  FormEvent,
+} from "react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import { getCurrentUserId, getCurrentUserRole } from "@/lib/auth";
@@ -12,7 +18,7 @@ const GUEST_DB_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 const MAX_LENGTH = 280;
 
-// ===== 画像制限（STEP1）=====
+// ===== 画像制限（v1）=====
 const POST_IMAGES_BUCKET = "post-images";
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
@@ -38,15 +44,31 @@ type SelectedImage = {
   error: string | null;
 };
 
-function buildSafeImagePath(
-  userId: string,
-  index: number,
-  file: File
-): string {
-  const rawExt = file.name.split(".").pop()?.toLowerCase() || "jpg";
-  const ext = rawExt === "jpeg" ? "jpg" : rawExt;
+function extFromMime(file: File): "jpg" | "png" | "webp" {
+  // mime を正として ext を確定（安全）
+  if (file.type === "image/png") return "png";
+  if (file.type === "image/webp") return "webp";
+  return "jpg"; // jpeg もここ
+}
 
+function buildSafeImagePath(userId: string, index: number, file: File): string {
+  // userId/ts_index.ext
+  const ext = extFromMime(file);
   return `${userId}/${Date.now()}_${index}.${ext}`;
+}
+
+async function safeRemoveUploadedPaths(paths: string[]) {
+  if (!paths.length) return;
+  try {
+    const { error } = await supabase.storage
+      .from(POST_IMAGES_BUCKET)
+      .remove(paths);
+    if (error) {
+      console.warn("[post-images.remove] error:", error);
+    }
+  } catch (e) {
+    console.warn("[post-images.remove] exception:", e);
+  }
 }
 
 export default function ComposePage() {
@@ -75,7 +97,10 @@ export default function ComposePage() {
 
   const isGuestLogical =
     typeof logicalUserId === "string" && logicalUserId.startsWith("guest-");
-  const viewerUuid = useMemo(() => (isUuid(logicalUserId) ? logicalUserId : null), [logicalUserId]);
+  const viewerUuid = useMemo(
+    () => (isUuid(logicalUserId) ? logicalUserId : null),
+    [logicalUserId]
+  );
 
   const canUseImages = useMemo(() => {
     // 画像はログインユーザーのみ（uuid必須）
@@ -174,10 +199,13 @@ export default function ComposePage() {
 
     sliced.forEach((file) => {
       let err: string | null = null;
+
       if (!ALLOWED_MIME.has(file.type)) {
         err = "対応していない形式です（jpeg/png/webpのみ）。";
       } else if (file.size > MAX_IMAGE_BYTES) {
         err = "容量が大きすぎます（1枚5MB以下）。";
+      } else if (!file.name) {
+        err = "ファイル名が不正です。";
       }
 
       const previewUrl = URL.createObjectURL(file);
@@ -201,7 +229,7 @@ export default function ComposePage() {
 
     const { next, globalError } = validateFiles(files, images.length);
 
-    // 個別エラーがある場合も「追加はする」が、送信時に弾く（ユーザーが差し替えできるように）
+    // 個別エラーがある場合も「追加はする」が、送信時に弾く（差し替えしやすい）
     setImages((prev) => [...prev, ...next]);
     if (globalError) setImageError(globalError);
 
@@ -232,6 +260,7 @@ export default function ComposePage() {
     if (images.length > MAX_IMAGES) {
       throw new Error(`画像は最大${MAX_IMAGES}枚までです。`);
     }
+
     const invalid = images.find((img) => !!img.error);
     if (invalid) {
       throw new Error(invalid.error || "画像に問題があります。差し替えてください。");
@@ -241,7 +270,6 @@ export default function ComposePage() {
 
     for (let i = 0; i < images.length; i++) {
       const file = images[i].file;
-
       const path = buildSafeImagePath(uploaderUserId, i, file);
 
       const { error } = await supabase.storage
@@ -253,6 +281,10 @@ export default function ComposePage() {
 
       if (error) {
         console.error("[post-images.upload] error:", error);
+
+        // 途中までアップロードされていたら掃除してから投げる
+        await safeRemoveUploadedPaths(uploadedPaths);
+
         throw new Error(
           (error as any)?.message ?? "画像アップロードに失敗しました。"
         );
@@ -295,26 +327,26 @@ export default function ComposePage() {
         ? currentRole
         : "user";
 
+    let uploadedPaths: string[] = [];
+
     try {
       setSubmitting(true);
 
       // 1) 画像があるなら upload（ログインユーザーのみ）
-      let imagePaths: string[] = [];
       if (images.length > 0) {
         if (!viewerUuid) {
           throw new Error("画像投稿にはログインが必要です。");
         }
-        imagePaths = await uploadImagesIfAny(viewerUuid);
+        uploadedPaths = await uploadImagesIfAny(viewerUuid);
       }
 
-      // 2) 投稿 insert（image_paths を含める）
+      // 2) 投稿 insert（DBの正は image_paths）
       const { error } = await supabase.from("posts").insert([
         {
           body,
           author_id: authorId,
           author_kind: authorKind,
-          // 画像（text[]想定）
-          image_paths: imagePaths.length ? imagePaths : [],
+          image_paths: uploadedPaths.length ? uploadedPaths : [],
           // NOTE: visibility/can_reply をDBに入れるなら後で復帰
           // visibility,
           // can_reply: canReply,
@@ -323,6 +355,12 @@ export default function ComposePage() {
 
       if (error) {
         console.error("Supabase insert error:", error);
+
+        // 投稿作成に失敗したので、アップロード済み画像を掃除
+        if (uploadedPaths.length) {
+          await safeRemoveUploadedPaths(uploadedPaths);
+        }
+
         alert(
           (error as any)?.message ??
             "投稿の保存中にエラーが発生しました。時間をおいて再度お試しください。"
@@ -331,8 +369,8 @@ export default function ComposePage() {
       }
 
       alert("投稿を公開しました。ホームのタイムラインに反映されます。");
+
       setText("");
-      // 画像クリア
       setImages((prev) => {
         prev.forEach((img) => {
           try {
@@ -348,6 +386,12 @@ export default function ComposePage() {
       }
     } catch (err: any) {
       console.error("Compose submit error:", err);
+
+      // 例外系でも、アップロードだけ成功していたら掃除しておく
+      if (uploadedPaths.length) {
+        await safeRemoveUploadedPaths(uploadedPaths);
+      }
+
       alert(
         err?.message ??
           "予期せぬエラーが発生しました。時間をおいて再度お試しください。"
@@ -399,7 +443,11 @@ export default function ComposePage() {
             {/* 画像ピッカー（ログインのみ） */}
             <div className="compose-image-panel">
               <div className="compose-image-row">
-                <label className={`compose-image-btn ${!canUseImages ? "disabled" : ""}`}>
+                <label
+                  className={`compose-image-btn ${
+                    !canUseImages ? "disabled" : ""
+                  }`}
+                >
                   画像を追加（最大4枚）
                   <input
                     type="file"
@@ -418,7 +466,9 @@ export default function ComposePage() {
                 )}
               </div>
 
-              {imageError && <div className="compose-image-error">{imageError}</div>}
+              {imageError && (
+                <div className="compose-image-error">{imageError}</div>
+              )}
 
               {images.length > 0 && (
                 <div className="compose-image-grid">
@@ -430,7 +480,10 @@ export default function ComposePage() {
                       </div>
 
                       <div className="compose-image-meta">
-                        <div className="compose-image-name" title={img.file.name}>
+                        <div
+                          className="compose-image-name"
+                          title={img.file.name}
+                        >
                           {img.file.name}
                         </div>
                         <div className="compose-image-sub">
@@ -674,7 +727,7 @@ export default function ComposePage() {
           width: 28px;
           height: 28px;
           border-radius: 999px;
-          border: 1px solid rgba(0, 0, 0, 0.10);
+          border: 1px solid rgba(0, 0, 0, 0.1);
           background: #fff;
           cursor: pointer;
           font-size: 16px;
