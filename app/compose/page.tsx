@@ -38,12 +38,15 @@ type SelectedImage = {
   error: string | null;
 };
 
-function sanitizeFilename(name: string) {
-  // ざっくり安全化（日本語は残す・空白と危険記号だけ整理）
-  return name
-    .trim()
-    .replace(/\s+/g, "_")
-    .replace(/[\\/#?%*:|"<>]/g, "_");
+function buildSafeImagePath(
+  userId: string,
+  index: number,
+  file: File
+): string {
+  const rawExt = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const ext = rawExt === "jpeg" ? "jpg" : rawExt;
+
+  return `${userId}/${Date.now()}_${index}.${ext}`;
 }
 
 export default function ComposePage() {
@@ -224,10 +227,8 @@ export default function ComposePage() {
   }, [images]);
 
   const uploadImagesIfAny = async (uploaderUserId: string): Promise<string[]> => {
-    // uploaderUserId は uuid 前提（ログインユーザーのみ）
     if (!images.length) return [];
 
-    // 画像制限をここで最終チェック（UIで弾いてるが安全のため）
     if (images.length > MAX_IMAGES) {
       throw new Error(`画像は最大${MAX_IMAGES}枚までです。`);
     }
@@ -239,11 +240,9 @@ export default function ComposePage() {
     const uploadedPaths: string[] = [];
 
     for (let i = 0; i < images.length; i++) {
-      const img = images[i];
-      const file = img.file;
+      const file = images[i].file;
 
-      const safeName = sanitizeFilename(file.name || `image_${i}.jpg`);
-      const path = `${uploaderUserId}/${Date.now()}_${i}_${safeName}`;
+      const path = buildSafeImagePath(uploaderUserId, i, file);
 
       const { error } = await supabase.storage
         .from(POST_IMAGES_BUCKET)
@@ -254,7 +253,9 @@ export default function ComposePage() {
 
       if (error) {
         console.error("[post-images.upload] error:", error);
-        throw new Error((error as any)?.message ?? "画像アップロードに失敗しました。");
+        throw new Error(
+          (error as any)?.message ?? "画像アップロードに失敗しました。"
+        );
       }
 
       uploadedPaths.push(path);
