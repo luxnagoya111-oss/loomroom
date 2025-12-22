@@ -60,7 +60,6 @@ type DbPostRow = {
 
   // 保険（昔の揺れがあっても落とさない）
   image_urls?: string[] | string | null; // public URL 配列（もし存在すれば）
-  image_url?: string | null; // ★ DBに存在している可能性が高い（スクショの列）
   imageUrls?: string[] | string | null; // 旧camel
   imageUrl?: string | null; // 旧camel単数
   image_path?: string | null; // 旧単数
@@ -177,14 +176,12 @@ const POST_IMAGES_BUCKET = "post-images";
 function toStringArrayLoose(raw: unknown): string[] {
   if (!raw) return [];
 
-  // すでに配列
   if (Array.isArray(raw)) {
     return raw
       .map((v) => (typeof v === "string" ? v.trim() : ""))
       .filter(Boolean);
   }
 
-  // 単一文字列
   if (typeof raw === "string") {
     const s = raw.trim();
     return s ? [s] : [];
@@ -232,17 +229,17 @@ function resolvePostImageUrls(raw: unknown): string[] {
 }
 
 /**
- * ★ row から「画像元」を最優先順で拾う（DB揺れ完全吸収）
+ * ★ row から「画像元」を最優先順で拾う（DB揺れ吸収）
  * - 正：image_paths（text[] / path配列）
  * - 互換：image_urls（配列/文字列）
- * - 互換：image_url（単数）
  * - 互換：imageUrls / imageUrl / image_path
+ *
+ * ※ DBに存在しない列は pick しても問題ない（selectで取ってないので undefined）
  */
 function pickRawPostImages(row: any): unknown {
   return (
     row?.image_paths ??
     row?.image_urls ??
-    row?.image_url ??
     row?.imageUrls ??
     row?.imageUrl ??
     row?.image_path ??
@@ -329,11 +326,13 @@ export default function LoomRoomHome() {
       setError(null);
 
       try {
-        // ★ image_paths を正として取りつつ、過去互換で image_url / image_urls も取る
+        // ★ DBに存在が確定している列だけを select する
+        // - image_paths: composeの正
+        // - image_urls : 互換（既存があるなら拾う）
         const { data: postData, error: postError } = await supabase
           .from("posts")
           .select(
-            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_paths, image_url, image_urls"
+            "id, author_id, author_kind, body, created_at, like_count, reply_count, image_paths, image_urls"
           )
           .order("created_at", { ascending: false })
           .limit(100);
@@ -580,7 +579,7 @@ export default function LoomRoomHome() {
             ? resolveAvatarUrl(userRaw)
             : null;
 
-          // ★ 画像：image_paths 正、ただし DBの揺れ(image_url等)を全部拾う
+          // ★ 画像：image_paths 正、互換で image_urls / imageUrls 等も拾う
           const rawImages = pickRawPostImages(row as any);
           const imageUrls = resolvePostImageUrls(rawImages);
 
@@ -1122,7 +1121,7 @@ export default function LoomRoomHome() {
         }
 
         /* =========================
-           画像グリッド（方式A）
+           画像グリッド
            ========================= */
         .media-grid {
           margin-top: 8px;
