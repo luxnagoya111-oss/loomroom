@@ -1,16 +1,19 @@
 // app/store/[id]/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
+import PostCard from "@/components/PostCard";
 
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
+import { ensureViewerId } from "@/lib/auth";
+import { toPublicHandleFromUserId } from "@/lib/handle";
 
 import {
   getRelation,
@@ -19,9 +22,19 @@ import {
   type RelationFlags,
 } from "@/lib/repositories/relationRepository";
 
+import {
+  fetchPostsByAuthorIds,
+  fetchLikedPostIdsForUser,
+  toggleLike as toggleLikeOnServer,
+  reportPost,
+  type DbPostRow as RepoPostRow,
+} from "@/lib/repositories/postRepository";
+
+import { resolveAvatarUrl, pickRawPostImages, resolvePostImageUrls } from "@/lib/postMedia";
+
 import type { UserId } from "@/types/user";
+import type { UiPost } from "@/lib/postFeedHydrator";
 import { RelationActions } from "@/components/RelationActions";
-import { toPublicHandleFromUserId } from "@/lib/handle";
 
 // ==============================
 // 型定義（Supabase から取る最低限）
@@ -43,21 +56,7 @@ type DbUserRow = {
   id: string;
   name: string | null;
   avatar_url: string | null;
-};
-
-type DbPostRow = {
-  id: string;
-  author_id: string | null;
-  body: string | null;
-  created_at: string;
-
-  like_count?: number | null;
-  reply_count?: number | null;
-
-  // 画像：命名揺れ吸収用（anyで拾う）
-  image_paths?: any;
-  image_urls?: any;
-  imageUrls?: any; // ← DBには無いが、ローカルの揺れ吸収として読むのはOK
+  role?: string | null;
 };
 
 type DbTherapistRow = {
@@ -67,9 +66,12 @@ type DbTherapistRow = {
   avatar_url: string | null;
 };
 
-// relations は users.id（uuid）で持つ前提
+// ==============================
+// util
+// ==============================
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
@@ -77,131 +79,34 @@ function isUuid(id: string | null | undefined): id is string {
 // relations.type 互換（過去の "following" を吸収）
 const FOLLOW_TYPES = ["follow", "following"] as const;
 
-// ===== Avatar URL 正規化（Home/Therapist と同一思想で統一）=====
-const AVATAR_BUCKET = "avatars";
-
-function normalizeAvatarUrl(v: any): string | null {
-  const s = typeof v === "string" ? v.trim() : "";
-  return s ? s : null;
-}
-
-function isProbablyHttpUrl(url: string): boolean {
-  return /^https?:\/\//i.test(url);
+function safeNumber(v: any, fallback = 0): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 /**
- * URLとして使う前に「それっぽいゴミ」を弾く
+ * URLとして使う前に「それっぽいゴミ」を弾く（avatars bucket の root など）
  */
 function looksValidAvatarUrl(v: string | null | undefined): boolean {
   const s = (v ?? "").trim();
   if (!s) return false;
 
+  // 例: ".../storage/v1/object/public/avatars" で終わるだけのURLは無効
   if (s.includes("/storage/v1/object/public/avatars")) {
     if (/\/public\/avatars\/?$/i.test(s)) return false;
   }
   return true;
 }
 
-function resolveAvatarUrl(raw: string | null | undefined): string | null {
-  const v = normalizeAvatarUrl(raw);
-  if (!v) return null;
-  if (isProbablyHttpUrl(v)) return v;
-
-  const path = v.startsWith(`${AVATAR_BUCKET}/`)
-    ? v.slice(AVATAR_BUCKET.length + 1)
-    : v;
-
-  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
-  return data?.publicUrl ?? null;
-}
-
-// ===== 投稿画像URLの正規化（店舗ページ用：Storage path → public URL へ変換）=====
-// ここが今回の核心：店舗ページでは sanitize だけだと「/not-found」系の 404 を踏みやすい
-const POST_IMAGE_BUCKET = "post-images"; // ★ 実bucket名に合わせて変更
-
-function normalizeImageArray(v: any): string[] {
-  if (!v) return [];
-  if (Array.isArray(v)) return v.map(String).map((x) => x.trim()).filter(Boolean);
-
-  if (typeof v === "string") {
-    const s = v.trim();
-    if (!s) return [];
-
-    // JSON配列文字列
-    if (s.startsWith("[") && s.endsWith("]")) {
-      try {
-        const parsed = JSON.parse(s);
-        if (Array.isArray(parsed))
-          return parsed.map(String).map((x) => x.trim()).filter(Boolean);
-      } catch {
-        // fallthrough
-      }
-    }
-
-    // カンマ区切り（雑対応）
-    return s
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean);
-  }
-
-  return [];
-}
-
-/**
- * post画像の raw (URL or Storage path) を public URL に統一
- * - http(s) はそのまま
- * - data: は拒否
- * - "/storage/..." のような相対は拒否して bucket publicUrl化へ寄せる
- */
-function resolvePostImageUrl(raw: any): string | null {
-  if (typeof raw !== "string") return null;
-  const s = raw.trim();
-  if (!s) return null;
-
-  // data: は拒否（必要なら許可してOK）
-  if (/^data:/i.test(s)) return null;
-
-  // すでにURL
-  if (/^https?:\/\//i.test(s)) return s;
-
-  // 先頭スラッシュは落とす（アプリ内ルート扱いで 404 を踏みがち）
-  const cleaned = s.replace(/^\/+/, "").replace(/^public\//, "");
-
-  // "post-images/xxx" のように bucket prefix 付きで入っていても吸収
-  const path = cleaned.startsWith(`${POST_IMAGE_BUCKET}/`)
-    ? cleaned.slice(POST_IMAGE_BUCKET.length + 1)
-    : cleaned;
-
-  // path が空は無効
-  if (!path) return null;
-
-  const { data } = supabase.storage.from(POST_IMAGE_BUCKET).getPublicUrl(path);
-  const url = data?.publicUrl ?? null;
-  return url;
-}
-
-function sanitizePostImageUrls(rawImages: any): string[] {
-  const arr = normalizeImageArray(rawImages);
-  const resolved = arr
-    .map(resolvePostImageUrl)
-    .filter((x): x is string => !!x);
-
-  // 重複排除
-  return Array.from(new Set(resolved));
-}
+// 店舗IDがslugだった時代のフォールバック（ラベルだけ）
+const AREA_LABEL_MAP: Record<string, string> = {
+  lux: "中部（名古屋・東海エリア）",
+  tokyo: "関東（東京近郊）",
+  osaka: "近畿（大阪・京都など）",
+};
 
 // 未読バッジは固定デモ
 const hasUnread = true;
-
-type StorePost = {
-  id: string;
-  body: string;
-  timeAgo: string;
-  likeCount: number;
-  replyCount: number;
-  imageUrls: string[];
-};
 
 type TherapistHit = {
   id: string; // therapists.id
@@ -211,16 +116,8 @@ type TherapistHit = {
   handle: string; // @xxxxxx
 };
 
-// 店舗IDがslugだった時代のフォールバック（ラベルだけ）
-const AREA_LABEL_MAP: Record<string, string> = {
-  lux: "中部（名古屋・東海エリア）",
-  tokyo: "関東（東京近郊）",
-  osaka: "近畿（大阪・京都など）",
-};
-
-const StoreProfilePage: React.FC = () => {
+export default function StoreProfilePage() {
   const router = useRouter();
-
   const params = useParams<{ id: string }>();
   const storeId = (params?.id as string) || "store";
 
@@ -242,7 +139,7 @@ const StoreProfilePage: React.FC = () => {
   const [storeName, setStoreName] = useState<string>(initialStoreName);
 
   /**
-   * ★ handle は「owner_user_id(uuid) → @xxxxxx」に統一
+   * handle は「owner_user_id(uuid) → @xxxxxx」に統一
    */
   const [storeHandle, setStoreHandle] = useState<string>("");
 
@@ -260,16 +157,20 @@ const StoreProfilePage: React.FC = () => {
   // Supabase Auth（uuid会員）
   const [authUserId, setAuthUserId] = useState<string | null>(null);
 
+  // viewer uuid（DB操作に使う。未ログインなら null）
+  const [viewerUuid, setViewerUuid] = useState<UserId | null>(null);
+  const viewerReady = !!viewerUuid && isUuid(viewerUuid);
+
   // relations用（店舗オーナー users.id）
   const [storeOwnerUserId, setStoreOwnerUserId] = useState<string | null>(null);
 
-  // ★ 店舗アバター（DB正）
+  // 店舗アバター（stores.avatar_url）
   const [storeAvatarUrl, setStoreAvatarUrl] = useState<string | null>(null);
 
-  // ★ オーナーのユーザーアバター（fallback）
+  // オーナーのユーザーアバター（users.avatar_url fallback）
   const [ownerAvatarUrl, setOwnerAvatarUrl] = useState<string | null>(null);
 
-  // ★ Owner 判定は Auth を正とする
+  // Owner 判定は Auth uuid を正とする
   const isOwner =
     !!authUserId &&
     !!storeOwnerUserId &&
@@ -283,7 +184,7 @@ const StoreProfilePage: React.FC = () => {
     blocked: false,
   });
 
-  // ★ connections 用のカウント（mypage と同一：表示対象 users.id を正）
+  // connections 用のカウント（mypage と同一：表示対象 users.id を正）
   const [followingCount, setFollowingCount] = useState<number>(0);
   const [followersCount, setFollowersCount] = useState<number>(0);
   const [loadingCounts, setLoadingCounts] = useState<boolean>(false);
@@ -291,21 +192,20 @@ const StoreProfilePage: React.FC = () => {
   // 在籍セラピスト（DB）
   const [therapists, setTherapists] = useState<TherapistHit[]>([]);
 
-  // 投稿
-  const [posts, setPosts] = useState<StorePost[]>([]);
+  // 投稿（★PostCard基準に統一）
+  const [posts, setPosts] = useState<UiPost[]>([]);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
 
-  // いいね（viewerが押しているか）
-  const [likes, setLikes] = useState<Record<string, boolean>>({});
-  const [likeBusy, setLikeBusy] = useState<Record<string, boolean>>({});
+  // menu
+  const [menuPostId, setMenuPostId] = useState<string | null>(null);
 
   // 在籍申請
   const [canApplyMembership, setCanApplyMembership] = useState(false);
   const [applyLoading, setApplyLoading] = useState(false);
   const [applyDone, setApplyDone] = useState(false);
 
-  // Auth 初期化
+  // Auth 初期化（authUserId + viewerUuid）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -313,6 +213,10 @@ const StoreProfilePage: React.FC = () => {
       .getUser()
       .then(({ data }) => setAuthUserId(data.user?.id ?? null))
       .catch(() => setAuthUserId(null));
+
+    ensureViewerId()
+      .then((uid) => setViewerUuid(uid))
+      .catch(() => setViewerUuid(null));
   }, []);
 
   // relation 復元（uuid会員同士のみ）
@@ -340,7 +244,7 @@ const StoreProfilePage: React.FC = () => {
     };
   }, [authUserId, storeOwnerUserId, isOwner]);
 
-  // ★ フォロー中 / フォロワー数（mypage と同一：owner users.id を正）
+  // フォロー中 / フォロワー数（mypage と同一：owner users.id を正）
   useEffect(() => {
     let cancelled = false;
 
@@ -373,12 +277,8 @@ const StoreProfilePage: React.FC = () => {
 
         if (cancelled) return;
 
-        if (followingRes.error) {
-          console.error("[StoreProfile] following count error:", followingRes.error);
-        }
-        if (followersRes.error) {
-          console.error("[StoreProfile] followers count error:", followersRes.error);
-        }
+        if (followingRes.error) console.error("[StoreProfile] following count error:", followingRes.error);
+        if (followersRes.error) console.error("[StoreProfile] followers count error:", followersRes.error);
 
         setFollowingCount(followingRes.count ?? 0);
         setFollowersCount(followersRes.count ?? 0);
@@ -392,9 +292,8 @@ const StoreProfilePage: React.FC = () => {
       }
     };
 
-    if (storeOwnerUserId) {
-      void loadCounts(storeOwnerUserId);
-    } else {
+    if (storeOwnerUserId) void loadCounts(storeOwnerUserId);
+    else {
       setFollowingCount(0);
       setFollowersCount(0);
       setLoadingCounts(false);
@@ -423,9 +322,9 @@ const StoreProfilePage: React.FC = () => {
         .from("users")
         .select("role")
         .eq("id", authUserId)
-        .maybeSingle();
+        .maybeSingle<DbUserRow>();
 
-      if (cancelled || userRow?.role !== "therapist") {
+      if (cancelled || (userRow as any)?.role !== "therapist") {
         setCanApplyMembership(false);
         return;
       }
@@ -438,7 +337,7 @@ const StoreProfilePage: React.FC = () => {
 
       if (cancelled) return;
 
-      setCanApplyMembership(!!therapistRow && therapistRow.store_id == null);
+      setCanApplyMembership(!!therapistRow && (therapistRow as any).store_id == null);
     };
 
     void checkEligibility();
@@ -464,7 +363,7 @@ const StoreProfilePage: React.FC = () => {
 
     setRelations({ following: nextEnabled, muted: false, blocked: false });
 
-    // ★ 楽観更新：対象(owner)の followers が増減
+    // 楽観更新：対象(owner)の followers が増減
     setFollowersCount((prev) => {
       const next = nextEnabled ? prev + 1 : prev - 1;
       return next < 0 ? 0 : next;
@@ -512,9 +411,7 @@ const StoreProfilePage: React.FC = () => {
     setRelations({ following: false, muted: false, blocked: nextEnabled });
   };
 
-  // ==============================
-  // ★ 在籍申請：RPC直呼び（401回避）
-  // ==============================
+  // 在籍申請：RPC直呼び（401回避）
   const handleApplyMembership = async () => {
     try {
       setApplyLoading(true);
@@ -531,11 +428,11 @@ const StoreProfilePage: React.FC = () => {
       });
 
       if (error) {
-        if (String(error.message || "").includes("already pending")) {
+        if (String((error as any).message || "").includes("already pending")) {
           setApplyDone(true);
           return;
         }
-        throw new Error(error.message || "申請に失敗しました");
+        throw new Error((error as any).message || "申請に失敗しました");
       }
 
       setApplyDone(true);
@@ -546,7 +443,9 @@ const StoreProfilePage: React.FC = () => {
     }
   };
 
-  // Supabase: 店舗プロフィール + 投稿
+  // ==============================
+  // 店舗プロフィール + 投稿（UiPost化 + PostCard利用）
+  // ==============================
   useEffect(() => {
     let cancelled = false;
 
@@ -571,10 +470,12 @@ const StoreProfilePage: React.FC = () => {
         if (sError) {
           console.error("[StoreProfile] store fetch error:", sError);
           setProfileError((sError as any)?.message ?? "店舗プロフィールの取得に失敗しました。");
+          setPosts([]);
           return;
         }
         if (!storeRow) {
           setProfileError("店舗プロフィールが見つかりませんでした。");
+          setPosts([]);
           return;
         }
 
@@ -591,16 +492,17 @@ const StoreProfilePage: React.FC = () => {
 
         setStoreOwnerUserId(row.owner_user_id ?? null);
 
-        // ★ 店舗 handle は owner_user_id から @6桁
+        // handle は owner_user_id から @6桁
         setStoreHandle(toPublicHandleFromUserId(row.owner_user_id) ?? "");
 
-        // ★ 店舗アイコン（DB正）
+        // 店舗アイコン（DB正）
         const storeAvatarResolved = looksValidAvatarUrl(row.avatar_url ?? null)
           ? resolveAvatarUrl(row.avatar_url ?? null)
           : null;
         setStoreAvatarUrl(storeAvatarResolved);
 
         // 2) users（avatar fallback用）
+        let ownerUser: DbUserRow | null = null;
         if (row.owner_user_id) {
           const { data: userRow, error: uError } = await supabase
             .from("users")
@@ -613,60 +515,83 @@ const StoreProfilePage: React.FC = () => {
           if (uError) {
             console.error("[StoreProfile] owner user fetch error:", uError);
           } else if (userRow) {
+            ownerUser = userRow;
             const ownerAvatarResolved = looksValidAvatarUrl(userRow.avatar_url)
               ? resolveAvatarUrl(userRow.avatar_url)
               : null;
             setOwnerAvatarUrl(ownerAvatarResolved);
           }
-
-          // 3) posts (author_id=owner_user_id)
-          // ★注意：imageUrls を select しない（DBに無い）
-          const { data: postRows, error: pError } = await supabase
-            .from("posts")
-            .select("id, author_id, body, created_at, like_count, reply_count, image_paths, image_urls")
-            .eq("author_id", row.owner_user_id)
-            .order("created_at", { ascending: false })
-            .limit(50);
-
-          if (cancelled) return;
-
-          if (pError) {
-            console.error("[StoreProfile] posts fetch error:", pError);
-            setPostsError(
-              (pError as any)?.message ??
-                "お店の投稿の取得に失敗しました。時間をおいて再度お試しください。"
-            );
-            setPosts([]);
-          } else {
-            const mapped: StorePost[] = (postRows ?? []).map((r: any) => {
-              const rawImages =
-                (r as any).image_paths ??
-                (r as any).image_urls ??
-                (r as any).imageUrls ??
-                null;
-
-              // ★ここが修正ポイント：sanitize後に「Storage path→public URL」を確実にやる
-              const imageUrls = sanitizePostImageUrls(rawImages);
-
-              return {
-                id: (r as DbPostRow).id,
-                body: (r as DbPostRow).body ?? "",
-                timeAgo: timeAgo((r as DbPostRow).created_at),
-                likeCount: typeof (r as any).like_count === "number" ? (r as any).like_count : 0,
-                replyCount: typeof (r as any).reply_count === "number" ? (r as any).reply_count : 0,
-                imageUrls,
-              };
-            });
-            setPosts(mapped);
-          }
-        } else {
-          setPosts([]);
         }
+
+        // 3) posts（author_id 揺れ対策：owner_user_id + storeId を候補に）
+        const authorIds: string[] = [];
+        if (row.owner_user_id) authorIds.push(row.owner_user_id);
+        if (storeId) authorIds.push(storeId);
+
+        if (!authorIds.length) {
+          setPosts([]);
+          return;
+        }
+
+        const postRows = await fetchPostsByAuthorIds({
+          authorIds,
+          excludeReplies: true,
+          limit: 50,
+        });
+
+        if (cancelled) return;
+
+        // 4) likedIds（viewerReady のときだけ）
+        const likedSet =
+          viewerReady && viewerUuid ? await fetchLikedPostIdsForUser(viewerUuid) : new Set<string>();
+
+        if (cancelled) return;
+
+        // 表示に使う店舗アバターは「stores.avatar_url 優先 → owner users.avatar_url」
+        const effectiveStoreAvatarUrl = storeAvatarResolved || ownerAvatarUrl || null;
+
+        const profilePath = `/store/${storeId}`;
+        const authorId = row.owner_user_id ?? storeId; // UiPost必須対策（uuid優先）
+
+        const mapped: UiPost[] = (postRows ?? []).map((p: RepoPostRow) => {
+          const rawImages = pickRawPostImages(p as any);
+          const imageUrls = resolvePostImageUrls(rawImages);
+
+          return {
+            id: p.id,
+
+            // ★UiPost必須（あなたの型エラーの原因だった箇所）
+            authorId: authorId ?? "",
+            createdAt: (p as any).created_at,
+
+            // 本文・画像
+            body: (p as any).body ?? "",
+            imageUrls,
+
+            // PostCard 用
+            authorKind: "store",
+            authorName: (row.name?.trim() || initialStoreName) as string,
+            authorHandle: toPublicHandleFromUserId(row.owner_user_id) ?? "",
+            avatarUrl: effectiveStoreAvatarUrl,
+            profilePath,
+
+            timeAgoText: timeAgo((p as any).created_at),
+
+            likeCount: safeNumber((p as any).like_count, 0),
+            replyCount: safeNumber((p as any).reply_count, 0),
+
+            liked: likedSet.has(p.id),
+          } as UiPost;
+        });
+
+        setPosts(mapped);
       } catch (e: any) {
         if (cancelled) return;
         console.error("[StoreProfile] unexpected error:", e);
         setProfileError(e?.message ?? "店舗プロフィールの取得中に不明なエラーが発生しました。");
-        setPostsError(e?.message ?? "お店の投稿の取得中に不明なエラーが発生しました。");
+        setPostsError(
+          e?.message ?? "お店の投稿の取得中に不明なエラーが発生しました。時間をおいて再度お試しください。"
+        );
         setPosts([]);
       } finally {
         if (!cancelled) {
@@ -680,7 +605,8 @@ const StoreProfilePage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [storeId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeId, viewerReady, viewerUuid]);
 
   // 在籍セラピスト（DB）
   useEffect(() => {
@@ -725,65 +651,114 @@ const StoreProfilePage: React.FC = () => {
     };
   }, [storeId]);
 
-  // ===== viewer が押している「いいね」状態の復元（uuid会員のみ）=====
-  const postIds = useMemo(() => posts.map((p) => p.id), [posts]);
+  // ==============================
+  // PostCard handlers（Therapist と同型）
+  // ==============================
+  const handleOpenDetail = useCallback(
+    (postId: string) => {
+      router.push(`/posts/${postId}`);
+    },
+    [router]
+  );
 
-  useEffect(() => {
-    let cancelled = false;
+  const handleOpenProfile = useCallback(
+    (path: string | null) => {
+      if (!path) return;
+      router.push(path);
+    },
+    [router]
+  );
 
-    const loadLikes = async () => {
-      // uuid会員以外は常にfalse扱い（表示だけ）
-      if (!isUuid(authUserId)) {
-        if (!cancelled) setLikes({});
+  const handleReply = useCallback(
+    (postId: string) => {
+      router.push(`/posts/${postId}`);
+    },
+    [router]
+  );
+
+  const handleToggleLike = useCallback(
+    async (post: UiPost) => {
+      if (!viewerReady || !viewerUuid || !isUuid(viewerUuid)) return;
+
+      const nextLiked = !post.liked;
+
+      // optimistic
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === post.id
+            ? {
+                ...p,
+                liked: nextLiked,
+                likeCount: Math.max(p.likeCount + (nextLiked ? 1 : -1), 0),
+              }
+            : p
+        )
+      );
+
+      const res = await toggleLikeOnServer({
+        postId: post.id,
+        userId: viewerUuid,
+        nextLiked,
+        currentLikeCount: Math.max(post.likeCount, 0),
+      });
+
+      if (!res.ok) {
+        // rollback
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === post.id
+              ? {
+                  ...p,
+                  liked: post.liked,
+                  likeCount: post.likeCount,
+                }
+              : p
+          )
+        );
         return;
       }
-      if (!postIds.length) {
-        if (!cancelled) setLikes({});
+
+      // server truth
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === post.id ? { ...p, likeCount: res.likeCount, liked: nextLiked } : p
+        )
+      );
+    },
+    [viewerReady, viewerUuid]
+  );
+
+  const handleOpenMenu = useCallback((postId: string) => {
+    setMenuPostId((prev) => (prev === postId ? null : postId));
+  }, []);
+
+  const handleReport = useCallback(
+    async (postId: string) => {
+      if (!viewerReady || !viewerUuid || !isUuid(viewerUuid)) {
+        alert("通報はログイン後にご利用いただけます。");
         return;
       }
+      const ok = window.confirm("この投稿を通報しますか？");
+      if (!ok) return;
 
-      try {
-        const { data, error } = await supabase
-          .from("post_likes")
-          .select("post_id")
-          .eq("user_id", authUserId)
-          .in("post_id", postIds);
+      const done = await reportPost({ postId, reporterId: viewerUuid, reason: null });
+      if (done) alert("通報を受け付けました。ご協力ありがとうございます。");
+      else alert("通報に失敗しました。時間をおいて再度お試しください。");
+      setMenuPostId(null);
+    },
+    [viewerReady, viewerUuid]
+  );
 
-        if (cancelled) return;
-
-        if (error) {
-          console.error("[StoreProfile] load likes error:", error);
-          setLikes({});
-          return;
-        }
-
-        const map: Record<string, boolean> = {};
-        (data ?? []).forEach((r: any) => {
-          if (r?.post_id) map[String(r.post_id)] = true;
-        });
-        setLikes(map);
-      } catch (e) {
-        if (cancelled) return;
-        console.error("[StoreProfile] load likes unexpected error:", e);
-        setLikes({});
-      }
-    };
-
-    void loadLikes();
-    return () => {
-      cancelled = true;
-    };
-  }, [authUserId, postIds.join("|")]);
-
+  // ==============================
+  // 表示計算
+  // ==============================
   const storeInitial = storeName?.trim()?.charAt(0)?.toUpperCase() || "?";
-
-  // ★ 表示に使う店舗アバターは「stores.avatar_url 優先 → owner users.avatar_url」
   const effectiveStoreAvatarUrl = storeAvatarUrl || ownerAvatarUrl || null;
 
-  // ★ Relation UI は uuid会員同士 + 自分以外 のときだけ
+  // Relation UI は uuid会員同士 + 自分以外 のときだけ
   const canShowRelationUi = !isOwner && isUuid(authUserId) && isUuid(storeOwnerUserId);
 
-  // ★ DM は uuidログイン済み + 相手uuid + 自分以外 + ブロックしてない ときだけ
+  // DM は uuidログイン済み + 相手uuid + 自分以外 + ブロックしてない ときだけ
   const canShowDmButton =
     !isOwner && !relations.blocked && isUuid(authUserId) && isUuid(storeOwnerUserId);
 
@@ -793,102 +768,6 @@ const StoreProfilePage: React.FC = () => {
   // Link の href（storeOwnerUserId を正として connections を開く）
   const followingHref = canShowCounts ? `/connections/${storeOwnerUserId}?tab=following` : "#";
   const followersHref = canShowCounts ? `/connections/${storeOwnerUserId}?tab=followers` : "#";
-
-  // ==============================
-  // Like toggle（DB: post_likes + posts.like_count）
-  // ==============================
-  const toggleLike = async (postId: string) => {
-    if (likeBusy[postId]) return;
-
-    const viewerId = authUserId && isUuid(authUserId) ? authUserId : null;
-    if (!viewerId) {
-      alert("いいねをするにはログインが必要です。");
-      return;
-    }
-
-    const liked = !!likes[postId];
-    const nextLiked = !liked;
-
-    // 楽観更新（UI体感）
-    setLikeBusy((prev) => ({ ...prev, [postId]: true }));
-    setLikes((prev) => ({ ...prev, [postId]: nextLiked }));
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id !== postId) return p;
-        const next = nextLiked ? p.likeCount + 1 : p.likeCount - 1;
-        return { ...p, likeCount: next < 0 ? 0 : next };
-      })
-    );
-
-    try {
-      if (nextLiked) {
-        const { error: insErr } = await supabase
-          .from("post_likes")
-          .insert([{ post_id: postId, user_id: viewerId }]);
-        if (insErr) throw insErr;
-
-        // like_count を read→write で同期
-        const { data: pRow, error: pErr } = await supabase
-          .from("posts")
-          .select("like_count")
-          .eq("id", postId)
-          .maybeSingle();
-
-        if (pErr) throw pErr;
-
-        const current =
-          typeof (pRow as any)?.like_count === "number" ? (pRow as any).like_count : 0;
-
-        const { error: upErr } = await supabase
-          .from("posts")
-          .update({ like_count: current + 1 })
-          .eq("id", postId);
-
-        if (upErr) throw upErr;
-      } else {
-        const { error: delErr } = await supabase
-          .from("post_likes")
-          .delete()
-          .eq("post_id", postId)
-          .eq("user_id", viewerId);
-        if (delErr) throw delErr;
-
-        const { data: pRow, error: pErr } = await supabase
-          .from("posts")
-          .select("like_count")
-          .eq("id", postId)
-          .maybeSingle();
-
-        if (pErr) throw pErr;
-
-        const current =
-          typeof (pRow as any)?.like_count === "number" ? (pRow as any).like_count : 0;
-
-        const { error: upErr } = await supabase
-          .from("posts")
-          .update({ like_count: Math.max(0, current - 1) })
-          .eq("id", postId);
-
-        if (upErr) throw upErr;
-      }
-    } catch (e) {
-      console.error("[StoreProfile] toggleLike error:", e);
-
-      // 失敗時は巻き戻し
-      setLikes((prev) => ({ ...prev, [postId]: liked }));
-      setPosts((prev) =>
-        prev.map((p) => {
-          if (p.id !== postId) return p;
-          const next = liked ? p.likeCount + 1 : p.likeCount - 1;
-          return { ...p, likeCount: Math.max(0, next) };
-        })
-      );
-
-      alert("いいねの反映に失敗しました。時間をおいて再度お試しください。");
-    } finally {
-      setLikeBusy((prev) => ({ ...prev, [postId]: false }));
-    }
-  };
 
   return (
     <div className="app-shell">
@@ -943,7 +822,7 @@ const StoreProfilePage: React.FC = () => {
                 <span>対応エリア：{areaLabel}</span>
               </div>
 
-              {/* ★ mypage と同じ：数字部分がリンク */}
+              {/* 数字部分がリンク */}
               <div className="store-stats-row">
                 <span>
                   投稿 <strong>{posts.length}</strong>
@@ -1130,103 +1009,21 @@ const StoreProfilePage: React.FC = () => {
 
           {!loadingPosts && !postsError && posts.length > 0 && (
             <div className="feed-list">
-              {posts.map((p: StorePost) => {
-                const liked = !!likes[p.id];
-
-                return (
-                  <article
-                    key={p.id}
-                    className="feed-item"
-                    role="button"
-                    tabIndex={0}
-                    aria-label="投稿の詳細を見る"
-                    onClick={() => router.push(`/posts/${p.id}`)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        router.push(`/posts/${p.id}`);
-                      }
-                    }}
-                  >
-                    <div className="feed-item-inner">
-                      <AvatarCircle
-                        size={40}
-                        avatarUrl={effectiveStoreAvatarUrl}
-                        displayName={storeName}
-                        className="feed-avatar"
-                        alt=""
-                      />
-
-                      <div className="feed-main">
-                        <div className="feed-header">
-                          <div className="feed-name-row">
-                            <span className="post-name">{storeName}</span>
-                            <span className="post-username">{storeHandle || ""}</span>
-                          </div>
-
-                          <div className="post-meta">
-                            <span>{p.timeAgo}</span>
-                          </div>
-                        </div>
-
-                        <div className="post-body">
-                          {p.body.split("\n").map((line: string, idx: number) => (
-                            <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
-                          ))}
-                        </div>
-
-                        {/* 画像 */}
-                        {p.imageUrls.length > 0 && (
-                          <div className="post-images">
-                            {p.imageUrls.map((url, idx) => (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                key={url + "_" + idx}
-                                src={url}
-                                alt=""
-                                className="post-image"
-                                loading="lazy"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  router.push(`/posts/${p.id}`);
-                                }}
-                              />
-                            ))}
-                          </div>
-                        )}
-
-                        {/* いいね・返信 */}
-                        <div className="post-actions">
-                          <button
-                            type="button"
-                            className={"post-action-btn" + (liked ? " post-action-btn--liked" : "")}
-                            disabled={!!likeBusy[p.id]}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void toggleLike(p.id);
-                            }}
-                          >
-                            <span className="post-action-icon">{liked ? "♥" : "♡"}</span>
-                            <span className="post-action-count">{p.likeCount}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            className="post-action-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              router.push(`/posts/${p.id}`);
-                            }}
-                          >
-                            <span className="post-action-icon">💬</span>
-                            <span className="post-action-count">{p.replyCount}</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
+              {posts.map((p) => (
+                <PostCard
+                  key={p.id}
+                  post={p}
+                  viewerReady={viewerReady}
+                  onOpenDetail={handleOpenDetail}
+                  onOpenProfile={handleOpenProfile}
+                  onToggleLike={handleToggleLike}
+                  onReply={handleReply}
+                  onOpenMenu={handleOpenMenu}
+                  menuOpen={menuPostId === p.id}
+                  onReport={handleReport}
+                  showBadges={true}
+                />
+              ))}
             </div>
           )}
         </section>
@@ -1292,7 +1089,6 @@ const StoreProfilePage: React.FC = () => {
           align-items: center;
         }
 
-        /* Link版：マイページと同じ押せる見た目 */
         .stat-link {
           color: var(--text-sub);
           text-decoration: underline;
@@ -1410,122 +1206,8 @@ const StoreProfilePage: React.FC = () => {
           opacity: 1;
         }
 
-        .feed-avatar {
-          border: 1px solid rgba(0, 0, 0, 0.08);
-        }
-
-        .feed-item {
-          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-          padding: 10px 16px;
-          cursor: pointer;
-        }
-
-        .feed-item:focus {
-          outline: 2px solid rgba(0, 0, 0, 0.18);
-          outline-offset: 2px;
-          border-radius: 8px;
-        }
-
-        .feed-item-inner {
-          display: flex;
-          gap: 10px;
-        }
-
-        .feed-main {
-          flex: 1;
-          min-width: 0;
-        }
-
-        .feed-header {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 2px;
-        }
-
-        .feed-name-row {
-          display: flex;
-          align-items: baseline;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
-
-        .post-name {
-          font-weight: 600;
-          font-size: 13px;
-        }
-
-        .post-username {
-          font-size: 11px;
-          color: var(--text-sub, #777777);
-        }
-
-        .post-meta {
-          font-size: 11px;
-          color: var(--text-sub, #777777);
-          margin-top: 2px;
-        }
-
-        .post-body {
-          font-size: 13px;
-          line-height: 1.7;
-          margin-top: 4px;
-          margin-bottom: 4px;
-        }
-
-        .post-images {
-          margin-top: 8px;
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 8px;
-        }
-
-        .post-image {
-          width: 100%;
-          height: auto;
-          border-radius: 14px;
-          border: 1px solid rgba(0, 0, 0, 0.06);
-          background: rgba(0, 0, 0, 0.02);
-        }
-
-        .post-actions {
-          margin-top: 8px;
-          display: flex;
-          gap: 10px;
-          align-items: center;
-        }
-
-        .post-action-btn {
-          border: 1px solid rgba(0, 0, 0, 0.08);
-          background: rgba(255, 255, 255, 0.9);
-          border-radius: 999px;
-          padding: 6px 10px;
-          font-size: 12px;
-          display: inline-flex;
-          gap: 6px;
-          align-items: center;
-          cursor: pointer;
-          color: var(--text-main);
-        }
-
-        .post-action-btn:disabled {
-          opacity: 0.6;
-          cursor: default;
-        }
-
-        .post-action-btn--liked {
-          border-color: rgba(215, 185, 118, 0.55);
-          background: rgba(215, 185, 118, 0.12);
-        }
-
-        .post-action-icon {
-          font-size: 13px;
-          line-height: 1;
-        }
-
-        .post-action-count {
-          font-size: 12px;
-          color: var(--text-sub);
+        .feed-list {
+          display: block;
         }
 
         :global(.no-link-style) {
@@ -1535,6 +1217,4 @@ const StoreProfilePage: React.FC = () => {
       `}</style>
     </div>
   );
-};
-
-export default StoreProfilePage;
+}
