@@ -1027,21 +1027,6 @@ export default function PostDetailPage() {
                 )}
                 <div className="post-time">{timeAgo(post.created_at)}</div>
               </div>
-
-              <div className="post-actions-offset" onClick={(e) => e.stopPropagation()}>
-                <PostActionsMenu
-                  open={actionsOpen}
-                  onToggle={() => setActionsOpen((v) => !v)}
-                  isOwner={post.canonical_user_id === viewerUuid}
-                  viewerReady={viewerReady}
-                  onDelete={async () => {
-                    // TODO
-                  }}
-                  onReport={async () => {
-                    // TODO
-                  }}
-                />
-              </div>
             </div>
               
             {post.image_urls.length > 0 && (
@@ -1096,6 +1081,21 @@ export default function PostDetailPage() {
                 <span className="post-reply-icon">💬</span>
                 <span className="post-reply-count">{post.reply_count}</span>
               </button>
+
+              <div className="post-actions-offset" onClick={(e) => e.stopPropagation()}>
+                <PostActionsMenu
+                  open={actionsOpen}
+                  onToggle={() => setActionsOpen((v) => !v)}
+                  isOwner={post.canonical_user_id === viewerUuid}
+                  viewerReady={viewerReady}
+                  onDelete={async () => {
+                    // TODO
+                  }}
+                  onReport={async () => {
+                    // TODO
+                  }}
+                />
+              </div>
 
               {!viewerReady && (
                 <div className="post-footer-note">
