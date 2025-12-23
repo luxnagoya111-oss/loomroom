@@ -541,6 +541,27 @@ const ConnectionsPage: React.FC = () => {
   );
 
   // ------------------------------
+  // 初期マウント時：URL/tabに合わせて必ずスナップ（フォロワー押し遷移のズレ対策）
+  // ------------------------------
+  useEffect(() => {
+    const el = pagerRef.current;
+    if (!el) return;
+
+    const tab = activeTabRef.current;
+
+    // まず state は即合わせる
+    setProgress(tab === "following" ? 0 : 1);
+
+    // レイアウト確定後に確実に当てる（clientWidth=0 を踏まない）
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        snapPagerToTab(tab, "auto");
+        finalizeAfterSnap();
+      });
+    });
+  }, [snapPagerToTab, finalizeAfterSnap]);
+  
+  // ------------------------------
   // DB helpers
   // ------------------------------
   async function hydrateUsers(idsInOrder: string[], viewerId: string): Promise<ConnectionUser[]> {
