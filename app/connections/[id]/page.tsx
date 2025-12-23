@@ -340,6 +340,8 @@ const ConnectionsPage: React.FC = () => {
   // ★ 幅参照を常に最新にする（scrollLeft/width のズレ防止）
   const vpWRef = useRef<number>(1);
 
+  const [pagerReady, setPagerReady] = useState(false);
+
   // ★ onScroll 取りこぼし防止（ticking方式）
   const tickingRef = useRef<boolean>(false);
 
@@ -444,7 +446,9 @@ const ConnectionsPage: React.FC = () => {
     if (!el) return;
 
     const update = () => {
-      vpWRef.current = el.clientWidth || 1;
+      const w = el.clientWidth || 1;
+      vpWRef.current = w;
+      if (w > 1) setPagerReady(true);
     };
     update();
 
@@ -544,22 +548,23 @@ const ConnectionsPage: React.FC = () => {
   // 初期マウント時：URL/tabに合わせて必ずスナップ（フォロワー押し遷移のズレ対策）
   // ------------------------------
   useEffect(() => {
+    if (!pagerReady) return;
+
     const el = pagerRef.current;
     if (!el) return;
 
     const tab = activeTabRef.current;
 
-    // まず state は即合わせる
+    // 表示側（インジケータ）も揃える
     setProgress(tab === "following" ? 0 : 1);
 
-    // レイアウト確定後に確実に当てる（clientWidth=0 を踏まない）
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        snapPagerToTab(tab, "auto");
-        finalizeAfterSnap();
-      });
-    });
-  }, [snapPagerToTab, finalizeAfterSnap]);
+    // ★ content（横スクロール領域）を確実に合わせる
+    const width = vpWRef.current || el.clientWidth || 1;
+    el.scrollTo({ left: tab === "following" ? 0 : width, behavior: "auto" });
+
+    // snap確定後の最終位置も拾う
+    finalizeAfterSnap();
+  }, [pagerReady, finalizeAfterSnap]);
   
   // ------------------------------
   // DB helpers
