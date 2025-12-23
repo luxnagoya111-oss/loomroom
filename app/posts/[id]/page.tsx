@@ -1423,6 +1423,12 @@ export default function PostDetailPage() {
           color: var(--text-sub, #777);
         }
 
+        .post-more-wrapper {
+          margin-left: auto;
+          position: relative;
+          margin-top: 18px; /* ← ここを追加 or 調整 */
+        }
+
         /* =========================
            返信一覧
            ========================= */
