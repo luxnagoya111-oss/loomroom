@@ -1028,20 +1028,22 @@ export default function PostDetailPage() {
                 <div className="post-time">{timeAgo(post.created_at)}</div>
               </div>
 
-              <PostActionsMenu
-                open={actionsOpen}
-                onToggle={() => setActionsOpen((v) => !v)}
-                isOwner={post.canonical_user_id === viewerUuid}
-                viewerReady={viewerReady}
-                onDelete={async () => {
-                  // TODO
-                }}
-                onReport={async () => {
-                  // TODO
-                }}
-              />
+              <div className="post-actions-offset" onClick={(e) => e.stopPropagation()}>
+                <PostActionsMenu
+                  open={actionsOpen}
+                  onToggle={() => setActionsOpen((v) => !v)}
+                  isOwner={post.canonical_user_id === viewerUuid}
+                  viewerReady={viewerReady}
+                  onDelete={async () => {
+                    // TODO
+                  }}
+                  onReport={async () => {
+                    // TODO
+                  }}
+                />
+              </div>
             </div>
-
+              
             {post.image_urls.length > 0 && (
               <div
                 className={`media-grid media-grid--${post.image_urls.length}`}
@@ -1423,9 +1425,7 @@ export default function PostDetailPage() {
           color: var(--text-sub, #777);
         }
 
-        .post-more-wrapper {
-          margin-left: auto;
-          position: relative;
+        .post-actions-offset {
           margin-top: 18px; /* ← ここを追加 or 調整 */
         }
 
