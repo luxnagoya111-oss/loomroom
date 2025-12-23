@@ -1426,7 +1426,7 @@ export default function PostDetailPage() {
         }
 
         .post-actions-offset {
-          margin-top: 11px; /* ← ここを追加 or 調整 */
+          margin-top: 0px; /* ← ここを追加 or 調整 */
         }
 
         /* =========================
