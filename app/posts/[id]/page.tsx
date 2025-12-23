@@ -12,6 +12,7 @@ import { toPublicHandleFromUserId } from "@/lib/handle";
 import { ensureViewerId } from "@/lib/auth";
 import { getRelationsForUser } from "@/lib/repositories/relationRepository";
 import type { DbRelationRow } from "@/types/db";
+import PostActionsMenu from "@/components/PostActionsMenu";
 
 type AuthorRole = "therapist" | "store" | "user";
 
@@ -245,6 +246,7 @@ export default function PostDetailPage() {
   const [post, setPost] = useState<DetailPost | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
 
   // relations（mute/block）
   const [relations, setRelations] = useState<DbRelationRow[]>([]);
@@ -1025,6 +1027,19 @@ export default function PostDetailPage() {
                 )}
                 <div className="post-time">{timeAgo(post.created_at)}</div>
               </div>
+
+              <PostActionsMenu
+                open={actionsOpen}
+                onToggle={() => setActionsOpen((v) => !v)}
+                isOwner={post.canonical_user_id === viewerUuid}
+                viewerReady={viewerReady}
+                onDelete={async () => {
+                  // TODO
+                }}
+                onReport={async () => {
+                  // TODO
+                }}
+              />
             </div>
 
             {post.image_urls.length > 0 && (
@@ -1437,6 +1452,8 @@ export default function PostDetailPage() {
           padding: 6px 10px;
           font-size: 12px;
           cursor: pointer;
+          color: #333;                 /* ← 追加 */
+          -webkit-text-fill-color: #333; /* ← iOS対策 */
         }
 
         .replies-reload:disabled {
