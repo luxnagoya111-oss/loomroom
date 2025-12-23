@@ -339,8 +339,7 @@ const ConnectionsPage: React.FC = () => {
 
   // ★ 幅参照を常に最新にする（scrollLeft/width のズレ防止）
   const vpWRef = useRef<number>(1);
-
-  const [pagerReady, setPagerReady] = useState(false);
+  const didInitialSnapRef = useRef(false);
 
   // ★ onScroll 取りこぼし防止（ticking方式）
   const tickingRef = useRef<boolean>(false);
@@ -439,25 +438,6 @@ const ConnectionsPage: React.FC = () => {
   }, [searchParams, snapPagerToTab]);
 
   // ------------------------------
-  // サイズ変化追従（vpWRef 更新）
-  // ------------------------------
-  useEffect(() => {
-    const el = pagerRef.current;
-    if (!el) return;
-
-    const update = () => {
-      const w = el.clientWidth || 1;
-      vpWRef.current = w;
-      if (w > 1) setPagerReady(true);
-    };
-    update();
-
-    const ro = new ResizeObserver(() => update());
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // ------------------------------
   // scroll -> indicator / tab / URL
   // ------------------------------
   const finalizeAfterSnap = useCallback(() => {
@@ -488,6 +468,43 @@ const ConnectionsPage: React.FC = () => {
       });
     }, 80);
   }, [router, isValidTarget, targetUserId]);
+
+  // ------------------------------
+  // サイズ変化追従（vpWRef 更新）
+  // ------------------------------
+  useEffect(() => {
+    const el = pagerRef.current;
+    if (!el) return;
+
+    const update = () => {
+      const w = el.clientWidth || 0;
+      if (w <= 0) return;
+
+     vpWRef.current = w;
+
+      // ★ 幅が確定した瞬間に「初回だけ」URL/tabに合わせて中身も同期
+      if (!didInitialSnapRef.current) {
+        didInitialSnapRef.current = true;
+
+        const tab = activeTabRef.current;
+
+        // バーも揃える
+        setProgress(tab === "following" ? 0 : 1);
+
+        // 中身（横スクロール領域）を確実に合わせる
+        el.scrollTo({ left: tab === "following" ? 0 : w, behavior: "auto" });
+
+        // snap確定後の最終位置も拾う
+        finalizeAfterSnap();
+      }
+    };
+
+    update();
+
+    const ro = new ResizeObserver(() => update());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [finalizeAfterSnap]);
 
   const handlePagerScroll = useCallback(() => {
     const el = pagerRef.current;
@@ -543,28 +560,6 @@ const ConnectionsPage: React.FC = () => {
     },
     [router, isValidTarget, targetUserId, snapPagerToTab]
   );
-
-  // ------------------------------
-  // 初期マウント時：URL/tabに合わせて必ずスナップ（フォロワー押し遷移のズレ対策）
-  // ------------------------------
-  useEffect(() => {
-    if (!pagerReady) return;
-
-    const el = pagerRef.current;
-    if (!el) return;
-
-    const tab = activeTabRef.current;
-
-    // 表示側（インジケータ）も揃える
-    setProgress(tab === "following" ? 0 : 1);
-
-    // ★ content（横スクロール領域）を確実に合わせる
-    const width = vpWRef.current || el.clientWidth || 1;
-    el.scrollTo({ left: tab === "following" ? 0 : width, behavior: "auto" });
-
-    // snap確定後の最終位置も拾う
-    finalizeAfterSnap();
-  }, [pagerReady, finalizeAfterSnap]);
   
   // ------------------------------
   // DB helpers
