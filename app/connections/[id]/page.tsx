@@ -403,23 +403,29 @@ const ConnectionsPage: React.FC = () => {
 
   // ------------------------------
   // 共通：タブへスクロール（syncガード込み）
+  // ※ width計算ではなく「実ページの offsetLeft」を使う（環境差でズレない）
   // ------------------------------
   const scrollToTab = useCallback((tab: TabKey, behavior: ScrollBehavior) => {
     const el = pagerRef.current;
     if (!el) return;
 
-    const w = el.clientWidth || vpWRef.current || 0;
-    if (!w) return;
+    const pages = Array.from(el.querySelectorAll<HTMLElement>(".page"));
+    if (pages.length < 2) return;
 
-    vpWRef.current = w;
+    const followingLeft = pages[0].offsetLeft;
+    const followersLeft = pages[1].offsetLeft;
+
     isSyncingRef.current = true;
 
-    el.scrollTo({ left: tab === "following" ? 0 : w, behavior });
+    el.scrollTo({
+      left: tab === "following" ? followingLeft : followersLeft,
+      behavior,
+    });
 
-    // scroll-snap の吸い込みを待って解除
+   // scroll-snap の吸い込みを待って解除
     window.setTimeout(() => {
       isSyncingRef.current = false;
-    }, behavior === "smooth" ? 320 : 120);
+    }, behavior === "smooth" ? 360 : 180);
   }, []);
 
   // ------------------------------
@@ -453,17 +459,22 @@ const ConnectionsPage: React.FC = () => {
 
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const width = vpWRef.current || el.clientWidth || 1;
-          const p = Math.max(0, Math.min(1, el.scrollLeft / width));
+          const pages = Array.from(el.querySelectorAll<HTMLElement>(".page"));
+          const span =
+            pages.length >= 2
+              ? Math.max(1, pages[1].offsetLeft - pages[0].offsetLeft)
+              : Math.max(1, el.clientWidth || vpWRef.current || 1);
+
+          const p = Math.max(0, Math.min(1, el.scrollLeft / span));
 
           setProgress(p);
 
           const next: TabKey = p >= 0.5 ? "followers" : "following";
-          if (activeTabRef.current !== next) {
+           if (activeTabRef.current !== next) {
             activeTabRef.current = next;
             setActiveTab(next);
 
-            if (isValidTarget && targetUserId) {
+            if (!isSyncingRef.current && isValidTarget && targetUserId) {
               router.replace(`/connections/${targetUserId}?tab=${next}`);
             }
           }
