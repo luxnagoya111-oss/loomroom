@@ -1529,3 +1529,31 @@ a:active {
   opacity: 0.6;
   cursor: default;
 }
+
+/* 見た目を“ボタンっぽくしない”ための共通 */
+.plainBtn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* 押しやすさだけ確保（見た目を変えない範囲で） */
+.hitPad {
+  padding: 4px 0; /* ここは好みで 2〜6px */
+}
+
+/* disabledでも見た目を変えない */
+.plainBtn:disabled {
+  cursor: default;
+  opacity: 1;
+}
