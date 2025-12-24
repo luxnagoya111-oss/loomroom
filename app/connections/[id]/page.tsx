@@ -30,14 +30,18 @@ function isUuid(v: string | null | undefined): v is string {
 
 type TabKey = "following" | "followers";
 
+/**
+ * URL tab のゆれを吸収して内部は必ず followers/following に統一
+ */
 function normalizeTab(v: string | null): TabKey {
   const s = (v ?? "").toLowerCase().trim();
-  if (s === "following" || s === "followings" || s === "follows" || s === "follow")
+  if (s === "following" || s === "followings" || s === "follows" || s === "follow") {
     return "following";
+  }
   return "followers";
 }
 
-// ★ relations.type 互換読み取り（過去の "following" を吸収）
+// relations.type 互換読み取り（過去の "following" を吸収）
 const FOLLOW_TYPES = ["follow", "following"] as const;
 
 // ===== Avatar URL 正規化 =====
@@ -47,9 +51,11 @@ function normalizeAvatarUrl(v: any): string | null {
   const s = typeof v === "string" ? v.trim() : "";
   return s ? s : null;
 }
+
 function isProbablyHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
+
 function looksValidAvatarUrl(v: string | null | undefined): boolean {
   const s = (v ?? "").trim();
   if (!s) return false;
@@ -58,6 +64,7 @@ function looksValidAvatarUrl(v: string | null | undefined): boolean {
   }
   return true;
 }
+
 function resolveAvatarUrl(raw: string | null | undefined): string | null {
   const v = normalizeAvatarUrl(raw);
   if (!v) return null;
@@ -70,6 +77,7 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
   return data?.publicUrl ?? null;
 }
+
 function normalizeFreeText(v: any): string {
   return typeof v === "string" ? v.trim() : "";
 }
@@ -78,14 +86,14 @@ function normalizeFreeText(v: any): string {
 // Types
 // ==============================
 type ConnectionUser = {
-  userId: string;
+  userId: string; // users.id (uuid)
   role: "user" | "therapist" | "store";
   displayName: string;
   handle: string;
   intro: string;
   area?: string | null;
-  avatar_url?: string | null;
-  isFollowing: boolean;
+  avatar_url?: string | null; // raw
+  isFollowing: boolean; // viewer目線
 };
 
 type DbUserRow = {
@@ -131,7 +139,7 @@ function buildHandle(userId: string): string {
 }
 
 // ==============================
-// Row Component
+// Row Component (X風)
 // ==============================
 function ConnectionRow(props: {
   item: ConnectionUser;
@@ -315,14 +323,18 @@ const ConnectionsPage: React.FC = () => {
   // tab
   const initialTab: TabKey = normalizeTab(searchParams.get("tab"));
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+
+  // indicator progress 0..1
   const [progress, setProgress] = useState<number>(initialTab === "following" ? 0 : 1);
 
   // refs
   const pagerRef = useRef<HTMLDivElement | null>(null);
   const activeTabRef = useRef<TabKey>(initialTab);
+
   const isSyncingRef = useRef<boolean>(false);
   const didInitialSnapRef = useRef(false);
   const tickingRef = useRef(false);
+
   const snapTimerRef = useRef<any>(null);
 
   // data
@@ -358,124 +370,136 @@ const ConnectionsPage: React.FC = () => {
   const isLoggedIn = !!authUserId;
 
   // ------------------------------
-  // 共通：pages/span を取得（ズレ吸収の核）
+  // metrics（baseLeft/span を実測して統一）
   // ------------------------------
-  const getPagerMetrics = useCallback(() => {
+  const getMetrics = useCallback(() => {
     const el = pagerRef.current;
     if (!el) return null;
 
     const pages = Array.from(el.querySelectorAll<HTMLElement>(".page"));
     if (pages.length < 2) return null;
 
-    const followingLeft = pages[0].offsetLeft;
-    const followersLeft = pages[1].offsetLeft;
-    const span = Math.max(1, followersLeft - followingLeft);
+    const baseLeft = pages[0].offsetLeft || 0;
+    const span = (pages[1].offsetLeft - pages[0].offsetLeft) || el.clientWidth || 0;
+    if (span <= 0) return null;
 
-    return { el, pages, followingLeft, followersLeft, span };
+    return { baseLeft, span };
   }, []);
 
   // ------------------------------
-  // 共通：タブへスクロール（offsetLeft 正）
+  // scrollToTab
   // ------------------------------
   const scrollToTab = useCallback(
     (tab: TabKey, behavior: ScrollBehavior) => {
-      const m = getPagerMetrics();
+      const el = pagerRef.current;
+      if (!el) return;
+
+      const m = getMetrics();
       if (!m) return;
 
-      isSyncingRef.current = true;
+      const idx = tab === "following" ? 0 : 1;
+      const left = m.baseLeft + m.span * idx;
 
-      m.el.scrollTo({
-        left: tab === "following" ? m.followingLeft : m.followersLeft,
-        behavior,
-      });
+      isSyncingRef.current = true;
+      el.scrollTo({ left, behavior });
 
       window.setTimeout(() => {
         isSyncingRef.current = false;
-      }, behavior === "smooth" ? 360 : 180);
+      }, behavior === "smooth" ? 360 : 200);
     },
-    [getPagerMetrics]
+    [getMetrics]
   );
 
   // ------------------------------
-  // URL -> state 同期
+  // URL -> state 同期（※ここは “タブクリック時” のURL更新だけを見る）
+  // - scroll中に router.replace しないので、巻き戻しが起きない
   // ------------------------------
   useEffect(() => {
     const raw = searchParams.get("tab");
     const next = raw ? normalizeTab(raw) : initialTab;
 
-    activeTabRef.current = next;
-    setActiveTab(next);
-    setProgress(next === "following" ? 0 : 1);
-
-    // 初期/URL変更時に必ず合わせる
-    scrollToTab(next, "auto");
+    if (activeTabRef.current !== next) {
+      activeTabRef.current = next;
+      setActiveTab(next);
+      setProgress(next === "following" ? 0 : 1);
+      scrollToTab(next, "auto");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, scrollToTab]);
 
   // ------------------------------
-  // snap確定後の最終位置読み（p計算は span 正）
+  // 初回：URL(tab) に合わせて必ず位置を合わせる（3段階で強制）
+  // ------------------------------
+  useEffect(() => {
+    const el = pagerRef.current;
+    if (!el) return;
+    if (didInitialSnapRef.current) return;
+
+    const m = getMetrics();
+    if (!m) return;
+
+    didInitialSnapRef.current = true;
+
+    const tab = activeTabRef.current;
+    setProgress(tab === "following" ? 0 : 1);
+
+    const idx = tab === "following" ? 0 : 1;
+    const left = m.baseLeft + m.span * idx;
+
+    // 1) 即時
+    el.scrollLeft = left;
+
+    // 2) 2フレーム後
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const mm = getMetrics();
+        if (!mm) return;
+        const l = mm.baseLeft + mm.span * idx;
+        el.scrollLeft = l;
+      });
+    });
+
+    // 3) 少し後
+    window.setTimeout(() => {
+      const mm = getMetrics();
+      if (!mm) return;
+      const l = mm.baseLeft + mm.span * idx;
+      el.scrollLeft = l;
+    }, 220);
+  }, [getMetrics]);
+
+  // ------------------------------
+  // finalize after snap（URL更新しない。activeTab/progress だけ確定）
   // ------------------------------
   const finalizeAfterSnap = useCallback(() => {
     if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
 
     snapTimerRef.current = setTimeout(() => {
-      const m = getPagerMetrics();
+      const el = pagerRef.current;
+      if (!el) return;
+      if (isSyncingRef.current) return;
+
+      const m = getMetrics();
       if (!m) return;
 
-      // プログラムスクロール中はURLだけ触らない（progressは更新してよい）
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const p = Math.max(0, Math.min(1, (m.el.scrollLeft - m.followingLeft) / m.span));
-          setProgress(p);
+      const raw = (el.scrollLeft - m.baseLeft) / m.span;
+      const p = Math.max(0, Math.min(1, raw));
+      setProgress(p);
 
-          const next: TabKey = p >= 0.5 ? "followers" : "following";
-          if (activeTabRef.current !== next) {
-            activeTabRef.current = next;
-            setActiveTab(next);
-          }
-
-          if (!isSyncingRef.current && isValidTarget && targetUserId) {
-            router.replace(`/connections/${targetUserId}?tab=${next}`);
-          }
-        });
-      });
-    }, 80);
-  }, [getPagerMetrics, router, isValidTarget, targetUserId]);
+      const next: TabKey = p >= 0.5 ? "followers" : "following";
+      if (activeTabRef.current !== next) {
+        activeTabRef.current = next;
+       setActiveTab(next);
+      }
+    }, 90);
+  }, [getMetrics]);
 
   // ------------------------------
-  // 初回だけ強制スナップ（レイアウト確定後）
-  // ------------------------------
-  useEffect(() => {
-    const el = pagerRef.current;
-    if (!el) return;
-
-    const update = () => {
-      if (didInitialSnapRef.current) return;
-      const m = getPagerMetrics();
-      if (!m) return;
-
-      didInitialSnapRef.current = true;
-
-      const tab = activeTabRef.current;
-      setProgress(tab === "following" ? 0 : 1);
-      scrollToTab(tab, "auto");
-
-      window.setTimeout(() => finalizeAfterSnap(), 160);
-    };
-
-    update();
-
-    const ro = new ResizeObserver(() => update());
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [getPagerMetrics, scrollToTab, finalizeAfterSnap]);
-
-  // ------------------------------
-  // scroll handler（p計算は span 正）
+  // scroll handler（バー追従 + snap確定）
   // ------------------------------
   const handlePagerScroll = useCallback(() => {
-    const m = getPagerMetrics();
-    if (!m) return;
+    const el = pagerRef.current;
+    if (!el) return;
 
     if (tickingRef.current) return;
     tickingRef.current = true;
@@ -483,38 +507,27 @@ const ConnectionsPage: React.FC = () => {
     requestAnimationFrame(() => {
       tickingRef.current = false;
 
-      const p = Math.max(0, Math.min(1, (m.el.scrollLeft - m.followingLeft) / m.span));
+      const m = getMetrics();
+      if (!m) return;
+
+      const raw = (el.scrollLeft - m.baseLeft) / m.span;
+      const p = Math.max(0, Math.min(1, raw));
       setProgress(p);
 
+      if (!isSyncingRef.current) {
+        const next: TabKey = p >= 0.5 ? "followers" : "following";
+        if (activeTabRef.current !== next) {
+          activeTabRef.current = next;
+          setActiveTab(next);
+        }
+      }
+
       finalizeAfterSnap();
-
-      const next: TabKey = p >= 0.5 ? "followers" : "following";
-      if (activeTabRef.current !== next) {
-        activeTabRef.current = next;
-        setActiveTab(next);
-      }
-
-      if (!isSyncingRef.current && isValidTarget && targetUserId) {
-        router.replace(`/connections/${targetUserId}?tab=${next}`);
-      }
     });
-  }, [getPagerMetrics, finalizeAfterSnap, router, isValidTarget, targetUserId]);
-
-  // ★ React onScroll 取りこぼし対策：ネイティブ listener
-  useEffect(() => {
-    const el = pagerRef.current;
-    if (!el) return;
-
-    const onScroll = () => handlePagerScroll();
-    el.addEventListener("scroll", onScroll, { passive: true });
-
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-    };
-  }, [handlePagerScroll]);
+  }, [finalizeAfterSnap, getMetrics]);
 
   // ------------------------------
-  // tab click
+  // tab click（ここだけ URL 更新する）
   // ------------------------------
   const goTab = useCallback(
     (tab: TabKey) => {
@@ -593,7 +606,7 @@ const ConnectionsPage: React.FC = () => {
       (myFollowing ?? []).map((r: any) => r.target_id).filter(Boolean)
     );
 
-    const result: ConnectionUser[] = ids.map((id) => {
+    return ids.map((id) => {
       const u = userMap.get(id);
       const role = (u?.role ?? "user") as "user" | "therapist" | "store";
 
@@ -645,8 +658,6 @@ const ConnectionsPage: React.FC = () => {
         isFollowing: followingSet.has(id),
       };
     });
-
-    return result;
   }
 
   // ------------------------------
@@ -680,10 +691,11 @@ const ConnectionsPage: React.FC = () => {
         if (!cancelled) setFollowers(list);
       } catch (e: any) {
         console.error("[Connections] loadFollowers error:", e);
-        if (!cancelled)
+        if (!cancelled) {
           setErrorMsg(
             e?.message ?? "フォロワーの取得に失敗しました。時間をおいて再度お試しください。"
           );
+        }
       } finally {
         if (!cancelled) setLoadingFollowers(false);
       }
@@ -723,10 +735,11 @@ const ConnectionsPage: React.FC = () => {
         if (!cancelled) setFollowing(list);
       } catch (e: any) {
         console.error("[Connections] loadFollowing error:", e);
-        if (!cancelled)
+        if (!cancelled) {
           setErrorMsg(
             e?.message ?? "フォロー中の取得に失敗しました。時間をおいて再度お試しください。"
           );
+        }
       } finally {
         if (!cancelled) setLoadingFollowing(false);
       }
@@ -895,45 +908,49 @@ const ConnectionsPage: React.FC = () => {
           </div>
         )}
 
-        <div className="pager" ref={pagerRef}>
+        <div className="pager" ref={pagerRef} onScroll={handlePagerScroll}>
           <section className="page">
-            {loadingFollowing ? (
-              <div className="empty">読み込んでいます…</div>
-            ) : following.length === 0 ? (
-              <div className="empty">フォロー中はまだありません。</div>
-            ) : (
-              <div className="list">
-                {following.map((u) => (
-                  <ConnectionRow
-                    key={`following:${u.userId}`}
-                    item={u}
-                    onOpenProfile={openProfile}
-                    onToggleFollow={toggleFollow}
-                    hideFollow={authUserId === u.userId}
-                  />
-                ))}
-              </div>
-            )}
+            <div className="pageInner">
+              {loadingFollowing ? (
+                <div className="empty">読み込んでいます…</div>
+              ) : following.length === 0 ? (
+                <div className="empty">フォロー中はまだありません。</div>
+              ) : (
+                <div className="list">
+                  {following.map((u) => (
+                    <ConnectionRow
+                      key={`following:${u.userId}`}
+                      item={u}
+                      onOpenProfile={openProfile}
+                      onToggleFollow={toggleFollow}
+                      hideFollow={authUserId === u.userId}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
 
           <section className="page">
-            {loadingFollowers ? (
-              <div className="empty">読み込んでいます…</div>
-            ) : followers.length === 0 ? (
-              <div className="empty">フォロワーはまだいません。</div>
-            ) : (
-              <div className="list">
-                {followers.map((u) => (
-                  <ConnectionRow
-                    key={`followers:${u.userId}`}
-                    item={u}
-                    onOpenProfile={openProfile}
-                    onToggleFollow={toggleFollow}
-                    hideFollow={authUserId === u.userId}
-                  />
-                ))}
-              </div>
-            )}
+            <div className="pageInner">
+              {loadingFollowers ? (
+                <div className="empty">読み込んでいます…</div>
+              ) : followers.length === 0 ? (
+                <div className="empty">フォロワーはまだいません。</div>
+              ) : (
+                <div className="list">
+                  {followers.map((u) => (
+                    <ConnectionRow
+                      key={`followers:${u.userId}`}
+                      item={u}
+                      onOpenProfile={openProfile}
+                      onToggleFollow={toggleFollow}
+                      hideFollow={authUserId === u.userId}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
         </div>
       </main>
@@ -941,8 +958,9 @@ const ConnectionsPage: React.FC = () => {
       <BottomNav />
 
       <style jsx>{`
+        /* ★ 横paddingを外に持たせない（offsetLeft=0を作る） */
         .connections-main {
-          padding: 0 16px 120px;
+          padding: 0 0 120px;
         }
 
         .tabsWrap {
@@ -950,6 +968,7 @@ const ConnectionsPage: React.FC = () => {
           top: 0;
           z-index: 3;
           background: var(--surface, #fff);
+          padding: 0 16px; /* tabsだけ左右padding */
         }
 
         .tabs {
@@ -1003,7 +1022,7 @@ const ConnectionsPage: React.FC = () => {
         }
 
         .error-box {
-          margin: 10px 0 4px;
+          margin: 10px 16px 4px; /* 横padding */
           padding: 10px 12px;
           border-radius: 10px;
           border: 1px solid rgba(176, 0, 32, 0.18);
@@ -1019,11 +1038,6 @@ const ConnectionsPage: React.FC = () => {
           scroll-snap-type: x mandatory;
           -webkit-overflow-scrolling: touch;
           scrollbar-width: none;
-
-          /* ★ ここが重要：開始位置ズレを潰す */
-          padding: 0;
-          scroll-padding-left: 0;
-          scroll-padding-inline-start: 0;
         }
         .pager::-webkit-scrollbar {
           display: none;
@@ -1034,6 +1048,10 @@ const ConnectionsPage: React.FC = () => {
           min-width: 100%;
           scroll-snap-align: start;
           padding-top: 6px;
+        }
+
+        .pageInner {
+          padding: 0 16px; /* ★ ここで左右padding */
         }
 
         .list {
