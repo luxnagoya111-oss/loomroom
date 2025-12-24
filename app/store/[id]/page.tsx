@@ -9,6 +9,7 @@ import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
 import PostCard from "@/components/PostCard";
+import ProfileHero from "@/components/ProfileHero";
 
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
@@ -30,7 +31,11 @@ import {
   type DbPostRow as RepoPostRow,
 } from "@/lib/repositories/postRepository";
 
-import { resolveAvatarUrl, pickRawPostImages, resolvePostImageUrls } from "@/lib/postMedia";
+import {
+  resolveAvatarUrl,
+  pickRawPostImages,
+  resolvePostImageUrls,
+} from "@/lib/postMedia";
 
 import type { UserId } from "@/types/user";
 import type { UiPost } from "@/lib/postFeedHydrator";
@@ -77,8 +82,6 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
-// relations.type 互換（過去の "following" を吸収）
-
 function safeNumber(v: any, fallback = 0): number {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -122,7 +125,8 @@ export default function StoreProfilePage() {
   const storeId = (params?.id as string) || "store";
 
   // slug時代のフォールバック（表示だけ）
-  const fallbackSlug = storeId === "lux" || storeId === "loomroom" ? storeId : "lux";
+  const fallbackSlug =
+    storeId === "lux" || storeId === "loomroom" ? storeId : "lux";
 
   const initialStoreName =
     fallbackSlug === "lux"
@@ -131,7 +135,8 @@ export default function StoreProfilePage() {
       ? "LRoom"
       : "LRoom 提携サロン";
 
-  const initialAreaLabel = AREA_LABEL_MAP[fallbackSlug] || "全国（オンライン案内中心）";
+  const initialAreaLabel =
+    AREA_LABEL_MAP[fallbackSlug] || "全国（オンライン案内中心）";
 
   // ==============================
   // state
@@ -197,7 +202,7 @@ export default function StoreProfilePage() {
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
 
-  // menu
+  // menu（現状は保持のみ）
   const [menuPostId, setMenuPostId] = useState<string | null>(null);
 
   // 在籍申請
@@ -234,7 +239,10 @@ export default function StoreProfilePage() {
 
     let cancelled = false;
     (async () => {
-      const row = await getRelation(authUserId as UserId, storeOwnerUserId as UserId);
+      const row = await getRelation(
+        authUserId as UserId,
+        storeOwnerUserId as UserId
+      );
       if (cancelled) return;
       setRelations(toRelationFlags(row));
     })();
@@ -283,7 +291,7 @@ export default function StoreProfilePage() {
     return () => {
       cancelled = true;
     };
-  }, [storeOwnerUserId]);;
+  }, [storeOwnerUserId]);
 
   // 在籍申請ボタン表示判定（uuid会員の therapist のみ）
   useEffect(() => {
@@ -318,7 +326,9 @@ export default function StoreProfilePage() {
 
       if (cancelled) return;
 
-      setCanApplyMembership(!!therapistRow && (therapistRow as any).store_id == null);
+      setCanApplyMembership(
+        !!therapistRow && (therapistRow as any).store_id == null
+      );
     };
 
     void checkEligibility();
@@ -409,7 +419,9 @@ export default function StoreProfilePage() {
       });
 
       if (error) {
-        if (String((error as any).message || "").includes("already pending")) {
+        if (
+          String((error as any).message || "").includes("already pending")
+        ) {
           setApplyDone(true);
           return;
         }
@@ -450,7 +462,9 @@ export default function StoreProfilePage() {
 
         if (sError) {
           console.error("[StoreProfile] store fetch error:", sError);
-          setProfileError((sError as any)?.message ?? "店舗プロフィールの取得に失敗しました。");
+          setProfileError(
+            (sError as any)?.message ?? "店舗プロフィールの取得に失敗しました。"
+          );
           setPosts([]);
           return;
         }
@@ -524,7 +538,9 @@ export default function StoreProfilePage() {
 
         // 4) likedIds（viewerReady のときだけ）
         const likedSet =
-          viewerReady && viewerUuid ? await fetchLikedPostIdsForUser(viewerUuid) : new Set<string>();
+          viewerReady && viewerUuid
+            ? await fetchLikedPostIdsForUser(viewerUuid)
+            : new Set<string>();
 
         if (cancelled) return;
 
@@ -546,7 +562,7 @@ export default function StoreProfilePage() {
           return {
             id: p.id,
 
-            // ★UiPost必須（あなたの型エラーの原因だった箇所）
+            // ★UiPost必須
             authorId: authorId ?? "",
             createdAt: (p as any).created_at,
 
@@ -574,9 +590,12 @@ export default function StoreProfilePage() {
       } catch (e: any) {
         if (cancelled) return;
         console.error("[StoreProfile] unexpected error:", e);
-        setProfileError(e?.message ?? "店舗プロフィールの取得中に不明なエラーが発生しました。");
+        setProfileError(
+          e?.message ?? "店舗プロフィールの取得中に不明なエラーが発生しました。"
+        );
         setPostsError(
-          e?.message ?? "お店の投稿の取得中に不明なエラーが発生しました。時間をおいて再度お試しください。"
+          e?.message ??
+            "お店の投稿の取得中に不明なエラーが発生しました。時間をおいて再度お試しください。"
         );
         setPosts([]);
       } finally {
@@ -610,9 +629,12 @@ export default function StoreProfilePage() {
 
         const rows: TherapistHit[] = (data ?? []).map((t: any) => {
           const raw = (t as DbTherapistRow).avatar_url ?? null;
-          const resolved = looksValidAvatarUrl(raw) ? resolveAvatarUrl(raw) : null;
+          const resolved = looksValidAvatarUrl(raw)
+            ? resolveAvatarUrl(raw)
+            : null;
 
-          const displayName = ((t as DbTherapistRow).display_name ?? "").trim() || "セラピスト";
+          const displayName =
+            ((t as DbTherapistRow).display_name ?? "").trim() || "セラピスト";
           const userId = (t as DbTherapistRow).user_id ?? null;
 
           return {
@@ -675,7 +697,10 @@ export default function StoreProfilePage() {
             ? {
                 ...p,
                 liked: nextLiked,
-                likeCount: Math.max(p.likeCount + (nextLiked ? 1 : -1), 0),
+                likeCount: Math.max(
+                  p.likeCount + (nextLiked ? 1 : -1),
+                  0
+                ),
               }
             : p
         )
@@ -707,7 +732,9 @@ export default function StoreProfilePage() {
       // server truth
       setPosts((prev) =>
         prev.map((p) =>
-          p.id === post.id ? { ...p, likeCount: res.likeCount, liked: nextLiked } : p
+          p.id === post.id
+            ? { ...p, likeCount: res.likeCount, liked: nextLiked }
+            : p
         )
       );
     },
@@ -727,7 +754,11 @@ export default function StoreProfilePage() {
       const ok = window.confirm("この投稿を通報しますか？");
       if (!ok) return;
 
-      const done = await reportPost({ postId, reporterId: viewerUuid, reason: null });
+      const done = await reportPost({
+        postId,
+        reporterId: viewerUuid,
+        reason: null,
+      });
       if (done) alert("通報を受け付けました。ご協力ありがとうございます。");
       else alert("通報に失敗しました。時間をおいて再度お試しください。");
       setMenuPostId(null);
@@ -736,7 +767,7 @@ export default function StoreProfilePage() {
   );
 
   // ==============================
-  // 表示計算
+  // 表示計算（ProfileHero 用）
   // ==============================
   const storeInitial = storeName?.trim()?.charAt(0)?.toUpperCase() || "?";
   const effectiveStoreAvatarUrl = storeAvatarUrl || ownerAvatarUrl || null;
@@ -751,163 +782,85 @@ export default function StoreProfilePage() {
   // counts 表示は「対象がuuidなら表示」（ログイン不要）
   const canShowCounts = isUuid(storeOwnerUserId);
 
-  // Link の href（storeOwnerUserId を正として connections を開く）
-  const followingHref = canShowCounts ? `/connections/${storeOwnerUserId}?tab=following` : "#";
-  const followersHref = canShowCounts ? `/connections/${storeOwnerUserId}?tab=followers` : "#";
+  const followingHref = canShowCounts
+    ? `/connections/${storeOwnerUserId}?tab=following`
+    : "#";
+  const followerHref = canShowCounts
+    ? `/connections/${storeOwnerUserId}?tab=followers`
+    : "#";
+
+  // ProfileHero の編集導線（店舗は console）
+  const editHref = `/store/${storeId}/console`;
 
   return (
     <div className="app-shell">
-      <AppHeader title={storeName} subtitle={storeHandle || ""} />
+      <AppHeader title={storeName} subtitle={storeHandle || ""} showBack={true} />
 
       <main className="app-main">
         {profileError && (
-          <div style={{ padding: "4px 12px", fontSize: 11, color: "#b00020" }}>
+          <div className="error-strip">
             店舗情報の読み込みに失敗しました：{profileError}
           </div>
         )}
 
-        <section className="store-hero">
-          <div className="store-hero-row">
-            <AvatarCircle
-              className="store-avatar"
-              size={48}
-              avatarUrl={effectiveStoreAvatarUrl}
-              displayName={storeName}
-              fallbackText={storeInitial}
-              alt=""
-            />
+        {/* ★ Therapistページと同じ構造：Heroは共通コンポーネントに統一 */}
+        <ProfileHero
+          displayName={storeName}
+          handle={storeHandle || ""}
+          avatarUrl={effectiveStoreAvatarUrl}
+          avatarInitial={storeInitial}
+          roleLabel="店舗"
+          areaLabel={areaLabel || "未設定"}
+          intro={storeProfileText ?? null}
+          loadingProfile={loadingProfile}
+          postsCount={posts.length}
+          canShowCounts={canShowCounts}
+          loadingCounts={loadingCounts}
+          followingCount={canShowCounts ? followingCount : null}
+          followerCount={canShowCounts ? followersCount : null}
+          followingHref={followingHref}
+          followerHref={followerHref}
+          canShowDm={!!(canShowDmButton && storeOwnerUserId)}
+          targetUserId={storeOwnerUserId ?? ""}
+          canEdit={isOwner}
+          editHref={editHref}
+          canShowRelationUi={canShowRelationUi}
+          relations={relations}
+          onToggleFollow={handleToggleFollow}
+          onToggleMute={handleToggleMute}
+          onToggleBlock={handleToggleBlock}
+        />
 
-            <div className="store-hero-main">
-              <div className="store-name-row">
-                <span className="store-name">{storeName}</span>
-                <span className="store-handle">
-                  {storeHandle || ""}
+        {/* ★ Hero直下に追加要素（在籍申請など） */}
+        {canApplyMembership && (
+          <section className="hero-extra">
+            <button
+              type="button"
+              disabled={applyLoading || applyDone}
+              onClick={handleApplyMembership}
+              className="apply-btn"
+            >
+              {applyDone ? "在籍申請済み" : applyLoading ? "申請中…" : "この店舗に在籍申請する"}
+            </button>
+          </section>
+        )}
 
-                  {canShowDmButton && storeOwnerUserId && (
-                    <Link
-                      href={`/messages/new?to=${storeOwnerUserId}`}
-                      className="dm-inline-btn no-link-style"
-                    >
-                      ✉
-                    </Link>
-                  )}
-
-                  {isOwner && (
-                    <Link
-                      href={`/store/${storeId}/console`}
-                      className="edit-inline-btn no-link-style"
-                    >
-                      ✎
-                    </Link>
-                  )}
-                </span>
-              </div>
-
-              <div className="store-meta-row">
-                <span>アカウント種別：店舗</span>
-                <span>対応エリア：{areaLabel}</span>
-              </div>
-
-              {/* 数字部分がリンク */}
-              <div className="store-stats-row">
-                <span>
-                  投稿 <strong>{posts.length}</strong>
-                </span>
-
-                <span>
-                  在籍 <strong>{therapists.length}</strong>
-                </span>
-
-                <span>
-                  フォロー中{" "}
-                  <strong>
-                    {canShowCounts ? (
-                      <Link href={followingHref} className="stat-link">
-                        {loadingCounts ? "…" : followingCount}
-                      </Link>
-                    ) : (
-                      "–"
-                    )}
-                  </strong>
-                </span>
-
-                <span>
-                  フォロワー{" "}
-                  <strong>
-                    {canShowCounts ? (
-                      <Link href={followersHref} className="stat-link">
-                        {loadingCounts ? "…" : followersCount}
-                      </Link>
-                    ) : (
-                      "–"
-                    )}
-                  </strong>
-                </span>
-              </div>
-
-              {canShowRelationUi && (
-                <RelationActions
-                  flags={relations}
-                  onToggleFollow={handleToggleFollow}
-                  onToggleMute={handleToggleMute}
-                  onToggleBlock={handleToggleBlock}
-                  onReport={() => {
-                    console.log("report:", "profile", storeId);
-                    alert("この店舗の通報を受け付けました（現在はテスト用です）。");
-                  }}
-                />
-              )}
-
-              {canApplyMembership && (
-                <div style={{ marginTop: 8 }}>
-                  <button
-                    type="button"
-                    disabled={applyLoading || applyDone}
-                    onClick={handleApplyMembership}
-                    style={{
-                      width: "100%",
-                      borderRadius: 999,
-                      padding: "10px 12px",
-                      fontSize: 13,
-                      fontWeight: 600,
-                      border: "none",
-                      background: applyDone ? "#ddd" : "var(--accent)",
-                      color: applyDone ? "#666" : "#fff",
-                      cursor: applyDone ? "default" : "pointer",
-                    }}
-                  >
-                    {applyDone ? "在籍申請済み" : applyLoading ? "申請中…" : "この店舗に在籍申請する"}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {loadingProfile && <p className="store-hero-lead">店舗情報を読み込んでいます…</p>}
-
-          {!loadingProfile && storeProfileText?.trim() && (
-            <p className="store-hero-lead">
-              {storeProfileText.split("\n").map((line, idx, arr) => (
-                <React.Fragment key={idx}>
-                  {line}
-                  {idx < arr.length - 1 && <br />}
-                </React.Fragment>
-              ))}
-            </p>
-          )}
-        </section>
-
-        {/* 在籍セラピスト一覧 */}
+        {/* 在籍セラピスト一覧（既存UIを維持） */}
         <section className="surface-card store-card">
           <h2 className="store-section-title">在籍セラピスト</h2>
 
           {therapists.length === 0 ? (
-            <p className="store-caption">まだ LRoom 上では在籍セラピストが登録されていません。</p>
+            <p className="store-caption">
+              まだ LRoom 上では在籍セラピストが登録されていません。
+            </p>
           ) : (
             <ul className="therapist-list">
               {therapists.map((t) => (
                 <li key={t.id} className="therapist-item">
-                  <Link href={`/therapist/${t.id}`} className="therapist-link no-link-style">
+                  <Link
+                    href={`/therapist/${t.id}`}
+                    className="therapist-link no-link-style"
+                  >
                     <AvatarCircle
                       className="therapist-avatar"
                       size={40}
@@ -927,13 +880,18 @@ export default function StoreProfilePage() {
           )}
         </section>
 
-        {/* 公式リンク */}
+        {/* 公式リンク（既存UIを維持） */}
         <section className="surface-card store-card">
           <h2 className="store-section-title">公式リンク</h2>
 
           <div className="store-links">
             {websiteUrl && (
-              <a href={websiteUrl} target="_blank" rel="noopener noreferrer" className="store-link-btn">
+              <a
+                href={websiteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="store-link-btn"
+              >
                 公式サイトを見る
               </a>
             )}
@@ -977,20 +935,18 @@ export default function StoreProfilePage() {
           </p>
         </section>
 
-        {/* 投稿 */}
-        <section className="surface-card store-card store-posts-section">
-          <h2 className="store-section-title">お店の発信</h2>
+        {/* 投稿（Therapistページの見出し/空表示のトーンに寄せる） */}
+        <section className="store-posts-section">
+          <h2 className="profile-section-title">投稿</h2>
 
-          {loadingPosts && <p className="store-caption">投稿を読み込んでいます…</p>}
+          {loadingPosts && <div className="empty-hint">投稿を読み込んでいます…</div>}
           {postsError && !loadingPosts && (
-            <p className="store-caption" style={{ color: "#b00020" }}>
+            <div className="empty-hint" style={{ color: "#b00020" }}>
               {postsError}
-            </p>
+            </div>
           )}
           {!loadingPosts && !postsError && posts.length === 0 && (
-            <p className="store-caption">
-              まだこのお店からの投稿はありません。少しずつ、雰囲気が分かる言葉を並べていく予定です。
-            </p>
+            <div className="empty-hint">まだ投稿はありません。</div>
           )}
 
           {!loadingPosts && !postsError && posts.length > 0 && (
@@ -1006,7 +962,6 @@ export default function StoreProfilePage() {
                   onToggleLike={handleToggleLike}
                   onReply={handleReply}
                   onDeleted={(postId) => {
-                    // このページの state 名に合わせて下さい（例：posts / filteredPosts など）
                     setPosts((prev) => prev.filter((x) => x.id !== postId));
                   }}
                   showBadges={true}
@@ -1020,78 +975,26 @@ export default function StoreProfilePage() {
       <BottomNav active="mypage" hasUnread={hasUnread} />
 
       <style jsx>{`
-        .store-hero {
-          padding: 4px 0 12px;
-          border-bottom: 1px solid var(--border);
-          margin-bottom: 8px;
+        .error-strip {
+          padding: 4px 12px;
+          fontSize: 11px;
+          color: #b00020;
         }
 
-        .store-hero-row {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-          margin-bottom: 8px;
+        .hero-extra {
+          margin: 8px 0 12px;
         }
 
-        .store-hero-main {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-
-        .store-name-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-          align-items: baseline;
-        }
-
-        .store-name {
-          font-size: 16px;
-          font-weight: 600;
-        }
-
-        .store-handle {
-          font-size: 12px;
-          color: var(--text-sub);
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .store-meta-row {
-          font-size: 11px;
-          color: var(--text-sub);
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-
-        .store-stats-row {
-          font-size: 11px;
-          color: var(--text-sub);
-          display: flex;
-          gap: 10px;
-          flex-wrap: wrap;
-          align-items: center;
-        }
-
-        .stat-link {
-          color: var(--text-sub);
-          text-decoration: underline;
-          text-underline-offset: 3px;
-        }
-
-        .store-hero-lead {
+        .apply-btn {
+          width: 100%;
+          border-radius: 999px;
+          padding: 10px 12px;
           font-size: 13px;
-          line-height: 1.7;
-          margin-top: 6px;
-          color: var(--text-main);
-        }
-
-        .store-avatar {
-          border: 1px solid rgba(0, 0, 0, 0.08);
+          font-weight: 600;
+          border: none;
+          background: ${applyDone ? "#ddd" : "var(--accent)"};
+          color: ${applyDone ? "#666" : "#fff"};
+          cursor: ${applyDone ? "default" : "pointer"};
         }
 
         .store-card {
@@ -1184,14 +1087,23 @@ export default function StoreProfilePage() {
           color: var(--text-sub);
         }
 
-        .edit-inline-btn {
-          margin-left: 6px;
-          font-size: 14px;
-          opacity: 0.8;
+        /* Therapistページ寄せ */
+        .store-posts-section {
+          margin-top: 6px;
+          padding-bottom: 8px;
         }
 
-        .edit-inline-btn:hover {
-          opacity: 1;
+        .profile-section-title {
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 4px;
+          color: var(--text-sub);
+        }
+
+        .empty-hint {
+          font-size: 12px;
+          color: var(--text-sub);
+          line-height: 1.6;
         }
 
         .feed-list {
