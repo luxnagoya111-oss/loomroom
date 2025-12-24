@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import type { UserId } from "@/types/user";
 import { isGuestId } from "@/types/user";
@@ -16,9 +16,7 @@ type NavKey =
   | "mypage";
 
 type BottomNavProps = {
-  /** どのタブをアクティブ表示にするか（省略時はURLから自動判定） */
   active?: NavKey;
-  /** 未読通知があるかどうか（省略時は false） */
   hasUnread?: boolean;
 };
 
@@ -32,7 +30,6 @@ function inferActiveFromPath(pathname: string | null): NavKey {
   if (path.startsWith("/messages")) return "messages";
   if (path.startsWith("/notifications")) return "notifications";
 
-  // 公開プロフィール系は「マイ」扱いに寄せる
   if (path.startsWith("/mypage")) return "mypage";
   if (path.startsWith("/store")) return "mypage";
   if (path.startsWith("/therapist")) return "mypage";
@@ -55,27 +52,26 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
   const [currentUserId, setCurrentUserId] = useState<UserId>("guest");
   const [isGuest, setIsGuest] = useState<boolean>(true);
 
-  // ★ 追加：通知ドットはローカルで即時に消せるようにする
   const [hasUnreadLocal, setHasUnreadLocal] = useState<boolean>(hasUnread);
 
-  // 追加：DBロール & 紐づきID（URL遷移用）
   const [dbRole, setDbRole] = useState<DbUserRow["role"]>(null);
   const [storeId, setStoreId] = useState<string | null>(null);
   const [therapistId, setTherapistId] = useState<string | null>(null);
 
-  // 初期：ID確定
+  // 連打対策（短いガード）
+  const [navBusy, setNavBusy] = useState(false);
+  const navBusyTimer = useRef<number | null>(null);
+
   useEffect(() => {
     const id = getCurrentUserId();
     setCurrentUserId(id);
     setIsGuest(isGuestId(id));
   }, []);
 
-  // props で unread が更新されたときは同期（親が再計算した場合の保険）
   useEffect(() => {
     setHasUnreadLocal(hasUnread);
   }, [hasUnread]);
 
-  // ★ UUID（ログイン済み）なら DB から role / storeId / therapistId を確定
   useEffect(() => {
     const id = currentUserId;
     if (!id || isGuestId(id)) {
@@ -89,7 +85,6 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
 
     const loadRoleAndOwner = async () => {
       try {
-        // users.role
         const { data: u, error: uErr } = await supabase
           .from("users")
           .select("id, role")
@@ -106,7 +101,6 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
 
         setDbRole(u?.role ?? null);
 
-        // role に応じて storeId / therapistId を引く（公開ページ遷移で必要）
         if (u?.role === "store") {
           const { data: s, error: sErr } = await supabase
             .from("stores")
@@ -132,7 +126,6 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
             setStoreId(null);
           }
         } else {
-          // user
           setStoreId(null);
           setTherapistId(null);
         }
@@ -150,7 +143,15 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
 
   const resolvedActive: NavKey = active ?? inferActiveFromPath(pathname ?? null);
 
+  const lockNavBriefly = () => {
+    setNavBusy(true);
+    if (navBusyTimer.current) window.clearTimeout(navBusyTimer.current);
+    navBusyTimer.current = window.setTimeout(() => setNavBusy(false), 350);
+  };
+
   const go = (href: string) => {
+    if (navBusy) return;
+    lockNavBriefly();
     router.push(href);
   };
 
@@ -162,7 +163,8 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
     go("/messages");
   };
 
-  const handleNotificationsClick = async () => {
+  // ★ 重要：通知は「即遷移 → 裏で既読化」
+  const handleNotificationsClick = () => {
     const id = currentUserId;
 
     if (!id || isGuestId(id)) {
@@ -170,25 +172,26 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
       return;
     }
 
-    try {
-      // 未読通知を既読にする（ユーザーIDで統一）
-      const { error } = await supabase
-        .from("notifications")
-        .update({ is_read: true })
-        .eq("user_id", id)
-        .eq("is_read", false);
+    // 体感を最優先で即消す（押した瞬間に反映）
+    setHasUnreadLocal(false);
 
-      if (error) {
-        console.error("[BottomNav] mark notifications read error:", error);
-      } else {
-        // 🔔ドットを即時に消す
-        setHasUnreadLocal(false);
-      }
-    } catch (e) {
-      console.error("[BottomNav] mark notifications read failed:", e);
-    }
-
+    // 先に遷移
     go("/notifications");
+
+    // 既読化は裏で（遷移をブロックしない）
+    (async () => {
+      try {
+        const { error } = await supabase
+          .from("notifications")
+          .update({ is_read: true })
+          .eq("user_id", id)
+          .eq("is_read", false);
+
+        if (error) console.error("[BottomNav] mark notifications read error:", error);
+      } catch (e) {
+        console.error("[BottomNav] mark notifications read failed:", e);
+      }
+    })();
   };
 
   const handleMypageClick = () => {
@@ -199,39 +202,29 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
       return;
     }
 
-    // ★ DB role 優先で分岐
     if (dbRole === "store") {
-      if (storeId) {
-        // 店舗の公開プロフィールへ
-        go(`/store/${storeId}`);
-      } else {
-        // フォールバック
-        go(`/mypage/${id}`);
-      }
+      if (storeId) go(`/store/${storeId}`);
+      else go(`/mypage/${id}`);
       return;
     }
 
     if (dbRole === "therapist") {
-      if (therapistId) {
-        // セラピストの公開プロフィールへ
-        go(`/therapist/${therapistId}`);
-      } else {
-        go(`/mypage/${id}`);
-      }
+      if (therapistId) go(`/therapist/${therapistId}`);
+      else go(`/mypage/${id}`);
       return;
     }
 
-    // 一般ユーザー
     go(`/mypage/${id}`);
   };
 
   return (
     <>
-      <nav className="bottom-nav">
+      <nav className="bottom-nav" aria-busy={navBusy}>
         <button
           type="button"
           className={"nav-item" + (resolvedActive === "home" ? " is-active" : "")}
           onClick={() => go("/")}
+          disabled={navBusy}
         >
           <span className="nav-icon">🏠</span>
           ホーム
@@ -241,6 +234,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
           type="button"
           className={"nav-item" + (resolvedActive === "search" ? " is-active" : "")}
           onClick={() => go("/search")}
+          disabled={navBusy}
         >
           <span className="nav-icon">🔍</span>
           さがす
@@ -250,6 +244,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
           type="button"
           className={"nav-item" + (resolvedActive === "compose" ? " is-active" : "")}
           onClick={() => go("/compose")}
+          disabled={navBusy}
         >
           <span className="nav-icon nav-icon-compose">＋</span>
         </button>
@@ -258,6 +253,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
           type="button"
           className={"nav-item" + (resolvedActive === "messages" ? " is-active" : "")}
           onClick={handleMessagesClick}
+          disabled={navBusy}
         >
           <span className="nav-icon">✉</span>
           メッセージ
@@ -269,10 +265,10 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
             "nav-item" + (resolvedActive === "notifications" ? " is-active" : "")
           }
           onClick={handleNotificationsClick}
+          disabled={navBusy}
         >
           <span className="nav-icon-wrap">
             <span className="nav-icon">🔔</span>
-            {/* ★ local を見る */}
             {hasUnreadLocal && <span className="nav-badge-dot" />}
           </span>
           通知
@@ -282,6 +278,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
           type="button"
           className={"nav-item" + (resolvedActive === "mypage" ? " is-active" : "")}
           onClick={handleMypageClick}
+          disabled={navBusy}
         >
           <span className="nav-icon">👤</span>
           マイ
@@ -305,6 +302,11 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
           padding: 4px 8px;
           z-index: 30;
           backdrop-filter: blur(10px);
+
+          /* クリック/タップを確実に拾うための基本 */
+          pointer-events: auto;
+          user-select: none;
+          overscroll-behavior: contain;
         }
 
         .nav-item {
@@ -321,6 +323,16 @@ const BottomNav: React.FC<BottomNavProps> = ({ active, hasUnread = false }) => {
           cursor: pointer;
           border-radius: 999px;
           transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+
+          /* モバイルのタップ取りこぼし対策 */
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
+          user-select: none;
+        }
+
+        .nav-item:disabled {
+          opacity: 0.7;
+          cursor: default;
         }
 
         .nav-item.is-active {

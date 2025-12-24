@@ -18,7 +18,6 @@ type DbUserRow = {
   id: string;
   role: "user" | "therapist" | "store" | null;
 };
-
 type DbStoreRow = { id: string };
 type DbTherapistRow = { id: string };
 
@@ -42,29 +41,25 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     if (typeof window !== "undefined") window.history.back();
   };
 
-  // マウント時に「ログイン済みかどうか」をざっくり判定
   useEffect(() => {
     const id = getCurrentUserId();
     setLoggedIn(!isGuestId(id));
   }, []);
 
   const handleLogoutClick = async () => {
-    await logout(); // supabase.signOut + localStorageクリア
+    await logout();
     setLoggedIn(false);
     setMenuOpen(false);
     router.push("/");
   };
 
   /**
-   * ★ BottomNav と完全に同じ「マイ」遷移
-   * - guest -> /login
-   * - store -> /store/{storeId}
-   * - therapist -> /therapist/{therapistId}
-   * - user -> /mypage/{userId}
+   * ★ 体感改善版：
+   * 1) まず /mypage/{id} に即遷移（押した瞬間に反応）
+   * 2) 裏で role を解決できたら /store or /therapist に replace で寄せる
    */
-  const handleMyPageClick = async () => {
+  const handleMyPageClick = () => {
     const id = getCurrentUserId();
-
     setMenuOpen(false);
 
     if (!id || isGuestId(id)) {
@@ -72,71 +67,61 @@ const AppHeader: React.FC<AppHeaderProps> = ({
       return;
     }
 
-    try {
-      // users.role
-      const { data: u, error: uErr } = await supabase
-        .from("users")
-        .select("id, role")
-        .eq("id", id)
-        .maybeSingle<DbUserRow>();
+    const fallback = `/mypage/${encodeURIComponent(id)}`;
 
-      if (uErr) {
-        console.error("[AppHeader] users.role fetch error:", uErr);
-        router.push(`/mypage/${encodeURIComponent(id)}`);
-        return;
-      }
+    // まず即遷移（体感を最優先）
+    router.push(fallback);
 
-      const role = u?.role ?? null;
+    // 裏で解決して、必要なら正しい公開ページへ
+    (async () => {
+      try {
+        const { data: u, error: uErr } = await supabase
+          .from("users")
+          .select("id, role")
+          .eq("id", id)
+          .maybeSingle<DbUserRow>();
 
-      if (role === "store") {
-        const { data: s, error: sErr } = await supabase
-          .from("stores")
-          .select("id")
-          .eq("owner_user_id", id)
-          .maybeSingle<DbStoreRow>();
-
-        if (sErr) console.error("[AppHeader] stores fetch error:", sErr);
-
-        if (s?.id) {
-          router.push(`/store/${encodeURIComponent(s.id)}`);
+        if (uErr) {
+          console.error("[AppHeader] users.role fetch error:", uErr);
           return;
         }
 
-        router.push(`/mypage/${encodeURIComponent(id)}`);
-        return;
-      }
+        const role = u?.role ?? null;
 
-      if (role === "therapist") {
-        const { data: t, error: tErr } = await supabase
-          .from("therapists")
-          .select("id")
-          .eq("user_id", id)
-          .maybeSingle<DbTherapistRow>();
+        if (role === "store") {
+          const { data: s, error: sErr } = await supabase
+            .from("stores")
+            .select("id")
+            .eq("owner_user_id", id)
+            .maybeSingle<DbStoreRow>();
 
-        if (tErr) console.error("[AppHeader] therapists fetch error:", tErr);
-
-        if (t?.id) {
-          router.push(`/therapist/${encodeURIComponent(t.id)}`);
+          if (sErr) console.error("[AppHeader] stores fetch error:", sErr);
+          if (s?.id) router.replace(`/store/${encodeURIComponent(s.id)}`);
           return;
         }
 
-        router.push(`/mypage/${encodeURIComponent(id)}`);
-        return;
-      }
+        if (role === "therapist") {
+          const { data: t, error: tErr } = await supabase
+            .from("therapists")
+            .select("id")
+            .eq("user_id", id)
+            .maybeSingle<DbTherapistRow>();
 
-      // user / null は /mypage
-      router.push(`/mypage/${encodeURIComponent(id)}`);
-    } catch (e) {
-      console.error("[AppHeader] handleMyPageClick exception:", e);
-      router.push(`/mypage/${encodeURIComponent(id)}`);
-    }
+          if (tErr) console.error("[AppHeader] therapists fetch error:", tErr);
+          if (t?.id) router.replace(`/therapist/${encodeURIComponent(t.id)}`);
+          return;
+        }
+
+        // user/null は fallback のままでOK
+      } catch (e) {
+        console.error("[AppHeader] handleMyPageClick exception:", e);
+      }
+    })();
   };
 
   return (
     <>
-      {/* ===== 上部ナビバー ===== */}
       <header className="app-header">
-        {/* 左端：戻る */}
         {showBack ? (
           <button
             type="button"
@@ -150,13 +135,11 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           <div className="header-icon-spacer header-back" />
         )}
 
-        {/* 中央：タイトル */}
         <div className="header-center">
           <div className="app-title">{title}</div>
           {subtitle && <div className="app-header-sub">{subtitle}</div>}
         </div>
 
-        {/* 右端：メニュー */}
         <div className="header-right">
           {rightSlot ? (
             rightSlot
@@ -173,9 +156,12 @@ const AppHeader: React.FC<AppHeaderProps> = ({
         </div>
       </header>
 
-      {/* ===== サイドメニュー ===== */}
       {menuOpen && (
-        <div className="menu-drawer-overlay" onClick={() => setMenuOpen(false)}>
+        <div
+          className="menu-drawer-overlay"
+          onClick={() => setMenuOpen(false)}
+          role="presentation"
+        >
           <div className="menu-drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
               <div className="drawer-title">メニュー</div>
@@ -190,7 +176,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
             </div>
 
             <nav className="drawer-nav">
-              {/* 基本ナビ */}
               <button
                 type="button"
                 className="drawer-item drawer-item-button"
@@ -207,7 +192,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 さがす
               </button>
 
-              {/* ★ BottomNav と同じ遷移 */}
               <button
                 type="button"
                 className="drawer-item drawer-item-button"
@@ -224,7 +208,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 お問い合わせ
               </button>
 
-              {/* 会員 / アカウント */}
               <div className="drawer-section-label">会員 / アカウント</div>
 
               <button
@@ -261,7 +244,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 会員登録（セラピスト）
               </button>
 
-              {/* ポリシー・ガイドライン */}
               <div className="drawer-section-label">ルール / ポリシー</div>
 
               <button
@@ -296,7 +278,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
         .app-header {
           position: sticky;
           top: 0;
-          z-index: 30;
+          z-index: 50; /* ★ BottomNavより上に固定 */
           width: 100%;
           height: 48px;
           background: rgba(253, 251, 247, 0.96);
@@ -307,6 +289,16 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           align-items: center;
           justify-content: space-between;
           padding: 0 8px;
+
+          pointer-events: auto;
+          user-select: none;
+          overscroll-behavior: contain;
+        }
+
+        button {
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
+          user-select: none;
         }
 
         .header-back {
@@ -377,7 +369,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           position: fixed;
           inset: 0;
           background: rgba(0, 0, 0, 0.25);
-          z-index: 40;
+          z-index: 100; /* ★ 最上位に固定 */
           display: flex;
           justify-content: flex-end;
         }
