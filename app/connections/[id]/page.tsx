@@ -1038,16 +1038,20 @@ const ConnectionsPage: React.FC = () => {
           scroll-snap-type: x mandatory;
           -webkit-overflow-scrolling: touch;
           scrollbar-width: none;
-        }
-        .pager::-webkit-scrollbar {
-          display: none;
+
+          /* ★根治：左右paddingを殺す */
+          padding: 0 !important;
+          scroll-padding-left: 0 !important;
+          scroll-padding-right: 0 !important;
+          box-sizing: border-box;
         }
 
         .page {
           flex: 0 0 100%;
           min-width: 100%;
           scroll-snap-align: start;
-          padding-top: 6px;
+          padding-left: 0;
+          padding-right: 0;
         }
 
         .pageInner {
