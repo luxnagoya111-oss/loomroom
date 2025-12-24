@@ -1,7 +1,7 @@
 // app/store/[id]/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -39,7 +39,6 @@ import {
 
 import type { UserId } from "@/types/user";
 import type { UiPost } from "@/lib/postFeedHydrator";
-import { RelationActions } from "@/components/RelationActions";
 import { getConnectionCounts } from "@/lib/repositories/connectionRepository";
 
 // ==============================
@@ -119,6 +118,8 @@ type TherapistHit = {
   handle: string; // @xxxxxx
 };
 
+type RelatedLink = { label: string; href: string };
+
 export default function StoreProfilePage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -151,6 +152,7 @@ export default function StoreProfilePage() {
   const [areaLabel, setAreaLabel] = useState<string>(initialAreaLabel);
   const [storeProfileText, setStoreProfileText] = useState<string | null>(null);
 
+  // 公式リンクはページからは削除（ProfileHero の relatedLinks に集約）
   const [websiteUrl, setWebsiteUrl] = useState<string | null>(null);
   const [xUrl, setXUrl] = useState<string | null>(null);
   const [twicasUrl, setTwicasUrl] = useState<string | null>(null);
@@ -419,9 +421,7 @@ export default function StoreProfilePage() {
       });
 
       if (error) {
-        if (
-          String((error as any).message || "").includes("already pending")
-        ) {
+        if (String((error as any).message || "").includes("already pending")) {
           setApplyDone(true);
           return;
         }
@@ -478,8 +478,9 @@ export default function StoreProfilePage() {
 
         if (row.name?.trim()) setStoreName(row.name.trim());
         if (row.area?.trim()) setAreaLabel(row.area.trim());
-        if (row.description?.trim()) setStoreProfileText(row.description);
+        setStoreProfileText(row.description?.trim()?.length ? row.description : null);
 
+        // related links 用（ページ側では表示しない）
         setWebsiteUrl(row.website_url?.trim() || null);
         setXUrl(row.x_url?.trim() || null);
         setTwicasUrl(row.twicas_url?.trim() || null);
@@ -550,7 +551,8 @@ export default function StoreProfilePage() {
             : null;
 
         // 表示に使う店舗アバターは「stores.avatar_url 優先 → owner users.avatar_url」
-        const effectiveStoreAvatarUrl = storeAvatarResolved || ownerAvatarResolved || null;
+        const effectiveStoreAvatarUrl =
+          storeAvatarResolved || ownerAvatarResolved || null;
 
         const profilePath = `/store/${storeId}`;
         const authorId = row.owner_user_id ?? storeId; // UiPost必須対策（uuid優先）
@@ -561,16 +563,11 @@ export default function StoreProfilePage() {
 
           return {
             id: p.id,
-
-            // ★UiPost必須
             authorId: authorId ?? "",
             createdAt: (p as any).created_at,
-
-            // 本文・画像
             body: (p as any).body ?? "",
             imageUrls,
 
-            // PostCard 用
             authorKind: "store",
             authorName: (row.name?.trim() || initialStoreName) as string,
             authorHandle: toPublicHandleFromUserId(row.owner_user_id) ?? "",
@@ -697,10 +694,7 @@ export default function StoreProfilePage() {
             ? {
                 ...p,
                 liked: nextLiked,
-                likeCount: Math.max(
-                  p.likeCount + (nextLiked ? 1 : -1),
-                  0
-                ),
+                likeCount: Math.max(p.likeCount + (nextLiked ? 1 : -1), 0),
               }
             : p
         )
@@ -718,11 +712,7 @@ export default function StoreProfilePage() {
         setPosts((prev) =>
           prev.map((p) =>
             p.id === post.id
-              ? {
-                  ...p,
-                  liked: post.liked,
-                  likeCount: post.likeCount,
-                }
+              ? { ...p, liked: post.liked, likeCount: post.likeCount }
               : p
           )
         );
@@ -773,7 +763,8 @@ export default function StoreProfilePage() {
   const effectiveStoreAvatarUrl = storeAvatarUrl || ownerAvatarUrl || null;
 
   // Relation UI は uuid会員同士 + 自分以外 のときだけ
-  const canShowRelationUi = !isOwner && isUuid(authUserId) && isUuid(storeOwnerUserId);
+  const canShowRelationUi =
+    !isOwner && isUuid(authUserId) && isUuid(storeOwnerUserId);
 
   // DM は uuidログイン済み + 相手uuid + 自分以外 + ブロックしてない ときだけ
   const canShowDmButton =
@@ -792,6 +783,15 @@ export default function StoreProfilePage() {
   // ProfileHero の編集導線（店舗は console）
   const editHref = `/store/${storeId}/console`;
 
+  const relatedLinks: RelatedLink[] = useMemo(() => {
+    const links: RelatedLink[] = [];
+    if (websiteUrl) links.push({ label: "公式サイトを見る", href: websiteUrl });
+    if (xUrl) links.push({ label: "X（旧Twitter）", href: xUrl });
+    if (twicasUrl) links.push({ label: "ツイキャス", href: twicasUrl });
+    if (lineUrl) links.push({ label: "公式LINE", href: lineUrl });
+    return links;
+  }, [websiteUrl, xUrl, twicasUrl, lineUrl]);
+
   return (
     <div className="app-shell">
       <AppHeader title={storeName} subtitle={storeHandle || ""} showBack={true} />
@@ -803,7 +803,7 @@ export default function StoreProfilePage() {
           </div>
         )}
 
-        {/* ★ Therapistページと同じ構造：Heroは共通コンポーネントに統一 */}
+        {/* ★ Heroは共通コンポーネントに統一（公式リンクは relatedLinks に寄せる） */}
         <ProfileHero
           displayName={storeName}
           handle={storeHandle || ""}
@@ -829,6 +829,7 @@ export default function StoreProfilePage() {
           onToggleFollow={handleToggleFollow}
           onToggleMute={handleToggleMute}
           onToggleBlock={handleToggleBlock}
+          relatedLinks={relatedLinks}
         />
 
         {/* ★ Hero直下に追加要素（在籍申請など） */}
@@ -840,7 +841,11 @@ export default function StoreProfilePage() {
               onClick={handleApplyMembership}
               className="apply-btn"
             >
-              {applyDone ? "在籍申請済み" : applyLoading ? "申請中…" : "この店舗に在籍申請する"}
+              {applyDone
+                ? "在籍申請済み"
+                : applyLoading
+                ? "申請中…"
+                : "この店舗に在籍申請する"}
             </button>
           </section>
         )}
@@ -878,61 +883,6 @@ export default function StoreProfilePage() {
               ))}
             </ul>
           )}
-        </section>
-
-        {/* 公式リンク（既存UIを維持） */}
-        <section className="surface-card store-card">
-          <h2 className="store-section-title">公式リンク</h2>
-
-          <div className="store-links">
-            {websiteUrl && (
-              <a
-                href={websiteUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="store-link-btn"
-              >
-                公式サイトを見る
-              </a>
-            )}
-
-            {xUrl && (
-              <a
-                href={xUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="store-link-btn store-link-btn--ghost"
-              >
-                X（旧Twitter）
-              </a>
-            )}
-
-            {twicasUrl && (
-              <a
-                href={twicasUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="store-link-btn store-link-btn--ghost"
-              >
-                ツイキャス
-              </a>
-            )}
-
-            {lineUrl && (
-              <a
-                href={lineUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="store-link-btn store-link-btn--ghost"
-              >
-                公式LINE
-              </a>
-            )}
-          </div>
-
-          <p className="store-caption">
-            ※ 上記リンクは LRoom 外のサービスです。各サービスごとの利用規約・ポリシーをご確認のうえご利用ください。
-          </p>
         </section>
 
         {/* 投稿（Therapistページの見出し/空表示のトーンに寄せる） */}
@@ -977,7 +927,7 @@ export default function StoreProfilePage() {
       <style jsx>{`
         .error-strip {
           padding: 4px 12px;
-          fontSize: 11px;
+          font-size: 11px;
           color: #b00020;
         }
 
@@ -1006,35 +956,6 @@ export default function StoreProfilePage() {
           font-weight: 600;
           color: var(--text-sub);
           margin-bottom: 6px;
-        }
-
-        .store-links {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          margin: 6px 0 4px;
-        }
-
-        .store-link-btn {
-          width: 100%;
-          border-radius: 999px;
-          padding: 8px 12px;
-          font-size: 13px;
-          font-weight: 500;
-          border: none;
-          cursor: pointer;
-          text-align: center;
-          text-decoration: none;
-          background: var(--accent);
-          color: #fff;
-          box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
-        }
-
-        .store-link-btn--ghost {
-          background: var(--surface-soft);
-          color: var(--text-main);
-          border: 1px solid var(--border);
-          box-shadow: none;
         }
 
         .store-caption {
