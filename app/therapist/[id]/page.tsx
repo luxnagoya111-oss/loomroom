@@ -80,6 +80,24 @@ function viewUuidOrThrow(uid: UserId) {
   return uid;
 }
 
+function normalizeUrl(raw: any): string {
+  const s = typeof raw === "string" ? raw.trim() : "";
+  return s;
+}
+
+function toRelatedLinks(p: TherapistProfile): Array<{ label: string; href: string }> {
+  const links: Array<{ label: string; href: string }> = [];
+  const x = normalizeUrl(p.snsX);
+  const line = normalizeUrl(p.snsLine);
+  const other = normalizeUrl(p.snsOther);
+
+  if (x) links.push({ label: "X（旧Twitter）", href: x });
+  if (line) links.push({ label: "LINE", href: line });
+  if (other) links.push({ label: "その他のリンク", href: other });
+
+  return links;
+}
+
 export default function TherapistProfilePage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -379,7 +397,6 @@ export default function TherapistProfilePage() {
             body: row.body ?? "",
             imageUrls,
 
-            // PostCard の所有者判定用（PostCard 側が canonicalUserId を参照する想定）
             authorId: tuid ?? "",
             canonicalUserId: tuid ?? "",
 
@@ -548,12 +565,14 @@ export default function TherapistProfilePage() {
     isUuid(authUserId) &&
     isUuid(therapistUserId);
 
-  const showSnsBlock = !!(profile.snsX || profile.snsLine || profile.snsOther);
   const areaLabel = profile.area?.trim() ? profile.area.trim() : "未設定";
 
   const avatarInitial = useMemo(() => {
     return profile.displayName?.trim()?.charAt(0)?.toUpperCase() || "T";
   }, [profile.displayName]);
+
+  // ★ 関連リンク（ProfileHero に集約）
+  const relatedLinks = useMemo(() => toRelatedLinks(profile), [profile]);
 
   // ===== PostCard ハンドラ（mypage と同型）=====
   const handleOpenDetail = useCallback(
@@ -637,7 +656,11 @@ export default function TherapistProfilePage() {
       const ok = window.confirm("この投稿を通報しますか？");
       if (!ok) return;
 
-      const done = await reportPost({ postId, reporterId: viewerUuid, reason: null });
+      const done = await reportPost({
+        postId,
+        reporterId: viewerUuid,
+        reason: null,
+      });
       if (done) alert("通報を受け付けました。ご協力ありがとうございます。");
       else alert("通報に失敗しました。時間をおいて再度お試しください。");
     },
@@ -680,6 +703,7 @@ export default function TherapistProfilePage() {
             onToggleFollow={handleToggleFollow}
             onToggleMute={handleToggleMute}
             onToggleBlock={handleToggleBlock}
+            relatedLinks={relatedLinks}
           />
 
           {/* テスト参加中の注意文（元コードの位置・文面を維持） */}
@@ -690,35 +714,7 @@ export default function TherapistProfilePage() {
           )}
 
           {/* エラー表示（元コード相当：hero外に出す） */}
-          {profileError && (
-            <p className="profile-error">
-              {profileError}
-            </p>
-          )}
-
-          {/* SNSブロック（元コードの構造/クラスを維持） */}
-          {showSnsBlock && (
-            <div className="profile-sns-block">
-              <div className="profile-sns-title">関連リンク</div>
-              <div className="profile-sns-list">
-                {profile.snsX && (
-                  <a href={profile.snsX} target="_blank" rel="noreferrer" className="profile-sns-chip">
-                    X（旧Twitter）
-                  </a>
-                )}
-                {profile.snsLine && (
-                  <a href={profile.snsLine} target="_blank" rel="noreferrer" className="profile-sns-chip">
-                    LINE
-                  </a>
-                )}
-                {profile.snsOther && (
-                  <a href={profile.snsOther} target="_blank" rel="noreferrer" className="profile-sns-chip">
-                    その他のリンク
-                  </a>
-                )}
-              </div>
-            </div>
-          )}
+          {profileError && <p className="profile-error">{profileError}</p>}
 
           {/* 在籍店舗（元コードのDOM/クラス/AvatarCircleを維持） */}
           {isStoreLinked && (
@@ -752,7 +748,10 @@ export default function TherapistProfilePage() {
               )}
 
               {!loadingStore && !storeError && linkedStore && (
-                <Link href={`/store/${linkedStore.id}`} className="linked-store-card linked-store-link-wrapper">
+                <Link
+                  href={`/store/${linkedStore.id}`}
+                  className="linked-store-card linked-store-link-wrapper"
+                >
                   <div className="linked-store-row">
                     <AvatarCircle
                       avatarUrl={linkedStore.avatarUrl}
@@ -762,7 +761,9 @@ export default function TherapistProfilePage() {
                     />
                     <div className="linked-store-main">
                       <div className="linked-store-name">{linkedStore.name}</div>
-                      <div className="linked-store-meta">{linkedStore.area || "エリア未設定"}</div>
+                      <div className="linked-store-meta">
+                        {linkedStore.area || "エリア未設定"}
+                      </div>
                     </div>
                   </div>
                 </Link>
@@ -774,7 +775,9 @@ export default function TherapistProfilePage() {
                     <AvatarCircle size={40} fallbackText="S" className="store-avatar" />
                     <div className="linked-store-main">
                       <div className="linked-store-name">在籍店舗</div>
-                      <div className="linked-store-meta">在籍店舗が見つかりませんでした</div>
+                      <div className="linked-store-meta">
+                        在籍店舗が見つかりませんでした
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -809,7 +812,6 @@ export default function TherapistProfilePage() {
                     onToggleLike={handleToggleLike}
                     onReply={handleReply}
                     onDeleted={(postId) => {
-                      // このページの state 名に合わせて下さい（例：posts / filteredPosts など）
                       setPosts((prev) => prev.filter((x) => x.id !== postId));
                     }}
                     showBadges={true}
@@ -836,32 +838,6 @@ export default function TherapistProfilePage() {
           line-height: 1.6;
           margin-top: 8px;
           color: #b00020;
-        }
-
-        .profile-sns-block {
-          margin-top: 10px;
-        }
-
-        .profile-sns-title {
-          font-size: 12px;
-          color: var(--text-sub);
-          margin-bottom: 4px;
-        }
-
-        .profile-sns-list {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-        }
-
-        .profile-sns-chip {
-          font-size: 12px;
-          padding: 4px 10px;
-          border-radius: 999px;
-          border: 1px solid var(--border);
-          background: var(--surface);
-          color: var(--text-main);
-          text-decoration: none;
         }
 
         .linked-store-block {

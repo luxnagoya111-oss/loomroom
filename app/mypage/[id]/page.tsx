@@ -3,7 +3,6 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
 
 import BottomNav from "@/components/BottomNav";
 import AppHeader from "@/components/AppHeader";
@@ -169,6 +168,24 @@ function roleLabel(role?: "user" | "therapist" | "store") {
 function toDisplayHandleFromPageId(pageId: string): string {
   if (isUuid(pageId)) return toPublicHandleFromUserId(pageId) ?? "@user";
   return `@${pageId}`;
+}
+
+function normalizeUrl(raw: any): string {
+  const s = typeof raw === "string" ? raw.trim() : "";
+  return s;
+}
+
+function toRelatedLinks(p: UserProfile): Array<{ label: string; href: string }> {
+  const links: Array<{ label: string; href: string }> = [];
+  const x = normalizeUrl(p.snsX);
+  const line = normalizeUrl(p.snsLine);
+  const other = normalizeUrl(p.snsOther);
+
+  if (x) links.push({ label: "X（旧Twitter）", href: x });
+  if (line) links.push({ label: "LINE", href: line });
+  if (other) links.push({ label: "その他のリンク", href: other });
+
+  return links;
 }
 
 const PublicMyPage: React.FC = () => {
@@ -747,10 +764,6 @@ const PublicMyPage: React.FC = () => {
     router.push(`/posts/${postId}?reply=1`);
   };
 
-  const handleOpenMenu = (postId: string) => {
-    setMenuPostId((prev) => (prev === postId ? null : postId));
-  };
-
   const handleReport = async (postId: string) => {
     if (!viewerReady) return;
     if (!viewerUuid || !isUuid(viewerUuid)) return;
@@ -799,6 +812,9 @@ const PublicMyPage: React.FC = () => {
       ? `/therapist/${therapistId}/console`
       : `/mypage/${userId}/console`;
 
+  // ★ 関連リンク（ProfileHero に集約）
+  const relatedLinks = useMemo(() => toRelatedLinks(profile), [profile]);
+
   return (
     <>
       <div className="app-shell">
@@ -834,46 +850,8 @@ const PublicMyPage: React.FC = () => {
             onToggleFollow={handleToggleFollow}
             onToggleMute={handleToggleMute}
             onToggleBlock={handleToggleBlock}
+            relatedLinks={relatedLinks}
           />
-
-          {/* SNSブロックはこのページ側に残す（ProfileHeroと分離） */}
-          {(profile.snsX || profile.snsLine || profile.snsOther) && (
-            <div className="sns-block">
-              <div className="sns-title">関連リンク</div>
-              <div className="sns-list">
-                {profile.snsX && (
-                  <a
-                    href={profile.snsX}
-                    target="_blank"
-                    className="sns-chip"
-                    rel="noreferrer"
-                  >
-                    X（旧Twitter）
-                  </a>
-                )}
-                {profile.snsLine && (
-                  <a
-                    href={profile.snsLine}
-                    target="_blank"
-                    className="sns-chip"
-                    rel="noreferrer"
-                  >
-                    LINE
-                  </a>
-                )}
-                {profile.snsOther && (
-                  <a
-                    href={profile.snsOther}
-                    target="_blank"
-                    className="sns-chip"
-                    rel="noreferrer"
-                  >
-                    その他のリンク
-                  </a>
-                )}
-              </div>
-            </div>
-          )}
 
           <section className="posts-section">
             <h2 className="section-title">投稿</h2>
@@ -925,32 +903,6 @@ const PublicMyPage: React.FC = () => {
       </div>
 
       <style jsx>{`
-        .sns-block {
-          margin-top: 10px;
-        }
-
-        .sns-title {
-          font-size: 12px;
-          color: var(--text-sub);
-          margin-bottom: 4px;
-        }
-
-        .sns-list {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-        }
-
-        .sns-chip {
-          font-size: 12px;
-          padding: 4px 10px;
-          border-radius: 999px;
-          border: 1px solid var(--border);
-          background: var(--surface);
-          color: var(--text-main);
-          text-decoration: none;
-        }
-
         .posts-section {
           margin-top: 10px;
         }

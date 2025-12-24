@@ -7,6 +7,11 @@ import AvatarCircle from "@/components/AvatarCircle";
 import { RelationActions } from "@/components/RelationActions";
 import type { RelationFlags } from "@/lib/repositories/relationRepository";
 
+type RelatedLink = {
+  label: string;
+  href: string;
+};
+
 type Props = {
   // display
   displayName: string;
@@ -40,7 +45,20 @@ type Props = {
   onToggleFollow: () => void;
   onToggleMute: () => void;
   onToggleBlock: () => void;
+
+  // related links
+  relatedLinks?: RelatedLink[];
 };
+
+function normalizeRelatedLinks(links?: RelatedLink[]): RelatedLink[] {
+  if (!Array.isArray(links)) return [];
+  return links
+    .map((l) => ({
+      label: typeof l?.label === "string" ? l.label.trim() : "",
+      href: typeof l?.href === "string" ? l.href.trim() : "",
+    }))
+    .filter((l) => !!l.label && !!l.href);
+}
 
 const ProfileHero: React.FC<Props> = (props) => {
   const {
@@ -71,7 +89,11 @@ const ProfileHero: React.FC<Props> = (props) => {
     onToggleFollow,
     onToggleMute,
     onToggleBlock,
+
+    relatedLinks,
   } = props;
+
+  const links = normalizeRelatedLinks(relatedLinks);
 
   return (
     <>
@@ -181,6 +203,26 @@ const ProfileHero: React.FC<Props> = (props) => {
         )}
 
         {!loadingProfile && intro && <p className="intro">{intro}</p>}
+
+        {/* ★ 関連リンク（区切り線なし／可変個数OK） */}
+        {!loadingProfile && links.length > 0 && (
+          <div className="profile-hero-links">
+            <div className="profile-hero-links-title">関連リンク</div>
+            <div className="profile-hero-links-list">
+              {links.map((l, i) => (
+                <a
+                  key={`${l.href}-${i}`}
+                  href={l.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="profile-hero-link-chip"
+                >
+                  {l.label}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       <style jsx>{`
@@ -271,6 +313,33 @@ const ProfileHero: React.FC<Props> = (props) => {
           font-size: 13px;
           line-height: 1.7;
           margin-top: 6px;
+        }
+
+        /* ===== related links (no divider) ===== */
+        .profile-hero-links {
+          margin-top: 10px;
+        }
+
+        .profile-hero-links-title {
+          font-size: 12px;
+          color: var(--text-sub);
+          margin-bottom: 4px;
+        }
+
+        .profile-hero-links-list {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+
+        .profile-hero-link-chip {
+          font-size: 12px;
+          padding: 4px 10px;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          background: var(--surface);
+          color: var(--text-main);
+          text-decoration: none;
         }
 
         :global(.no-link-style) {
