@@ -46,8 +46,6 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
-// relations.type 互換（過去の "following" を吸収）t;
-
 type TherapistProfile = {
   displayName: string;
   handle: string;
@@ -131,9 +129,6 @@ export default function TherapistProfilePage() {
   const [posts, setPosts] = useState<UiPost[]>([]);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [loadingPosts, setLoadingPosts] = useState<boolean>(false);
-
-  // menu
-  const [menuPostId, setMenuPostId] = useState<string | null>(null);
 
   // ===== counts（mypage と同一思想：集計対象は users.id(uuid)）=====
   const [followingCount, setFollowingCount] = useState<number | null>(null);
@@ -267,7 +262,9 @@ export default function TherapistProfilePage() {
         // 1) therapists
         const { data: therapist, error: tError } = await supabase
           .from("therapists")
-          .select("id, user_id, store_id, display_name, area, profile, avatar_url, sns_x, sns_line, sns_other")
+          .select(
+            "id, user_id, store_id, display_name, area, profile, avatar_url, sns_x, sns_line, sns_other"
+          )
           .eq("id", therapistId)
           .maybeSingle<DbTherapistRow>();
 
@@ -313,7 +310,8 @@ export default function TherapistProfilePage() {
             : "セラピスト";
 
         const handle = tuid ? toPublicHandleFromUserId(tuid) ?? "" : "";
-        const area = typeof (therapist as any).area === "string" ? (therapist as any).area.trim() : "";
+        const area =
+          typeof (therapist as any).area === "string" ? (therapist as any).area.trim() : "";
         const intro = (therapist as any).profile?.trim()?.length ? (therapist as any).profile : "";
 
         // avatar: users.avatar_url 優先 → therapists.avatar_url
@@ -346,7 +344,9 @@ export default function TherapistProfilePage() {
 
         // 4) likedIds（viewerReady のときだけ）
         const likedSet =
-          viewerReady && viewerUuid ? await fetchLikedPostIdsForUser(viewUuidOrThrow(viewerUuid)) : new Set<string>();
+          viewerReady && viewerUuid
+            ? await fetchLikedPostIdsForUser(viewerUuid)
+            : new Set<string>();
 
         if (cancelled) return;
 
@@ -361,8 +361,7 @@ export default function TherapistProfilePage() {
             body: row.body ?? "",
             imageUrls,
 
-            // ★ 追加：所有者判定のために canonical user uuid を入れる
-            // therapists.user_id（= users.id / auth uuid）を PostCard 側で比較できる形にする
+            // PostCard の所有者判定用（uuid）
             authorId: tuid ?? "",
             canonicalUserId: tuid ?? "",
 
@@ -379,7 +378,7 @@ export default function TherapistProfilePage() {
             replyCount: safeNumber((row as any).reply_count, 0),
 
             liked: likedSet.has(row.id),
-          } as any; // UiPost に authorId/canonicalUserId が無い場合の暫定
+          } as any;
         });
 
         setPosts(mapped);
@@ -406,10 +405,6 @@ export default function TherapistProfilePage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [therapistId, viewerReady, viewerUuid]);
-
-  function viewUuidOrThrow(uid: UserId) {
-    return uid;
-  }
 
   // ===== store_id がある場合のみ stores を取得（在籍表示用）=====
   useEffect(() => {
@@ -600,14 +595,12 @@ export default function TherapistProfilePage() {
       }
 
       // server truth
-      setPosts((prev) => prev.map((p) => (p.id === post.id ? { ...p, likeCount: res.likeCount, liked: nextLiked } : p)));
+      setPosts((prev) =>
+        prev.map((p) => (p.id === post.id ? { ...p, likeCount: res.likeCount, liked: nextLiked } : p))
+      );
     },
     [viewerReady, viewerUuid]
   );
-
-  const handleOpenMenu = useCallback((postId: string) => {
-    setMenuPostId((prev) => (prev === postId ? null : postId));
-  }, []);
 
   const handleReport = useCallback(
     async (postId: string) => {
@@ -621,7 +614,6 @@ export default function TherapistProfilePage() {
       const done = await reportPost({ postId, reporterId: viewerUuid, reason: null });
       if (done) alert("通報を受け付けました。ご協力ありがとうございます。");
       else alert("通報に失敗しました。時間をおいて再度お試しください。");
-      setMenuPostId(null);
     },
     [viewerReady, viewerUuid]
   );
@@ -629,7 +621,11 @@ export default function TherapistProfilePage() {
   return (
     <>
       <div className="app-shell">
-        <AppHeader title={profile.displayName || "セラピスト"} subtitle={profile.handle || ""} showBack={true} />
+        <AppHeader
+          title={profile.displayName || "セラピスト"}
+          subtitle={profile.handle || ""}
+          showBack={true}
+        />
 
         <main className="app-main">
           <section className="profile-hero">
@@ -649,13 +645,21 @@ export default function TherapistProfilePage() {
                     {profile.handle || ""}
 
                     {canShowDmButton && therapistUserId && (
-                      <Link href={`/messages/new?to=${therapistUserId}`} className="dm-inline-btn no-link-style">
+                      <Link
+                        href={`/messages/new?to=${therapistUserId}`}
+                        className="no-link-style plainBtn hitPad dm-inline-btn"
+                        aria-label="DMを送る"
+                      >
                         ✉
                       </Link>
                     )}
 
                     {isOwner && (
-                      <Link href={`/therapist/${therapistId}/console`} className="edit-inline-btn no-link-style">
+                      <Link
+                        href={`/therapist/${therapistId}/console`}
+                        className="no-link-style plainBtn hitPad edit-inline-btn"
+                        aria-label="編集"
+                      >
                         ✎
                       </Link>
                     )}
@@ -678,7 +682,7 @@ export default function TherapistProfilePage() {
                     フォロー中{" "}
                     <strong>
                       {canShowCounts ? (
-                        <Link href={followingHref} className="stats-link">
+                        <Link href={followingHref} className="stats-link plainBtn hitPad">
                           {loadingCounts ? "…" : followingCount ?? "–"}
                         </Link>
                       ) : (
@@ -691,7 +695,7 @@ export default function TherapistProfilePage() {
                     フォロワー{" "}
                     <strong>
                       {canShowCounts ? (
-                        <Link href={followerHref} className="stats-link">
+                        <Link href={followerHref} className="stats-link plainBtn hitPad">
                           {loadingCounts ? "…" : followersCount ?? "–"}
                         </Link>
                       ) : (
@@ -734,17 +738,32 @@ export default function TherapistProfilePage() {
                 <div className="profile-sns-title">関連リンク</div>
                 <div className="profile-sns-list">
                   {profile.snsX && (
-                    <a href={profile.snsX} target="_blank" rel="noreferrer" className="profile-sns-chip">
+                    <a
+                      href={profile.snsX}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="profile-sns-link plainBtn hitPad"
+                    >
                       X（旧Twitter）
                     </a>
                   )}
                   {profile.snsLine && (
-                    <a href={profile.snsLine} target="_blank" rel="noreferrer" className="profile-sns-chip">
+                    <a
+                      href={profile.snsLine}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="profile-sns-link plainBtn hitPad"
+                    >
                       LINE
                     </a>
                   )}
                   {profile.snsOther && (
-                    <a href={profile.snsOther} target="_blank" rel="noreferrer" className="profile-sns-chip">
+                    <a
+                      href={profile.snsOther}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="profile-sns-link plainBtn hitPad"
+                    >
                       その他のリンク
                     </a>
                   )}
@@ -784,7 +803,11 @@ export default function TherapistProfilePage() {
                 )}
 
                 {!loadingStore && !storeError && linkedStore && (
-                  <Link href={`/store/${linkedStore.id}`} className="linked-store-card linked-store-link-wrapper">
+                  <Link
+                    href={`/store/${linkedStore.id}`}
+                    className="linked-store-card linked-store-link-wrapper plainBtn"
+                    aria-label="在籍店舗を見る"
+                  >
                     <div className="linked-store-row">
                       <AvatarCircle
                         avatarUrl={linkedStore.avatarUrl}
@@ -842,7 +865,6 @@ export default function TherapistProfilePage() {
                     onToggleLike={handleToggleLike}
                     onReply={handleReply}
                     onDeleted={(postId) => {
-                      // このページの state 名に合わせて下さい（例：posts / filteredPosts など）
                       setPosts((prev) => prev.filter((x) => x.id !== postId));
                     }}
                     showBadges={true}
@@ -857,7 +879,6 @@ export default function TherapistProfilePage() {
       </div>
 
       <style jsx>{`
-
         .profile-hero-row {
           display: flex;
           gap: 12px;
@@ -892,6 +913,16 @@ export default function TherapistProfilePage() {
           gap: 6px;
         }
 
+        .dm-inline-btn,
+        .edit-inline-btn {
+          font-size: 14px;
+          opacity: 0.8;
+        }
+        .dm-inline-btn:hover,
+        .edit-inline-btn:hover {
+          opacity: 1;
+        }
+
         .profile-meta-row {
           font-size: 11px;
           color: var(--text-sub);
@@ -920,10 +951,12 @@ export default function TherapistProfilePage() {
 
         .stats-link {
           color: inherit;
-          text-decoration: none;
+          text-decoration: none; /* ボタン化しない */
         }
         .stats-link:hover {
           opacity: 0.9;
+          text-decoration: underline;
+          text-underline-offset: 2px;
         }
 
         .profile-intro {
@@ -952,17 +985,20 @@ export default function TherapistProfilePage() {
         .profile-sns-list {
           display: flex;
           flex-wrap: wrap;
-          gap: 6px;
+          gap: 10px;
+          align-items: center;
         }
 
-        .profile-sns-chip {
+        /* “チップ/ボタンっぽさ”を消して、テキストリンクに寄せる */
+        .profile-sns-link {
           font-size: 12px;
-          padding: 4px 10px;
-          border-radius: 999px;
-          border: 1px solid var(--border);
-          background: var(--surface);
-          color: var(--text-main);
-          text-decoration: none;
+          color: inherit;
+          text-decoration: underline;
+          text-underline-offset: 2px;
+          opacity: 0.95;
+        }
+        .profile-sns-link:hover {
+          opacity: 1;
         }
 
         .linked-store-block {
@@ -991,6 +1027,7 @@ export default function TherapistProfilePage() {
           display: flex;
           flex-direction: column;
           gap: 4px;
+          min-width: 0;
         }
 
         .linked-store-name {
@@ -1004,20 +1041,18 @@ export default function TherapistProfilePage() {
           color: var(--text-sub);
         }
 
+        /* ボタンっぽい hover/active 背景をやめて、軽い視覚変化だけにする */
         .linked-store-link-wrapper {
           text-decoration: none;
           color: inherit;
           cursor: pointer;
-          transition: background-color 0.15s ease, box-shadow 0.15s ease;
           display: block;
         }
-
         .linked-store-link-wrapper:hover {
-          background: rgba(0, 0, 0, 0.03);
+          opacity: 0.95;
         }
-
         .linked-store-link-wrapper:active {
-          background: rgba(0, 0, 0, 0.06);
+          opacity: 0.9;
         }
 
         .therapist-posts-section {
@@ -1039,16 +1074,6 @@ export default function TherapistProfilePage() {
 
         .feed-list {
           display: block;
-        }
-
-        .edit-inline-btn {
-          margin-left: 6px;
-          font-size: 14px;
-          opacity: 0.8;
-        }
-
-        .edit-inline-btn:hover {
-          opacity: 1;
         }
 
         :global(.no-link-style) {

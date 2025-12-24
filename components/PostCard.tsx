@@ -394,6 +394,13 @@ export default function PostCard(props: Props) {
         .post-detail {
           width: 100%;
           display: block;
+          /* カード左右padding(16px)ぶんをヒット領域に含める */
+          margin: 0 -16px;
+          padding: 6px 16px;
+
+          /* 念のため：buttonのデフォルトを完全に無効化 */
+          border: none;
+          background: transparent;
         }
 
         .post-body {

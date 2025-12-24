@@ -9,6 +9,7 @@ import AvatarUploader from "@/components/AvatarUploader";
 import BottomNav from "@/components/BottomNav";
 import { supabase } from "@/lib/supabaseClient";
 import { uploadAvatar } from "@/lib/avatarStorage";
+import { resolveAvatarUrl } from "@/lib/postMedia";
 
 const hasUnread = true;
 
@@ -152,9 +153,7 @@ const TherapistConsolePage: React.FC = () => {
           area: typeof parsed.area === "string" ? parsed.area : prev.area,
           avatarUrl: safeAvatar ?? prev.avatarUrl ?? null,
           dmNotice:
-            typeof parsed.dmNotice === "boolean"
-              ? parsed.dmNotice
-              : prev.dmNotice,
+            typeof parsed.dmNotice === "boolean" ? parsed.dmNotice : prev.dmNotice,
         }));
       }
     } catch (e) {
@@ -198,9 +197,7 @@ const TherapistConsolePage: React.FC = () => {
 
         // ★ avatar_url が dataURL の場合は “異常値” なので UI/保存対象から除外
         const safeAvatarUrl =
-          dbRow.avatar_url && !isDataUrl(dbRow.avatar_url)
-            ? dbRow.avatar_url
-            : null;
+          dbRow.avatar_url && !isDataUrl(dbRow.avatar_url) ? dbRow.avatar_url : null;
 
         setData((prev) => ({
           ...prev,
@@ -212,9 +209,7 @@ const TherapistConsolePage: React.FC = () => {
           snsOther: dbRow.sns_other ?? prev.snsOther,
           avatarUrl: safeAvatarUrl ?? prev.avatarUrl ?? null,
           dmNotice:
-            typeof dbRow.dm_notice === "boolean"
-              ? dbRow.dm_notice
-              : prev.dmNotice,
+            typeof dbRow.dm_notice === "boolean" ? dbRow.dm_notice : prev.dmNotice,
         }));
 
         setLinkedStoreId((dbRow as any).store_id ?? null);
@@ -320,10 +315,7 @@ const TherapistConsolePage: React.FC = () => {
         .eq("id", therapistId);
 
       if (error) {
-        console.error(
-          "[TherapistConsole] failed to update therapists.avatar_url:",
-          error
-        );
+        console.error("[TherapistConsole] failed to update therapists.avatar_url:", error);
         throw new Error("アイコン画像をサーバーに保存できませんでした。");
       }
 
@@ -344,16 +336,11 @@ const TherapistConsolePage: React.FC = () => {
     if (!name) return;
 
     if (!therapistUserId) {
-      console.warn(
-        "[TherapistConsole] therapistUserId is missing; skip users.name sync"
-      );
+      console.warn("[TherapistConsole] therapistUserId is missing; skip users.name sync");
       return;
     }
 
-    const { error } = await supabase
-      .from("users")
-      .update({ name })
-      .eq("id", therapistUserId);
+    const { error } = await supabase.from("users").update({ name }).eq("id", therapistUserId);
 
     if (error) {
       console.error("[TherapistConsole] failed to update users.name:", {
@@ -373,10 +360,7 @@ const TherapistConsolePage: React.FC = () => {
     try {
       const payloadForLocal: TherapistProfile = {
         ...data,
-        // ★ dataURL が入っていたら消す（念のため）
-        avatarUrl:
-          data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null,
-        // ★ area は自由入力のまま
+        avatarUrl: data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null,
         area: (data.area ?? "").toString(),
       };
       window.localStorage.setItem(storageKey, JSON.stringify(payloadForLocal));
@@ -393,12 +377,11 @@ const TherapistConsolePage: React.FC = () => {
       await syncUserNameIfPossible(data.displayName);
 
       // 2-B) therapists 更新
-      const safeAvatar =
-        data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null;
+      const safeAvatar = data.avatarUrl && !isDataUrl(data.avatarUrl) ? data.avatarUrl : null;
 
       const updatePayload: Partial<DbTherapistRow> = {
         display_name: (data.displayName || "").trim() || null,
-        area: (data.area || "").trim() || null, // ★自由入力
+        area: (data.area || "").trim() || null,
         profile: data.intro || null,
         sns_x: data.snsX || null,
         sns_line: data.snsLine || null,
@@ -454,9 +437,7 @@ const TherapistConsolePage: React.FC = () => {
 
     const email = userRes.user?.email;
     if (!email) {
-      throw new Error(
-        "メール情報が取得できませんでした。再ログインしてからお試しください。"
-      );
+      throw new Error("メール情報が取得できませんでした。再ログインしてからお試しください。");
     }
 
     const { error: signInErr } = await supabase.auth.signInWithPassword({
@@ -484,10 +465,9 @@ const TherapistConsolePage: React.FC = () => {
 
       await reauthWithPassword(modalPassword);
 
-      const { error: rpcErr } = await supabase.rpc(
-        "rpc_cancel_therapist_store_request",
-        { p_request_id: pendingRequest.id }
-      );
+      const { error: rpcErr } = await supabase.rpc("rpc_cancel_therapist_store_request", {
+        p_request_id: pendingRequest.id,
+      });
       if (rpcErr) throw rpcErr;
 
       setPendingRequest(null);
@@ -523,10 +503,9 @@ const TherapistConsolePage: React.FC = () => {
         throw new Error("申請情報が取得できませんでした。");
       }
 
-      const { error: rpcErr } = await supabase.rpc(
-        "rpc_cancel_therapist_store_request",
-        { p_request_id: pendingRequest.id }
-      );
+      const { error: rpcErr } = await supabase.rpc("rpc_cancel_therapist_store_request", {
+        p_request_id: pendingRequest.id,
+      });
       if (rpcErr) throw rpcErr;
 
       setPendingRequest(null);
@@ -546,14 +525,15 @@ const TherapistConsolePage: React.FC = () => {
   // AvatarUploader に渡す表示URL（プレビュー優先 → 確定URL）
   const avatarUrlForUi = avatarPreview ?? data.avatarUrl ?? null;
 
+  // 店舗アバター表示（URL/path揺れ吸収）
+  const linkedStoreAvatar = resolveAvatarUrl(linkedStore?.avatar_url ?? null);
+  const pendingStoreAvatar = resolveAvatarUrl(pendingStore?.avatar_url ?? null);
+
   return (
     <>
       <div className="app-root">
-        <AppHeader
-          title="セラピスト用コンソール"
-        />
+        <AppHeader title="セラピスト用コンソール" />
 
-        {/* ★ app-main は global.css が担当するので、固有classは不要 */}
         <main className="app-main">
           {/* 店舗とのつながり */}
           <section className="surface-card tc-card">
@@ -570,9 +550,9 @@ const TherapistConsolePage: React.FC = () => {
                   <div
                     className="tc-link-avatar"
                     style={
-                      linkedStore.avatar_url
+                      linkedStoreAvatar
                         ? {
-                            backgroundImage: `url(${linkedStore.avatar_url})`,
+                            backgroundImage: `url(${linkedStoreAvatar})`,
                             backgroundSize: "cover",
                             backgroundPosition: "center",
                           }
@@ -580,25 +560,18 @@ const TherapistConsolePage: React.FC = () => {
                     }
                     aria-hidden="true"
                   >
-                    {!linkedStore.avatar_url && (
+                    {!linkedStoreAvatar && (
                       <span className="tc-link-avatar-text">
-                        {(linkedStore.name || "S")
-                          .trim()
-                          .charAt(0)
-                          .toUpperCase()}
+                        {(linkedStore.name || "S").trim().charAt(0).toUpperCase()}
                       </span>
                     )}
                   </div>
 
                   <div className="tc-link-meta">
-                    <div className="tc-link-name">
-                      {linkedStore.name || "店舗名未設定"}
-                    </div>
+                    <div className="tc-link-name">{linkedStore.name || "店舗名未設定"}</div>
                     <div className="tc-link-sub">
                       <span className="tc-pill is-approved">在籍中</span>
-                      <span className="tc-link-hint">
-                        タップで店舗プロフィールへ
-                      </span>
+                      <span className="tc-link-hint">タップで店舗プロフィールへ</span>
                     </div>
                   </div>
                 </Link>
@@ -622,9 +595,9 @@ const TherapistConsolePage: React.FC = () => {
                   <div
                     className="tc-link-avatar"
                     style={
-                      pendingStore.avatar_url
+                      pendingStoreAvatar
                         ? {
-                            backgroundImage: `url(${pendingStore.avatar_url})`,
+                            backgroundImage: `url(${pendingStoreAvatar})`,
                             backgroundSize: "cover",
                             backgroundPosition: "center",
                           }
@@ -632,25 +605,18 @@ const TherapistConsolePage: React.FC = () => {
                     }
                     aria-hidden="true"
                   >
-                    {!pendingStore.avatar_url && (
+                    {!pendingStoreAvatar && (
                       <span className="tc-link-avatar-text">
-                        {(pendingStore.name || "S")
-                          .trim()
-                          .charAt(0)
-                          .toUpperCase()}
+                        {(pendingStore.name || "S").trim().charAt(0).toUpperCase()}
                       </span>
                     )}
                   </div>
 
                   <div className="tc-link-meta">
-                    <div className="tc-link-name">
-                      {pendingStore.name || "店舗名未設定"}
-                    </div>
+                    <div className="tc-link-name">{pendingStore.name || "店舗名未設定"}</div>
                     <div className="tc-link-sub">
                       <span className="tc-pill is-pending">申請中</span>
-                      <span className="tc-link-hint">
-                        承認されると在籍になります
-                      </span>
+                      <span className="tc-link-hint">承認されると在籍になります</span>
                     </div>
                   </div>
                 </Link>
@@ -669,9 +635,7 @@ const TherapistConsolePage: React.FC = () => {
             )}
 
             {!linkedStoreId && !pendingRequest && !loadingLink && (
-              <p className="tc-caption">
-                現在、新しい在籍リクエストは届いていません。
-              </p>
+              <p className="tc-caption">現在、新しい在籍リクエストは届いていません。</p>
             )}
 
             {!!linkedStoreId && !linkedStore && !loadingLink && (
@@ -688,12 +652,10 @@ const TherapistConsolePage: React.FC = () => {
                 avatarUrl={avatarUrlForUi}
                 displayName={data.displayName || ""}
                 onPreview={(dataUrl) => {
-                  // ★ プレビューだけ（DBには保存しない）
                   setAvatarPreview(dataUrl);
                 }}
                 onFileSelect={handleAvatarFileSelect}
                 onUploaded={(url) => {
-                  // ★ 確定URLへ
                   setAvatarPreview(url);
                 }}
               />
@@ -713,9 +675,7 @@ const TherapistConsolePage: React.FC = () => {
                   />
                 </div>
 
-                {avatarUploading && (
-                  <div className="tc-caption">アイコン画像を保存しています…</div>
-                )}
+                {avatarUploading && <div className="tc-caption">アイコン画像を保存しています…</div>}
               </div>
             </div>
 
@@ -809,7 +769,6 @@ const TherapistConsolePage: React.FC = () => {
           </section>
         </main>
 
-        {/* ★ footer は global の console-footer-bar を使う */}
         <footer className="console-footer-bar">
           <button
             type="button"
@@ -829,9 +788,7 @@ const TherapistConsolePage: React.FC = () => {
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal-card">
             <div className="modal-title">
-              {modalMode === "cancel_request"
-                ? "申請キャンセルの確認"
-                : "在籍解除の確認"}
+              {modalMode === "cancel_request" ? "申請キャンセルの確認" : "在籍解除の確認"}
             </div>
 
             <p className="modal-text">
@@ -883,7 +840,6 @@ const TherapistConsolePage: React.FC = () => {
         </div>
       )}
 
-      {/* ★ global にある共通UIは削除し、固有UIだけ残す */}
       <style jsx>{`
         /* === このページ固有（tc-*）だけ === */
         .tc-card {
