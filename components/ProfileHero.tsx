@@ -229,6 +229,7 @@ const ProfileHero: React.FC<Props> = (props) => {
         .profile-hero {
           padding: 4px 0 12px;
           margin-bottom: 8px;
+          background: var(--surface); /* ★追加 */
         }
 
         .profile-hero-row {
