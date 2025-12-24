@@ -348,6 +348,12 @@ const ConnectionsPage: React.FC = () => {
   const tickingRef = useRef(false);
 
   const snapTimerRef = useRef<any>(null);
+  const [pagerReady, setPagerReady] = useState(false);
+
+  const setPagerRef = useCallback((node: HTMLDivElement | null) => {
+    pagerRef.current = node;
+    setPagerReady(!!node);
+  }, []);
 
   // data
   const [followers, setFollowers] = useState<ConnectionUser[]>([]);
@@ -482,6 +488,22 @@ const ConnectionsPage: React.FC = () => {
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, scrollToTab]);
+
+  useEffect(() => {
+    if (!pagerReady) return;
+    if (!isLoggedIn) return;
+
+    // URL(tab) を正として、pagerが出現したタイミングで必ず位置合わせ
+    const raw = searchParams.get("tab");
+    const tab = raw ? normalizeTab(raw) : initialTab;
+
+    activeTabRef.current = tab;
+    setActiveTab(tab);
+
+    // ここで初めて pagerRef が存在するので確実に効く
+    scrollToTab(tab, "auto");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pagerReady, isLoggedIn]);
 
   // ------------------------------
   // 初回：URL(tab) に合わせて必ず位置を合わせる（複数回強制）
@@ -997,7 +1019,7 @@ const ConnectionsPage: React.FC = () => {
           </div>
         )}
 
-        <div className="pager" ref={pagerRef} onScroll={handlePagerScroll}>
+        <div className="pager" ref={setPagerRef} onScroll={handlePagerScroll}>
           <section className="page">
             <div className="pageInner">
               {loadingFollowing ? (
