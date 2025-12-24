@@ -143,7 +143,12 @@ export default function PostCard(props: Props) {
         return;
       }
 
-      const ok2 = await reportPost({ postId: post.id, reporterId: viewerUuid, reason: null });
+      const ok2 = await reportPost({
+        postId: post.id,
+        reporterId: viewerUuid,
+        reason: null,
+      });
+
       setMenuOpen(false);
 
       if (!ok2) {
@@ -156,29 +161,27 @@ export default function PostCard(props: Props) {
     }
   };
 
+  const openProfile = () => {
+    if (!profileClickable) return;
+    onOpenProfile(post.profilePath);
+  };
+
+  const openDetail = () => {
+    onOpenDetail(post.id);
+  };
+
   return (
-    <article
-      className="feed-item"
-      role="button"
-      tabIndex={0}
-      aria-label="投稿の詳細を見る"
-      onClick={() => onOpenDetail(post.id)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpenDetail(post.id);
-        }
-      }}
-    >
+    <article className="feed-item" aria-label="投稿">
       <div className="feed-item-inner">
-        <div
-          className="feed-avatar-wrap"
+        {/* アバター：見た目はそのまま、実体はbutton */}
+        <button
+          type="button"
+          className="plainBtn feed-avatar-wrap"
           onClick={(e) => {
             e.stopPropagation();
-            onOpenProfile(post.profilePath);
+            openProfile();
           }}
-          style={{ cursor: profileClickable ? "pointer" : "default" }}
-          role={profileClickable ? "button" : undefined}
+          disabled={!profileClickable}
           aria-label={profileClickable ? "プロフィールを見る" : undefined}
         >
           <AvatarCircle
@@ -187,54 +190,75 @@ export default function PostCard(props: Props) {
             displayName={post.authorName}
             alt={post.authorName}
           />
-        </div>
+        </button>
 
         <div className="feed-main">
-          <div
-            className="feed-header"
+          {/* ヘッダー：見た目はdivのまま、実体はbutton */}
+          <button
+            type="button"
+            className="plainBtn feed-header hitPad"
             onClick={(e) => {
               e.stopPropagation();
-              onOpenProfile(post.profilePath);
+              openProfile();
             }}
+            disabled={!profileClickable}
+            aria-label={profileClickable ? "プロフィールを見る" : undefined}
             style={{ cursor: profileClickable ? "pointer" : "default" }}
           >
             <div className="feed-name-row">
               <span className="post-name">{post.authorName}</span>
               {showBadges && renderGoldBadge(post.authorKind)}
             </div>
-            {post.authorHandle && <div className="post-username">{post.authorHandle}</div>}
-          </div>
+            {post.authorHandle && (
+              <div className="post-username">{post.authorHandle}</div>
+            )}
+          </button>
 
           <div className="post-meta">
             <span className="post-time">{post.timeAgoText}</span>
           </div>
 
-          <div className="post-body">
-            {post.body.split("\n").map((line, idx) => (
-              <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
-            ))}
-          </div>
-
-          {post.imageUrls.length > 0 && (
-            <div className={`media-grid media-grid--${post.imageUrls.length}`} aria-label="投稿画像">
-              {post.imageUrls.map((src, idx) => (
-                <div className="media-tile" key={`${post.id}_${idx}`}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={src} alt="投稿画像" loading="lazy" decoding="async" />
-                </div>
+          {/* 本文 + 画像：ここを「詳細へ」透明ボタンにして誤爆と取りこぼしを減らす */}
+          <button
+            type="button"
+            className="plainBtn post-detail hitPad"
+            onClick={(e) => {
+              e.stopPropagation();
+              openDetail();
+            }}
+            aria-label="投稿の詳細を見る"
+          >
+            <div className="post-body">
+              {post.body.split("\n").map((line, idx) => (
+                <p key={idx}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
               ))}
             </div>
-          )}
+
+            {post.imageUrls.length > 0 && (
+              <div
+                className={`media-grid media-grid--${post.imageUrls.length}`}
+                aria-label="投稿画像"
+              >
+                {post.imageUrls.map((src, idx) => (
+                  <div className="media-tile" key={`${post.id}_${idx}`}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={src} alt="投稿画像" loading="lazy" decoding="async" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </button>
 
           <div className="post-footer">
             <button
               type="button"
-              className={`post-like-btn ${post.liked ? "liked" : ""}`}
+              className={`plainBtn post-like-btn ${post.liked ? "liked" : ""}`}
               disabled={!viewerReady || busy}
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleLike(post);
               }}
+              aria-label="いいね"
             >
               <span className="post-like-icon">♥</span>
               <span className="post-like-count">{post.likeCount}</span>
@@ -242,18 +266,19 @@ export default function PostCard(props: Props) {
 
             <button
               type="button"
-              className="post-reply-btn"
+              className="plainBtn post-reply-btn"
               disabled={busy}
               onClick={(e) => {
                 e.stopPropagation();
                 onReply(post.id);
               }}
+              aria-label="返信"
             >
               <span className="post-reply-icon">💬</span>
               <span className="post-reply-count">{post.replyCount}</span>
             </button>
 
-            {/* ★ 常に表示。開閉は PostCard 内部で管理 */}
+            {/* メニュー：ここはコンポーネント内部のoverlayが怪しいので次に要確認 */}
             <PostActionsMenu
               open={menuOpen}
               onToggle={() => setMenuOpen((v) => !v)}
@@ -276,13 +301,6 @@ export default function PostCard(props: Props) {
         .feed-item {
           border-bottom: 1px solid rgba(0, 0, 0, 0.04);
           padding: 10px 16px;
-          cursor: pointer;
-        }
-
-        .feed-item:focus {
-          outline: 2px solid rgba(0, 0, 0, 0.18);
-          outline-offset: 2px;
-          border-radius: 8px;
         }
 
         .feed-item-inner {
@@ -290,15 +308,51 @@ export default function PostCard(props: Props) {
           gap: 10px;
         }
 
+        .feed-main {
+          flex: 1;
+          min-width: 0;
+        }
+
+        /* =========================
+           “ボタンっぽく見せない” 共通
+           ========================= */
+        .plainBtn {
+          border: none;
+          background: transparent;
+          padding: 0;
+          margin: 0;
+          color: inherit;
+          font: inherit;
+          text-align: inherit;
+          appearance: none;
+          -webkit-appearance: none;
+
+          cursor: pointer;
+          user-select: none;
+          -webkit-tap-highlight-color: transparent;
+          touch-action: manipulation;
+        }
+
+        .plainBtn:disabled {
+          cursor: default;
+          opacity: 1;
+        }
+
+        /* 押しやすさ（見た目はほぼ変えずヒット領域だけ増やす） */
+        .hitPad {
+          padding: 2px 0;
+        }
+
+        /* =========================
+           Avatar / Header
+           ========================= */
         .feed-avatar-wrap {
           width: 36px;
           height: 36px;
           flex: 0 0 36px;
-        }
-
-        .feed-main {
-          flex: 1;
-          min-width: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
 
         .feed-header {
@@ -328,10 +382,18 @@ export default function PostCard(props: Props) {
           color: var(--text-sub, #777777);
         }
 
+        /* =========================
+           Meta / Body
+           ========================= */
         .post-meta {
           font-size: 11px;
           color: var(--text-sub, #777777);
           margin-top: 2px;
+        }
+
+        .post-detail {
+          width: 100%;
+          display: block;
         }
 
         .post-body {
@@ -341,6 +403,9 @@ export default function PostCard(props: Props) {
           margin-bottom: 4px;
         }
 
+        /* =========================
+           Footer actions
+           ========================= */
         .post-footer {
           display: flex;
           align-items: center;
@@ -350,14 +415,15 @@ export default function PostCard(props: Props) {
 
         .post-like-btn,
         .post-reply-btn {
-          border: none;
-          background: transparent;
-          padding: 2px 4px;
           display: inline-flex;
           align-items: center;
           gap: 4px;
           font-size: 12px;
           color: var(--text-sub, #777777);
+
+          /* 見た目はそのまま、ヒット領域だけ増やす */
+          padding: 6px 6px;
+          border-radius: 10px;
         }
 
         .post-like-btn:disabled,
@@ -376,7 +442,9 @@ export default function PostCard(props: Props) {
           color: var(--text-sub);
         }
 
-        /* 画像グリッド */
+        /* =========================
+           Media grid
+           ========================= */
         .media-grid {
           margin-top: 8px;
           border-radius: 14px;
@@ -390,15 +458,12 @@ export default function PostCard(props: Props) {
         .media-grid--1 {
           grid-template-columns: 1fr;
         }
-
         .media-grid--2 {
           grid-template-columns: 1fr 1fr;
         }
-
         .media-grid--3 {
           grid-template-columns: 1fr 1fr;
         }
-
         .media-grid--4 {
           grid-template-columns: 1fr 1fr;
         }
