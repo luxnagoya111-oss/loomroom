@@ -7,13 +7,12 @@ import Link from "next/link";
 
 import BottomNav from "@/components/BottomNav";
 import AppHeader from "@/components/AppHeader";
-import AvatarCircle from "@/components/AvatarCircle";
 import PostCard from "@/components/PostCard";
+import ProfileHero from "@/components/ProfileHero";
 
 import { makeThreadId } from "@/lib/dmThread";
 import { getCurrentUserId, ensureViewerId } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
-import { timeAgo } from "@/lib/timeAgo";
 
 import {
   getRelation,
@@ -28,7 +27,6 @@ import {
 } from "@/lib/relationStorage";
 
 import type { UserId } from "@/types/user";
-import { RelationActions } from "@/components/RelationActions";
 import { toPublicHandleFromUserId } from "@/lib/handle";
 
 import { hydratePosts, type UiPost } from "@/lib/postFeedHydrator";
@@ -209,7 +207,9 @@ const PublicMyPage: React.FC = () => {
   const [menuPostId, setMenuPostId] = useState<string | null>(null);
 
   // relations 状態
-  const [relations, setRelations] = useState<RelationFlags>(getDefaultRelationFlags());
+  const [relations, setRelations] = useState<RelationFlags>(
+    getDefaultRelationFlags()
+  );
 
   function getDefaultRelationFlags(): RelationFlags {
     return { following: false, muted: false, blocked: false };
@@ -758,7 +758,11 @@ const PublicMyPage: React.FC = () => {
     const ok = window.confirm("この投稿を通報しますか？");
     if (!ok) return;
 
-    const success = await reportPost({ postId, reporterId: viewerUuid, reason: null });
+    const success = await reportPost({
+      postId,
+      reporterId: viewerUuid,
+      reason: null,
+    });
     if (success) {
       alert("通報を受け付けました。ご協力ありがとうございます。");
       setMenuPostId(null);
@@ -787,170 +791,92 @@ const PublicMyPage: React.FC = () => {
 
   const blockedView = !isOwner && relations.blocked;
 
+  // ProfileHero edit link
+  const editHref =
+    profile.role === "store" && storeId
+      ? `/store/${storeId}/console`
+      : profile.role === "therapist" && therapistId
+      ? `/therapist/${therapistId}/console`
+      : `/mypage/${userId}/console`;
+
   return (
     <>
       <div className="app-shell">
-        <AppHeader title={profile.displayName} subtitle={profile.handle} showBack={true} />
+        <AppHeader
+          title={profile.displayName}
+          subtitle={profile.handle}
+          showBack={true}
+        />
 
         <main className="app-main">
-          <section className="therapist-hero">
-            <div className="therapist-hero-row">
-              <AvatarCircle
-                className="avatar-circle"
-                size={48}
-                avatarUrl={profile.avatarUrl ?? null}
-                displayName={profile.displayName}
-                fallbackText={avatarInitial}
-                alt=""
-              />
+          <ProfileHero
+            displayName={profile.displayName}
+            handle={profile.handle}
+            avatarUrl={profile.avatarUrl ?? null}
+            avatarInitial={avatarInitial}
+            roleLabel={roleLabel(profile.role)}
+            areaLabel={profile.area || ""}
+            intro={profile.intro}
+            loadingProfile={loading}
+            postsCount={posts.length}
+            canShowCounts={canShowCounts}
+            loadingCounts={loadingCounts}
+            followingCount={followingCount}
+            followerCount={followerCount}
+            followingHref={followingHref}
+            followerHref={followerHref}
+            canShowDm={canShowDm && !!threadId}
+            targetUserId={userId}
+            canEdit={canEdit}
+            editHref={editHref}
+            canShowRelationUi={canShowRelationUi}
+            relations={relations}
+            onToggleFollow={handleToggleFollow}
+            onToggleMute={handleToggleMute}
+            onToggleBlock={handleToggleBlock}
+          />
 
-              <div className="therapist-hero-main">
-                <div className="therapist-name-row">
-                  <span className="therapist-name">{profile.displayName}</span>
-
-                  <span className="therapist-handle">
-                    {profile.handle}
-
-                    {canShowDm && threadId && (
-                      <Link
-                        href={`/messages/new?to=${userId}`}
-                        className="dm-inline-btn no-link-style"
-                      >
-                        ✉
-                      </Link>
-                    )}
-
-                    {canEdit && (
-                      <>
-                        {profile.role === "store" && storeId ? (
-                          <Link
-                            href={`/store/${storeId}/console`}
-                            className="edit-inline-btn no-link-style"
-                          >
-                            ✎
-                          </Link>
-                        ) : profile.role === "therapist" && therapistId ? (
-                          <Link
-                            href={`/therapist/${therapistId}/console`}
-                            className="edit-inline-btn no-link-style"
-                          >
-                            ✎
-                          </Link>
-                        ) : (
-                          <Link
-                            href={`/mypage/${userId}/console`}
-                            className="edit-inline-btn no-link-style"
-                          >
-                            ✎
-                          </Link>
-                        )}
-                      </>
-                    )}
-                  </span>
-                </div>
-
-                <div className="therapist-meta-row">
-                  <span>アカウント種別：{roleLabel(profile.role)}</span>
-                  <span>エリア：{profile.area || "未設定"}</span>
-                </div>
-
-                <div className="therapist-stats-row">
-                  <span>
-                    投稿 <strong>{posts.length}</strong>
-                  </span>
-
-                  <span>
-                    フォロー中{" "}
-                    <strong>
-                      {canShowCounts ? (
-                        <Link href={followingHref} className="stats-link">
-                          {loadingCounts ? "…" : followingCount ?? "–"}
-                        </Link>
-                      ) : (
-                        "–"
-                      )}
-                    </strong>
-                  </span>
-
-                  <span>
-                    フォロワー{" "}
-                    <strong>
-                      {canShowCounts ? (
-                        <Link href={followerHref} className="stats-link">
-                          {loadingCounts ? "…" : followerCount ?? "–"}
-                        </Link>
-                      ) : (
-                        "–"
-                      )}
-                    </strong>
-                  </span>
-                </div>
-
-                {canShowRelationUi && !canEdit && (
-                  <RelationActions
-                    flags={relations}
-                    onToggleFollow={handleToggleFollow}
-                    onToggleMute={handleToggleMute}
-                    onToggleBlock={handleToggleBlock}
-                    onReport={() => {
-                      alert("このアカウントの通報を受け付けました（現在はテスト用です）。");
-                    }}
-                  />
+          {/* SNSブロックはこのページ側に残す（ProfileHeroと分離） */}
+          {(profile.snsX || profile.snsLine || profile.snsOther) && (
+            <div className="sns-block">
+              <div className="sns-title">関連リンク</div>
+              <div className="sns-list">
+                {profile.snsX && (
+                  <a
+                    href={profile.snsX}
+                    target="_blank"
+                    className="sns-chip"
+                    rel="noreferrer"
+                  >
+                    X（旧Twitter）
+                  </a>
+                )}
+                {profile.snsLine && (
+                  <a
+                    href={profile.snsLine}
+                    target="_blank"
+                    className="sns-chip"
+                    rel="noreferrer"
+                  >
+                    LINE
+                  </a>
+                )}
+                {profile.snsOther && (
+                  <a
+                    href={profile.snsOther}
+                    target="_blank"
+                    className="sns-chip"
+                    rel="noreferrer"
+                  >
+                    その他のリンク
+                  </a>
                 )}
               </div>
             </div>
+          )}
 
-            {loading && (
-              <p className="therapist-intro" style={{ opacity: 0.7 }}>
-                プロフィールを読み込んでいます…
-              </p>
-            )}
-
-            {!loading && profile.intro && (
-              <p className="therapist-intro">{profile.intro}</p>
-            )}
-
-            {(profile.snsX || profile.snsLine || profile.snsOther) && (
-              <div className="therapist-sns-block">
-                <div className="therapist-sns-title">関連リンク</div>
-                <div className="therapist-sns-list">
-                  {profile.snsX && (
-                    <a
-                      href={profile.snsX}
-                      target="_blank"
-                      className="therapist-sns-chip"
-                      rel="noreferrer"
-                    >
-                      X（旧Twitter）
-                    </a>
-                  )}
-                  {profile.snsLine && (
-                    <a
-                      href={profile.snsLine}
-                      target="_blank"
-                      className="therapist-sns-chip"
-                      rel="noreferrer"
-                    >
-                      LINE
-                    </a>
-                  )}
-                  {profile.snsOther && (
-                    <a
-                      href={profile.snsOther}
-                      target="_blank"
-                      className="therapist-sns-chip"
-                      rel="noreferrer"
-                    >
-                      その他のリンク
-                    </a>
-                  )}
-                </div>
-              </div>
-            )}
-          </section>
-
-          <section className="therapist-posts-section">
-            <h2 className="therapist-section-title">投稿</h2>
+          <section className="posts-section">
+            <h2 className="section-title">投稿</h2>
 
             {blockedView && (
               <div className="empty-hint" style={{ color: "#b00020" }}>
@@ -999,83 +925,23 @@ const PublicMyPage: React.FC = () => {
       </div>
 
       <style jsx>{`
-        .therapist-hero {
-          padding: 4px 0 12px;
-          margin-bottom: 8px;
-        }
-
-        .therapist-hero-row {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-          margin-bottom: 8px;
-        }
-
-        .therapist-hero-main {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-
-        .therapist-name-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-          align-items: baseline;
-        }
-
-        .therapist-name {
-          font-size: 16px;
-          font-weight: 600;
-        }
-
-        .therapist-handle {
-          font-size: 12px;
-          color: var(--text-sub);
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .therapist-meta-row {
-          font-size: 11px;
-          color: var(--text-sub);
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-
-        .therapist-stats-row {
-          font-size: 11px;
-          color: var(--text-sub);
-          display: flex;
-          gap: 10px;
-        }
-
-        .therapist-intro {
-          font-size: 13px;
-          line-height: 1.7;
-          margin-top: 6px;
-        }
-
-        .therapist-sns-block {
+        .sns-block {
           margin-top: 10px;
         }
 
-        .therapist-sns-title {
+        .sns-title {
           font-size: 12px;
           color: var(--text-sub);
           margin-bottom: 4px;
         }
 
-        .therapist-sns-list {
+        .sns-list {
           display: flex;
           flex-wrap: wrap;
           gap: 6px;
         }
 
-        .therapist-sns-chip {
+        .sns-chip {
           font-size: 12px;
           padding: 4px 10px;
           border-radius: 999px;
@@ -1085,11 +951,11 @@ const PublicMyPage: React.FC = () => {
           text-decoration: none;
         }
 
-        .therapist-posts-section {
-          margin-top: 6px;
+        .posts-section {
+          margin-top: 10px;
         }
 
-        .therapist-section-title {
+        .section-title {
           font-size: 13px;
           font-weight: 600;
           margin-bottom: 4px;
@@ -1102,31 +968,9 @@ const PublicMyPage: React.FC = () => {
           line-height: 1.6;
         }
 
-        .avatar-small {
-          width: 32px;
-          height: 32px;
-        }
-
-        .edit-inline-btn {
-          margin-left: 6px;
-          font-size: 14px;
-          opacity: 0.8;
-        }
-        .edit-inline-btn:hover {
-          opacity: 1;
-        }
-
         :global(.no-link-style) {
           color: inherit;
           text-decoration: none;
-        }
-
-        .stats-link {
-          color: inherit;
-          text-decoration: none;
-        }
-        .stats-link:hover {
-          opacity: 0.9;
         }
       `}</style>
     </>
