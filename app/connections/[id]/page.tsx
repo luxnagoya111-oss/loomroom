@@ -425,39 +425,43 @@ const ConnectionsPage: React.FC = () => {
       const el = pagerRef.current;
       if (!el) return;
 
-      const o = getOffsets();
-      if (!o) return;
+      const tryScroll = (attempt: number) => {
+        const ee = pagerRef.current;
+        if (!ee) return;
 
-      const left = tab === "following" ? o.followingLeft : o.followersLeft;
+        const o = getOffsets();
+        if (!o) {
+          // DOMがまだ揃ってないのでリトライ
+          if (attempt < 40) requestAnimationFrame(() => tryScroll(attempt + 1));
+          return;
+        }
 
-      isSyncingRef.current = true;
+        const targetLeft = tab === "following" ? o.followingLeft : o.followersLeft;
 
-      // 1) scrollTo
-      el.scrollTo({ left, behavior });
+        // まずは命令
+        isSyncingRef.current = true;
+        ee.scrollTo({ left: targetLeft, behavior });
 
-      // 2) 2フレーム後に届いてなければ叩き込む
-      requestAnimationFrame(() => {
+        // 「まだ届いてない」を吸収（snap/復元対策）
         requestAnimationFrame(() => {
           const oo = getOffsets();
           if (!oo) return;
-          const target = tab === "following" ? oo.followingLeft : oo.followersLeft;
-          if (Math.abs(el.scrollLeft - target) > 8) {
-            el.scrollLeft = target;
-          }
+          const t = tab === "following" ? oo.followingLeft : oo.followersLeft;
+          if (Math.abs(ee.scrollLeft - t) > 2) ee.scrollLeft = t;
         });
-      });
 
-      // 3) 少し後（snap吸い込み対策）
-      window.setTimeout(() => {
-        const oo = getOffsets();
-        if (oo) {
-          const target = tab === "following" ? oo.followingLeft : oo.followersLeft;
-          if (Math.abs(el.scrollLeft - target) > 8) {
-            el.scrollLeft = target;
+        // 少し後にも確定
+        window.setTimeout(() => {
+          const oo = getOffsets();
+          if (oo) {
+            const t = tab === "following" ? oo.followingLeft : oo.followersLeft;
+            if (Math.abs(ee.scrollLeft - t) > 2) ee.scrollLeft = t;
           }
-        }
-        isSyncingRef.current = false;
-      }, behavior === "smooth" ? 380 : 220);
+          isSyncingRef.current = false;
+        }, behavior === "smooth" ? 380 : 240);
+      };
+
+      tryScroll(0);
     },
     [getOffsets]
   );
@@ -488,42 +492,61 @@ const ConnectionsPage: React.FC = () => {
     if (!el) return;
     if (didInitialSnapRef.current) return;
 
-    const o = getOffsets();
-    if (!o) return;
+    let cancelled = false;
 
-    didInitialSnapRef.current = true;
+    const run = (attempt: number) => {
+      if (cancelled) return;
 
-    const tab = activeTabRef.current;
-    const targetLeft = tab === "following" ? o.followingLeft : o.followersLeft;
+      const ee = pagerRef.current;
+      if (!ee) return;
 
-    // 1) 即時
-    el.scrollLeft = targetLeft;
+      const o = getOffsets();
+      if (!o) {
+        // まだ .page が取れない＝DOM未確定。リトライする
+        if (attempt < 60) requestAnimationFrame(() => run(attempt + 1));
+        return;
+      }
 
-    // 2) 2フレーム後
-    requestAnimationFrame(() => {
+      // ここで初めて「初回位置合わせが実行できる」
+      didInitialSnapRef.current = true;
+
+      const tab = activeTabRef.current;
+      const targetLeft = tab === "following" ? o.followingLeft : o.followersLeft;
+
+      // 即時
+      ee.scrollLeft = targetLeft;
+
+      // 2フレーム後
       requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const oo = getOffsets();
+          if (!oo) return;
+          const t = tab === "following" ? oo.followingLeft : oo.followersLeft;
+          ee.scrollLeft = t;
+        });
+      });
+
+      // 少し後（snap/復元対策）
+      window.setTimeout(() => {
         const oo = getOffsets();
         if (!oo) return;
         const t = tab === "following" ? oo.followingLeft : oo.followersLeft;
-        el.scrollLeft = t;
-      });
-    });
+        ee.scrollLeft = t;
+      }, 220);
 
-    // 3) 少し後
-    window.setTimeout(() => {
-      const oo = getOffsets();
-      if (!oo) return;
-      const t = tab === "following" ? oo.followingLeft : oo.followersLeft;
-      el.scrollLeft = t;
-    }, 220);
+      window.setTimeout(() => {
+        const oo = getOffsets();
+        if (!oo) return;
+        const t = tab === "following" ? oo.followingLeft : oo.followersLeft;
+        ee.scrollLeft = t;
+      }, 520);
+    };
 
-    // 4) さらに少し後（初回描画が遅い端末/環境用）
-    window.setTimeout(() => {
-      const oo = getOffsets();
-      if (!oo) return;
-      const t = tab === "following" ? oo.followingLeft : oo.followersLeft;
-      el.scrollLeft = t;
-    }, 520);
+    run(0);
+
+    return () => {
+      cancelled = true;
+    };
   }, [getOffsets]);
 
   // ------------------------------
