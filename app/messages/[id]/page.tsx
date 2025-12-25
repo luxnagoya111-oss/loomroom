@@ -536,15 +536,22 @@ const MessageDetailPage: React.FC = () => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
     (async () => {
-      // ★ ここが重要：subscribe より先に token を setAuth する（順序保証）
+      // ★ liv: クライアント権限で dm_messages を直接読めるか（RLS確認）
       try {
-        const { data } = await supabase.auth.getSession();
-        const token = data.session?.access_token;
-        if (token) supabase.realtime.setAuth(token);
-        // liv（確認用。直ったら消してOK）
-        console.log("[DM RT] token:", token ? token.slice(0, 16) : "none");
+        const { data: probe, error: probeErr } = await supabase
+          .from("dm_messages")
+          .select("id, thread_id, from_user_id, created_at")
+          .eq("thread_id", threadId)
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        console.log("[DM RT] probe select:", {
+          ok: !probeErr,
+          error: probeErr?.message ?? null,
+          row: probe?.[0] ?? null,
+        });
       } catch (e) {
-        console.warn("[DM RT] getSession/setAuth failed:", e);
+        console.log("[DM RT] probe exception:", e);
       }
 
       if (cancelled) return;
