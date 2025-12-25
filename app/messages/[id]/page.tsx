@@ -9,7 +9,7 @@ import React, {
   KeyboardEvent,
 } from "react";
 import { useParams } from "next/navigation";
-
+import Link from "next/link";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
@@ -143,6 +143,15 @@ function DateDivider({ date }: { date: string }) {
       <span>{date}</span>
     </div>
   );
+}
+
+// ★ プロフィール遷移先を role から解決
+function getProfileHref(role: Role, userId: string): string {
+  const id = safeText(userId);
+  if (!id) return "#";
+  if (role === "therapist") return `/therapist/${id}`;
+  if (role === "store") return `/store/${id}`;
+  return `/mypage/${id}`;
 }
 
 const MessageDetailPage: React.FC = () => {
@@ -504,13 +513,35 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId, isBlocked]);
 
-  // Realtime
+  // Realtime（相手の返信も即反映させる）
   useEffect(() => {
     if (!threadId || !currentUserId || isBlocked) return;
     if (!isUuid(threadId)) return;
 
+    let cancelled = false;
+    let refetchTimer: any = null;
+
+    async function refetchMessages() {
+      if (cancelled) return;
+      try {
+        const stored = await getMessagesForThread(threadId);
+        if (cancelled) return;
+        setMessages(stored.map((m) => mapDbToUi(m, currentUserId)));
+        await markThreadAsRead({ threadId, viewerId: currentUserId });
+      } catch (e) {
+        // ここは握りつぶしてOK（ログだけ）
+        console.warn("[Messages] refetch on realtime failed:", e);
+      }
+    }
+
+    // ★ INSERT を受けたら、軽くデバウンスして再取得
+    function scheduleRefetch() {
+      if (refetchTimer) clearTimeout(refetchTimer);
+      refetchTimer = setTimeout(refetchMessages, 120);
+    }
+
     const channelMessages = supabase
-      .channel(`dm_messages_${threadId}_${currentUserId}`)
+      .channel(`dm_messages_${threadId}`)
       .on(
         "postgres_changes",
         {
@@ -519,33 +550,18 @@ const MessageDetailPage: React.FC = () => {
           table: "dm_messages",
           filter: `thread_id=eq.${threadId}`,
         },
-        (payload) => {
-          const row = payload.new as DbDmMessageRow;
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === row.id)) return prev;
-            return [...prev, mapDbToUi(row, currentUserId)];
-          });
+        () => {
+          scheduleRefetch();
         }
       )
-      .subscribe();
-
-    const channelThreads = supabase
-      .channel(`dm_threads_${threadId}_${currentUserId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "dm_threads",
-          filter: `thread_id=eq.${threadId}`,
-        },
-        (payload) => setThread(payload.new as DbDmThreadRow)
-      )
-      .subscribe();
+      .subscribe((status) => {
+        console.log("[Messages] realtime subscribe:", status);
+      });
 
     return () => {
+      cancelled = true;
+      if (refetchTimer) clearTimeout(refetchTimer);
       supabase.removeChannel(channelMessages);
-      supabase.removeChannel(channelThreads);
     };
   }, [threadId, currentUserId, isBlocked]);
 
@@ -627,7 +643,13 @@ const MessageDetailPage: React.FC = () => {
           <div className="chat-inner">
             <div className="partner-badge">
               <div className="avatar-wrap avatar-wrap--lg">
-                <AvatarCircle displayName={partnerName} src={partnerAvatarUrl} />
+                <Link
+                  href={getProfileHref(partnerRole, partnerId as any)}
+                  className="no-link-style"
+                  aria-label={`${partnerName} のプロフィールを開く`}
+                >
+                  <AvatarCircle displayName={partnerName} src={partnerAvatarUrl} />
+                </Link>
               </div>
               <div className="partner-badge-main">
                 <div className="partner-badge-name">{partnerName}</div>
@@ -679,10 +701,16 @@ const MessageDetailPage: React.FC = () => {
                     >
                       {m.from === "partner" && (
                         <div className="avatar-wrap avatar-wrap--sm">
-                          <AvatarCircle
-                            displayName={partnerName}
-                            src={partnerAvatarUrl}
-                          />
+                          <Link
+                            href={getProfileHref(partnerRole, partnerId as any)}
+                            className="no-link-style"
+                            aria-label={`${partnerName} のプロフィールを開く`}
+                          >
+                            <AvatarCircle
+                              displayName={partnerName}
+                              src={partnerAvatarUrl}
+                            />
+                          </Link>
                         </div>
                       )}
 
@@ -719,11 +747,11 @@ const MessageDetailPage: React.FC = () => {
                     : checkingStatus && currentRole === "therapist"
                     ? "所属状態を確認しています…"
                     : "メッセージを入力（Enterで送信／改行はShift＋Enter）"
-                }
+                  }
                 rows={1}
                 disabled={inputDisabled}
               />
-              <button
+             <button
                 type="button"
                 className="chat-send-btn"
                 onClick={handleSend}
@@ -870,7 +898,7 @@ const MessageDetailPage: React.FC = () => {
           position: fixed;
           left: 50%;
           transform: translateX(-50%);
-          bottom: 58px;
+          bottom: 70px;
           width: 100%;
           max-width: 430px;
           padding: 6px 10px 10px;
