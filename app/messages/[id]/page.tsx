@@ -939,7 +939,7 @@ const MessageDetailPage: React.FC = () => {
           display: flex;
           align-items: flex-end;
           gap: 8px;
-          border-radius: 999px;
+          border-radius: 20px;
           background: var(--surface);
           border: 1px solid var(--border);
           padding: 6px 8px 6px 12px;
@@ -953,7 +953,7 @@ const MessageDetailPage: React.FC = () => {
           font-size: 13px;
           line-height: 1.4;
           /* max-height: 80px;  ←いったん外す（推奨） */
-          padding: 6px 0 5px 10px; /* 上 右 下 左 */
+          padding: 7px 0 5px 12px; /* 上 右 下 左 */
           height: auto;          /* JSがheightを入れる前提 */
           overflow-y: hidden;    /* JSが必要ならautoに切替 */
           white-space: pre-wrap; /* 改行保持 */
