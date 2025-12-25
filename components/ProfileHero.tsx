@@ -232,16 +232,6 @@ const ProfileHero: React.FC<Props> = (props) => {
           background: var(--surface); /* ★追加 */
         }
 
-        .profile-hero::after {
-          content: "";
-          position: absolute;
-          left: 0;
-          right: 0;
-          bottom: -1px;
-          height: 1px;
-          background: var(--surface);
-        }
-
         .profile-hero-row {
           display: flex;
           gap: 12px;
