@@ -536,22 +536,12 @@ const MessageDetailPage: React.FC = () => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
     (async () => {
-      // ★ liv: クライアント権限で dm_messages を直接読めるか（RLS確認）
-      try {
-        const { data: probe, error: probeErr } = await supabase
-          .from("dm_messages")
-          .select("id, thread_id, from_user_id, created_at")
-          .eq("thread_id", threadId)
-          .order("created_at", { ascending: false })
-          .limit(1);
-
-        console.log("[DM RT] probe select:", {
-          ok: !probeErr,
-          error: probeErr?.message ?? null,
-          row: probe?.[0] ?? null,
-        });
-      } catch (e) {
-        console.log("[DM RT] probe exception:", e);
+      // ★ 重要：Realtime 用に auth を同期（これが本命）
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) {
+        supabase.realtime.setAuth(token);
+        console.log("[DM RT] realtime auth set");
       }
 
       if (cancelled) return;
@@ -564,34 +554,25 @@ const MessageDetailPage: React.FC = () => {
             event: "INSERT",
             schema: "public",
             table: "dm_messages",
-            // まずは filter 無しでもOK（保険で thread_id を見る）
-            // filter: `thread_id=eq.${threadId}`,
+            filter: `thread_id=eq.${threadId}`,
           },
           (payload) => {
             if (cancelled) return;
 
-            const row = payload.new as any;
+            const row = payload.new as DbDmMessageRow;
 
-            // 保険：別スレッドは無視
-            if (row?.thread_id && row.thread_id !== threadId) return;
-
-            // 自分の送信は二重追加しない（send後に反映してるため）
-            if (row?.from_user_id === currentUserId) return;
-
-            // liv（直ったら消してOK）
-            console.log("[DM RT] INSERT:", row?.id);
+            // 自分の送信は二重反映しない
+            if (row.from_user_id === currentUserId) return;
 
             setMessages((prev) => {
-              if (row?.id && prev.some((m) => m.id === row.id)) return prev;
-              const ui = mapDbToUi(row as DbDmMessageRow, currentUserId);
-              return [...prev, ui];
+              if (prev.some((m) => m.id === row.id)) return prev;
+              return [...prev, mapDbToUi(row, currentUserId)];
             });
 
             markThreadAsRead({ threadId, viewerId: currentUserId }).catch(() => {});
           }
         )
         .subscribe((status) => {
-          // liv（直ったら消してOK）
           console.log("[DM RT] status:", status);
         });
     })();
