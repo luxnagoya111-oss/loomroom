@@ -294,7 +294,7 @@ export default function AdminContactDetailPage() {
 
               <button
                 type="button"
-                className="btn-primary"
+                className="admin-btn-outline"
                 onClick={save}
                 disabled={saving}
               >

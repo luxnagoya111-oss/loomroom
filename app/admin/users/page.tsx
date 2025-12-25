@@ -115,36 +115,39 @@ export default function AdminUsersPage() {
     const created = formatCreatedAt(app.created_at);
 
     return (
-      <tr key={app.id} className="row">
-        <td className="cell main-cell">
-          <div className="name">{app.name}</div>
-          <div className="meta">
-            {currentUserId && <span className="pill">仮ユーザーID: {currentUserId}</span>}
+      <tr key={app.id} className="admin-tr">
+        <td className="admin-td admin-col--main">
+          <div className="admin-item-name">{app.name}</div>
+          <div className="admin-meta-chips">
+            {currentUserId && <span className="admin-pill">仮ユーザーID: {currentUserId}</span>}
           </div>
         </td>
 
-        <td className="cell contact-cell">
-          {contact ? <div className="sub">{contact}</div> : <div className="sub muted">—</div>}
-          <div className="date">{created}</div>
+        <td className="admin-td admin-col--contact">
+          {contact ? <div className="admin-sub">{contact}</div> : <div className="admin-sub admin-muted">—</div>}
+          <div className="admin-date">{created}</div>
         </td>
 
-        <td className="cell hopes-cell">
-          {hopes ? <div className="note-text">{hopes}</div> : <div className="sub muted">—</div>}
+        {/* hopes/howto は既存の admin-col--note を流用（5列のため） */}
+        <td className="admin-td admin-col--note">
+          {hopes ? <div className="admin-note-text">{hopes}</div> : <div className="admin-sub admin-muted">—</div>}
         </td>
 
-        <td className="cell howto-cell">
+        <td className="admin-td admin-col--note">
           {howToUse ? (
-            <div className="note-text">{howToUse}</div>
+            <div className="admin-note-text">{howToUse}</div>
           ) : (
-            <div className="sub muted">—</div>
+            <div className="admin-sub admin-muted">—</div>
           )}
         </td>
 
-        <td className="cell status-cell">
-          <div className={`status-chip status-${app.status}`}>{statusLabel(app.status)}</div>
+        <td className="admin-td admin-col--status">
+          <div className={`admin-signup-status admin-signup-status--${app.status}`}>
+            {statusLabel(app.status)}
+          </div>
 
           <select
-            className="status-select"
+            className="admin-status-select"
             value={app.status}
             disabled={updatingId === app.id}
             onChange={(e: ChangeEvent<HTMLSelectElement>) =>
@@ -156,7 +159,7 @@ export default function AdminUsersPage() {
             <option value="rejected">却下</option>
           </select>
 
-          {updatingId === app.id && <div className="sub muted">更新中…</div>}
+          {updatingId === app.id && <div className="admin-sub admin-muted">更新中…</div>}
         </td>
       </tr>
     );
@@ -172,50 +175,52 @@ export default function AdminUsersPage() {
     const created = formatCreatedAt(app.created_at);
 
     return (
-      <div key={app.id} className="card">
-        <div className="card-head">
-          <div className="card-title">{app.name}</div>
-          <div className={`status-chip status-${app.status}`}>{statusLabel(app.status)}</div>
+      <div key={app.id} className="admin-signup-card">
+        <div className="admin-signup-card-head">
+          <div className="admin-signup-card-title">{app.name}</div>
+          <div className={`admin-signup-status admin-signup-status--${app.status}`}>
+            {statusLabel(app.status)}
+          </div>
         </div>
 
-        <div className="card-meta">
+        <div className="admin-signup-card-meta">
           {currentUserId && (
-            <div className="kv">
-              <span className="k">仮ユーザーID</span>
-              <span className="v">{currentUserId}</span>
+            <div className="admin-kv">
+              <span className="admin-k">仮ユーザーID</span>
+              <span className="admin-v">{currentUserId}</span>
             </div>
           )}
           {contact && (
-            <div className="kv">
-              <span className="k">連絡先</span>
-              <span className="v">{contact}</span>
+            <div className="admin-kv">
+              <span className="admin-k">連絡先</span>
+              <span className="admin-v">{contact}</span>
             </div>
           )}
           {created && (
-            <div className="kv">
-              <span className="k">申請日時</span>
-              <span className="v">{created}</span>
+            <div className="admin-kv">
+              <span className="admin-k">申請日時</span>
+              <span className="admin-v">{created}</span>
             </div>
           )}
         </div>
 
         {hopes && (
-          <div className="card-note">
-            <div className="k">できたら嬉しいこと</div>
-            <div className="v">{clip(hopes, 260)}</div>
+          <div className="admin-signup-card-note">
+            <div className="admin-k">できたら嬉しいこと</div>
+            <div className="admin-v">{clip(hopes, 260)}</div>
           </div>
         )}
 
         {howToUse && (
-          <div className="card-note">
-            <div className="k">使い方イメージ</div>
-            <div className="v">{clip(howToUse, 260)}</div>
+          <div className="admin-signup-card-note">
+            <div className="admin-k">使い方イメージ</div>
+            <div className="admin-v">{clip(howToUse, 260)}</div>
           </div>
         )}
 
-        <div className="card-actions">
+        <div className="admin-signup-card-actions">
           <select
-            className="status-select"
+            className="admin-status-select"
             value={app.status}
             disabled={updatingId === app.id}
             onChange={(e: ChangeEvent<HTMLSelectElement>) =>
@@ -227,52 +232,52 @@ export default function AdminUsersPage() {
             <option value="rejected">却下</option>
           </select>
 
-          {updatingId === app.id && <div className="sub muted">更新中…</div>}
+          {updatingId === app.id && <div className="admin-sub admin-muted">更新中…</div>}
         </div>
       </div>
     );
   };
 
   return (
-    <div className="page-root">
-      <div className="page-head">
+    <div className="admin-shell">
+      <div className="admin-page-head">
         <div>
-          <h1 className="page-title">一般ユーザー申請</h1>
-          <p className="page-lead">
+          <h1 className="admin-page-title">一般ユーザー申請</h1>
+          <p className="admin-page-lead">
             /signup/user から送信された一般ユーザー申請（signup_applications）を表示します。
             ステータスを approved / rejected に変更すると審査結果が確定した扱いになります。
           </p>
         </div>
       </div>
 
-      <div className="toolbar">
+      <div className="admin-toolbar">
         <input
-          className="search"
+          className="admin-search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="名前 / 連絡先 / 仮ユーザーID / できたら嬉しいこと / 使い方イメージ を検索"
         />
-        <div className="count">{filtered.length} 件</div>
+        <div className="admin-count">{filtered.length} 件</div>
       </div>
 
       {loading ? (
-        <div className="status-message">読み込み中...</div>
+        <div className="admin-status-message">読み込み中...</div>
       ) : error ? (
-        <div className="status-message error">{error}</div>
+        <div className="admin-status-message admin-status-message--error">{error}</div>
       ) : filtered.length === 0 ? (
-        <div className="status-message">まだ申請はありません。</div>
+        <div className="admin-status-message">まだ申請はありません。</div>
       ) : (
         <>
-          <div className="table-only">
-            <div className="table-wrapper">
-              <table className="table">
+          <div className="admin-table-only">
+            <div className="admin-table-wrapper">
+              <table className="admin-table">
                 <thead>
                   <tr>
-                    <th className="th main-cell">申請者</th>
-                    <th className="th contact-cell">連絡先 / 申請日時</th>
-                    <th className="th hopes-cell">できたら嬉しいこと</th>
-                    <th className="th howto-cell">使い方イメージ</th>
-                    <th className="th status-cell">ステータス</th>
+                    <th className="admin-th admin-col--main">申請者</th>
+                    <th className="admin-th admin-col--contact">連絡先 / 申請日時</th>
+                    <th className="admin-th admin-col--note">できたら嬉しいこと</th>
+                    <th className="admin-th admin-col--note">使い方イメージ</th>
+                    <th className="admin-th admin-col--status">ステータス</th>
                   </tr>
                 </thead>
                 <tbody>{filtered.map(renderRow)}</tbody>
@@ -280,316 +285,9 @@ export default function AdminUsersPage() {
             </div>
           </div>
 
-          <div className="card-only">{filtered.map(renderCard)}</div>
+          <div className="admin-card-only">{filtered.map(renderCard)}</div>
         </>
       )}
-
-      <style jsx>{`
-        .page-root {
-          max-width: 1100px;
-          margin: 0 auto;
-        }
-
-        .page-head {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 12px;
-          margin-bottom: 10px;
-        }
-
-        .page-title {
-          font-size: 18px;
-          font-weight: 800;
-          letter-spacing: 0.02em;
-          margin-bottom: 4px;
-        }
-
-        .page-lead {
-          font-size: 12px;
-          color: var(--text-sub, #6b7280);
-          line-height: 1.7;
-        }
-
-        .toolbar {
-          display: flex;
-          gap: 10px;
-          align-items: center;
-          margin: 10px 0 10px;
-        }
-
-        .search {
-          flex: 1;
-          border-radius: 999px;
-          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
-          padding: 9px 12px;
-          font-size: 12px;
-          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
-          color: inherit;
-          outline: none;
-        }
-
-        .search:focus {
-          border-color: rgba(215, 185, 118, 0.9);
-          box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.18);
-          background: var(--surface, #fff);
-        }
-
-        .count {
-          font-size: 12px;
-          color: var(--text-sub, #6b7280);
-          white-space: nowrap;
-        }
-
-        .status-message {
-          font-size: 13px;
-          color: var(--text-sub, #6b7280);
-          padding: 12px 2px;
-        }
-        .status-message.error {
-          color: #b94a48;
-        }
-
-        /* ===== Table ===== */
-        .table-wrapper {
-          overflow-x: auto;
-          border-radius: 12px;
-          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
-          background: var(--surface, #fff);
-          box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
-        }
-
-        .table {
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 12px;
-        }
-
-        .th {
-          text-align: left;
-          padding: 10px 10px;
-          border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
-          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
-          white-space: nowrap;
-        }
-
-        .cell {
-          padding: 10px 10px;
-          border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
-          vertical-align: top;
-        }
-        .row:last-child .cell {
-          border-bottom: none;
-        }
-
-        .main-cell {
-          min-width: 240px;
-        }
-        .contact-cell {
-          min-width: 220px;
-        }
-        .hopes-cell {
-          min-width: 320px;
-          max-width: 460px;
-        }
-        .howto-cell {
-          min-width: 320px;
-          max-width: 460px;
-        }
-        .status-cell {
-          min-width: 170px;
-        }
-
-        .name {
-          font-size: 13px;
-          font-weight: 700;
-          margin-bottom: 6px;
-        }
-
-        .meta {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-        }
-
-        .pill {
-          font-size: 11px;
-          color: var(--text-sub, #6b7280);
-          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
-          border: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
-          padding: 3px 8px;
-          border-radius: 999px;
-          max-width: 100%;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        .sub {
-          font-size: 11px;
-          color: var(--text-sub, #6b7280);
-          line-height: 1.5;
-        }
-        .muted {
-          opacity: 0.72;
-        }
-
-        .date {
-          font-size: 11px;
-          color: var(--text-sub, #6b7280);
-          opacity: 0.85;
-          margin-top: 6px;
-        }
-
-        .note-text {
-          font-size: 12px;
-          line-height: 1.6;
-          color: var(--text-main, #111827);
-          opacity: 0.85;
-          white-space: pre-wrap;
-          word-break: break-word;
-        }
-
-        /* ===== Status ===== */
-        .status-chip {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 11px;
-          font-weight: 700;
-          padding: 4px 10px;
-          border-radius: 999px;
-          border: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
-          background: var(--surface-soft, rgba(255, 255, 255, 0.9));
-          margin-bottom: 6px;
-        }
-
-        .status-pending {
-          color: #8a6d3b;
-          background: rgba(243, 215, 163, 0.22);
-          border-color: rgba(243, 215, 163, 0.75);
-        }
-        .status-approved {
-          color: #1b6b44;
-          background: rgba(191, 228, 207, 0.22);
-          border-color: rgba(191, 228, 207, 0.75);
-        }
-        .status-rejected {
-          color: #8c2e2b;
-          background: rgba(245, 194, 192, 0.22);
-          border-color: rgba(245, 194, 192, 0.75);
-        }
-
-        .status-select {
-          font-size: 12px;
-          border-radius: 999px;
-          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
-          padding: 6px 10px;
-          background: var(--surface, #fff);
-          color: inherit;
-          width: 100%;
-          max-width: 160px;
-          outline: none;
-        }
-
-        .status-select:focus {
-          border-color: rgba(215, 185, 118, 0.9);
-          box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.16);
-        }
-
-        /* ===== Cards (mobile) ===== */
-        .card {
-          background: var(--surface, #fff);
-          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
-          border-radius: 16px;
-          padding: 12px 12px 10px;
-          box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
-        }
-        .card + .card {
-          margin-top: 10px;
-        }
-
-        .card-head {
-          display: flex;
-          gap: 10px;
-          align-items: center;
-          justify-content: space-between;
-          margin-bottom: 8px;
-        }
-
-        .card-title {
-          font-size: 14px;
-          font-weight: 800;
-          color: var(--text-main, #111827);
-          line-height: 1.3;
-        }
-
-        .card-meta {
-          display: grid;
-          gap: 6px;
-        }
-
-        .kv {
-          display: grid;
-          grid-template-columns: 90px 1fr;
-          gap: 8px;
-          align-items: start;
-        }
-
-        .k {
-          font-size: 11px;
-          color: var(--text-sub, #6b7280);
-        }
-
-        .v {
-          font-size: 12px;
-          color: var(--text-main, #111827);
-          opacity: 0.85;
-          word-break: break-word;
-          white-space: pre-wrap;
-        }
-
-        .card-note {
-          margin-top: 8px;
-          padding-top: 8px;
-          border-top: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
-        }
-
-        .card-actions {
-          display: flex;
-          gap: 10px;
-          align-items: center;
-          justify-content: space-between;
-          margin-top: 10px;
-        }
-
-        .table-only {
-          display: block;
-        }
-        .card-only {
-          display: none;
-        }
-
-        /* ★ layout.tsx と同じ 860px で切り替える */
-        @media (max-width: 860px) {
-          .table-only {
-            display: none;
-          }
-          .card-only {
-            display: grid;
-          }
-          .status-select {
-            max-width: 100%;
-          }
-          .toolbar {
-            flex-direction: column;
-            align-items: stretch;
-          }
-          .count {
-            text-align: right;
-          }
-        }
-      `}</style>
     </div>
   );
 }
