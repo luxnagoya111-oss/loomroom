@@ -83,17 +83,12 @@ function autosizeTextarea(el: HTMLTextAreaElement, maxRows = 5) {
   // いったん縮めて scrollHeight を正しく測る
   el.style.height = "0px";
 
-  const cs = window.getComputedStyle(el);
-  const lineHeight = parseFloat(cs.lineHeight || "0") || 18;
-
-  const paddingTop = parseFloat(cs.paddingTop || "0") || 0;
-  const paddingBottom = parseFloat(cs.paddingBottom || "0") || 0;
-
-  const maxHeight = lineHeight * maxRows + paddingTop + paddingBottom;
-
-  const next = Math.min(el.scrollHeight, maxHeight);
+  const next = el.scrollHeight;
   el.style.height = `${next}px`;
-  el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+
+  // スクロールバーは出さない
+  el.style.overflowY = "hidden";
+
 }
 
 function formatDateString(date: Date): string {
@@ -952,7 +947,6 @@ const MessageDetailPage: React.FC = () => {
           resize: none;
           font-size: 13px;
           line-height: 1.4;
-          /* max-height: 80px;  ←いったん外す（推奨） */
           padding: 7px 0 5px 12px; /* 上 右 下 左 */
           height: auto;          /* JSがheightを入れる前提 */
           overflow-y: hidden;    /* JSが必要ならautoに切替 */
