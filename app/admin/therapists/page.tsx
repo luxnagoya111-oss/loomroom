@@ -252,7 +252,7 @@ export default function AdminTherapistsPage() {
 
       <div className="admin-toolbar">
         <input
-          className="admin-search"
+          className="admin-ctrl-input"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="名前 / 連絡先 / エリア / 希望店舗 / 経験 / 補足 を検索"

@@ -295,7 +295,7 @@ export default function AdminStoresPage() {
 
       <div className="admin-toolbar">
         <input
-          className="admin-search"
+          className="admin-ctrl-input"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="店舗名 / 連絡先 / エリア / 補足 を検索"

@@ -252,7 +252,7 @@ export default function AdminUsersPage() {
 
       <div className="admin-toolbar">
         <input
-          className="admin-search"
+          className="admin-ctrl-input"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="名前 / 連絡先 / 仮ユーザーID / できたら嬉しいこと / 使い方イメージ を検索"
