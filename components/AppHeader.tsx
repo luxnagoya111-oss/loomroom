@@ -71,7 +71,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     (async () => {
       setLoadingAccount(true);
       try {
-        // まず users.role
+        // users.role
         const { data: u, error: uErr } = await supabase
           .from("users")
           .select("id, role")
@@ -82,18 +82,12 @@ const AppHeader: React.FC<AppHeaderProps> = ({
 
         if (uErr) {
           console.error("[AppHeader] users.role fetch error:", uErr);
-          // role不明でも、登録導線は残しておく（安全側）
           setRole(null);
-          setHasStoreProfile(false);
-          setHasTherapistProfile(false);
-          return;
+        } else {
+          setRole((u?.role ?? null) as Role | null);
         }
 
-        const r = (u?.role ?? null) as Role | null;
-        setRole(r);
-
-        // role だけだと “実体プロフィール未作成” の可能性もあるので、
-        // 既存プロフィール（stores/therapists）も確認して表示制御に使う
+        // 実体プロフィール（roleズレ保険）
         const [storeRes, therapistRes] = await Promise.all([
           supabase
             .from("stores")
@@ -151,8 +145,8 @@ const AppHeader: React.FC<AppHeaderProps> = ({
 
   /**
    * ★ 体感改善版：
-   * 1) まず /mypage/{id} に即遷移（押した瞬間に反応）
-   * 2) 裏で role を解決できたら /store or /therapist に replace で寄せる
+   * 1) まず /mypage/{id} に即遷移
+   * 2) 裏で role を解決できたら /store or /therapist に replace
    */
   const handleMyPageClick = () => {
     const id = getCurrentUserId();
@@ -164,11 +158,8 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     }
 
     const fallback = `/mypage/${encodeURIComponent(id)}`;
-
-    // まず即遷移（体感を最優先）
     router.push(fallback);
 
-    // 裏で解決して、必要なら正しい公開ページへ
     (async () => {
       try {
         const { data: u, error: uErr } = await supabase
@@ -207,8 +198,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           if (t?.id) router.replace(`/therapist/${encodeURIComponent(t.id)}`);
           return;
         }
-
-        // user/null は fallback のままでOK
       } catch (e) {
         console.error("[AppHeader] handleMyPageClick exception:", e);
       }
@@ -216,13 +205,18 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   };
 
   // ===== 表示制御 =====
-  // すでに詮信のプロフィールがあれば「会員登録（該当）」を非表示
-  // role が確定している場合も同様に非表示（store/therapist）
-  const hideStoreSignup = role === "store" || hasStoreProfile;
-  const hideTherapistSignup = role === "therapist" || hasTherapistProfile;
-
-  // ログイン中はログイン導線を出さない（要件）
+  // ログイン中はログイン導線を隠す
   const showLoginLink = !loggedIn;
+
+  // 「兼ねない」前提なので、どちらか確定したら両方の登録導線を隠す
+  // role が確定していなくても実体プロフィールがあれば隠す（ズレ保険）
+  const isCreator =
+    role === "store" ||
+    role === "therapist" ||
+    hasStoreProfile ||
+    hasTherapistProfile;
+
+  const showCreatorSignupLinks = !isCreator;
 
   return (
     <>
@@ -335,28 +329,26 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 </button>
               )}
 
-              {/* ログイン済みでも出したいなら loggedIn 条件を外す。
-                  要件上は「既に登録済なら非表示」なので、まずは表示は維持しつつ非表示判定を入れる */}
-              {!hideStoreSignup && (
-                <button
-                  type="button"
-                  className="drawer-item drawer-item-button"
-                  onClick={() => go("/signup/creator/start?kind=store")}
-                  disabled={loadingAccount} // ロール取得中の誤表示タップを抑止（任意）
-                >
-                  会員登録（店舗）
-                </button>
-              )}
+              {showCreatorSignupLinks && (
+                <>
+                  <button
+                    type="button"
+                    className="drawer-item drawer-item-button"
+                    onClick={() => go("/signup/creator/start?kind=store")}
+                    disabled={loadingAccount}
+                  >
+                    会員登録（店舗）
+                  </button>
 
-              {!hideTherapistSignup && (
-                <button
-                  type="button"
-                  className="drawer-item drawer-item-button"
-                  onClick={() => go("/signup/creator/start?kind=therapist")}
-                  disabled={loadingAccount}
-                >
-                  会員登録（セラピスト）
-                </button>
+                  <button
+                    type="button"
+                    className="drawer-item drawer-item-button"
+                    onClick={() => go("/signup/creator/start?kind=therapist")}
+                    disabled={loadingAccount}
+                  >
+                    会員登録（セラピスト）
+                  </button>
+                </>
               )}
 
               <div className="drawer-section-label">ルール / ポリシー</div>
