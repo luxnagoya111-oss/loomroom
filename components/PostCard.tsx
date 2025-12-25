@@ -58,28 +58,12 @@ export default function PostCard(props: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // UiPost.authorId は Home 側で mute/block 判定に使っている前提
+  // UiPost.authorId は canonical(users.id) 前提（mute/block 判定用）
+  // → 自分判定も authorId で行うのが一貫して正しい
   const isOwner = useMemo(() => {
     if (!viewerUuid) return false;
-
-    // ① canonical user id があれば最優先で使う（users.id）
-    const canonical =
-      (post as any).canonicalUserId ??
-      (post as any).canonical_user_id ??
-      (post as any).authorUserId ??
-      null;
-
-    if (typeof canonical === "string" && canonical) {
-      return canonical === viewerUuid;
-    }
-
-    // ② user投稿の場合のみ fallback
-    if (post.authorKind === "user") {
-      return post.authorId === viewerUuid;
-    }
-
-    return false;
-  }, [viewerUuid, post]);
+    return post.authorId === viewerUuid;
+  }, [viewerUuid, post.authorId]);
 
   const profileClickable = !!post.profilePath;
 
