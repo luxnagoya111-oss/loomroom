@@ -527,7 +527,7 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId, isBlocked]);
 
-  // Realtime（dm_messages INSERT → 即 append）
+  // Realtime（INSERT → 即 append / 順序保証）
   useEffect(() => {
     if (!threadId || !currentUserId || isBlocked) return;
     if (!isUuid(threadId)) return;
@@ -535,41 +535,59 @@ const MessageDetailPage: React.FC = () => {
     let cancelled = false;
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
-    channel = supabase
-      .channel(`dm_messages_${threadId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "dm_messages",
-          // filter を使うならここ（任意）
-          // filter: `thread_id=eq.${threadId}`,
-        },
-        (payload) => {
-          if (cancelled) return;
+    (async () => {
+      // ★ ここが重要：subscribe より先に token を setAuth する（順序保証）
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (token) supabase.realtime.setAuth(token);
+        // liv（確認用。直ったら消してOK）
+        console.log("[DM RT] token:", token ? token.slice(0, 16) : "none");
+      } catch (e) {
+        console.warn("[DM RT] getSession/setAuth failed:", e);
+      }
 
-          const row = payload.new as any;
+      if (cancelled) return;
 
-          // thread_id が取れる構造なら保険で弾く（filter無し運用でも安全）
-          if (row?.thread_id && row.thread_id !== threadId) return;
+      channel = supabase
+        .channel(`dm_messages_${threadId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "dm_messages",
+            // まずは filter 無しでもOK（保険で thread_id を見る）
+            // filter: `thread_id=eq.${threadId}`,
+          },
+          (payload) => {
+            if (cancelled) return;
 
-          // 自分の送信は send後にUI反映してるので、二重追加を避ける
-          if (row?.from_user_id === currentUserId) return;
+            const row = payload.new as any;
 
-          setMessages((prev) => {
-            // 重複ガード（同じidは追加しない）
-            if (row?.id && prev.some((m) => m.id === row.id)) return prev;
-            // DB→UI 変換（既存の mapDbToUi を使う）
-            const ui = mapDbToUi(row as DbDmMessageRow, currentUserId);
-            return [...prev, ui];
-          });
+            // 保険：別スレッドは無視
+            if (row?.thread_id && row.thread_id !== threadId) return;
 
-          // 既読化（相手→自分の新着が来たタイミングで）
-          markThreadAsRead({ threadId, viewerId: currentUserId }).catch(() => {});
-        }
-      )
-      .subscribe();
+            // 自分の送信は二重追加しない（send後に反映してるため）
+            if (row?.from_user_id === currentUserId) return;
+
+            // liv（直ったら消してOK）
+            console.log("[DM RT] INSERT:", row?.id);
+
+            setMessages((prev) => {
+              if (row?.id && prev.some((m) => m.id === row.id)) return prev;
+              const ui = mapDbToUi(row as DbDmMessageRow, currentUserId);
+              return [...prev, ui];
+            });
+
+            markThreadAsRead({ threadId, viewerId: currentUserId }).catch(() => {});
+          }
+        )
+        .subscribe((status) => {
+          // liv（直ったら消してOK）
+          console.log("[DM RT] status:", status);
+        });
+    })();
 
     return () => {
       cancelled = true;
