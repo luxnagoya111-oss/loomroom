@@ -1700,16 +1700,17 @@ a:active {
    ================================ */
 
 .admin-btn-outline {
-  font-size: 12px;
-  padding: 8px 12px;
+  font-size: 10px;
+  padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface-soft);
   color: var(--text-sub);
   white-space: nowrap;
+  margin-right: 6px;
+  margin-bottom: 6px;
 }
 
 .admin-btn-outline:disabled {
   opacity: 0.7;
 }
-
