@@ -138,11 +138,15 @@ export default function LoomRoomHome() {
     const prevLiked = post.liked;
     const prevCount = post.likeCount;
 
-    // optimistic
+    // optimistic update
     setPosts((prev) =>
       prev.map((p) =>
         p.id === post.id
-          ? { ...p, liked: !prevLiked, likeCount: prevCount + (!prevLiked ? 1 : -1) }
+          ? {
+              ...p,
+              liked: !prevLiked,
+              likeCount: prevCount + (!prevLiked ? 1 : -1),
+            }
           : p
       )
     );
@@ -157,9 +161,15 @@ export default function LoomRoomHome() {
     if (!res.ok) {
       // rollback
       setPosts((prev) =>
-        prev.map((p) => (p.id === post.id ? { ...p, liked: prevLiked, likeCount: prevCount } : p))
+        prev.map((p) =>
+          p.id === post.id
+            ? { ...p, liked: prevLiked, likeCount: prevCount }
+            : p
+        )
       );
-      alert("いいねの反映中にエラーが発生しました。時間をおいて再度お試しください。");
+      alert(
+        "いいねの反映中にエラーが発生しました。時間をおいて再度お試しください。"
+      );
     }
   };
 
@@ -168,18 +178,23 @@ export default function LoomRoomHome() {
   };
 
   return (
-    <div className="page-root">
+    <div className="app-shell">
       <AppHeader title="LRoom" />
 
-      <main className="page-main">
-        <section className="feed-filters">
-          <div className="filter-group">
-            <label className="filter-label">表示</label>
+      <main className="app-main">
+        {/* ===== フィルタ ===== */}
+        <section className="surface-card">
+          <div className="field">
+            <label className="field-label">表示</label>
             <select
-              className="filter-select"
+              className="field-input"
               value={kindFilter}
               onChange={(e) =>
-                setKindFilter(e.target.value === "all" ? "all" : (e.target.value as AuthorKind))
+                setKindFilter(
+                  e.target.value === "all"
+                    ? "all"
+                    : (e.target.value as AuthorKind)
+                )
               }
             >
               <option value="all">すべて</option>
@@ -190,15 +205,20 @@ export default function LoomRoomHome() {
           </div>
         </section>
 
+        {/* ===== タイムライン ===== */}
         <section className="feed-list">
           {error && (
-            <div className="feed-message feed-error">
+            <div className="feed-message feed-message--error">
               タイムラインの読み込みに失敗しました：{error}
             </div>
           )}
+
           {loading && !error && (
-            <div className="feed-message feed-loading">タイムラインを読み込んでいます…</div>
+            <div className="feed-message">
+              タイムラインを読み込んでいます…
+            </div>
           )}
+
           {!loading && !error && filteredPosts.length === 0 && (
             <div className="feed-message">まだ投稿がありません。</div>
           )}
@@ -224,58 +244,6 @@ export default function LoomRoomHome() {
       </main>
 
       <BottomNav active="home" hasUnread={hasUnread} />
-
-      <style jsx>{`
-        .page-root {
-          min-height: 100vh;
-          background: var(--background, #ffffff);
-          color: var(--foreground, #171717);
-          display: flex;
-          flex-direction: column;
-        }
-
-        .page-main {
-          padding-bottom: 64px;
-        }
-
-        .feed-filters {
-          display: flex;
-          gap: 12px;
-          padding: 12px 16px;
-          border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-        }
-
-        .filter-group {
-          display: flex;
-          flex-direction: column;
-          flex: 1;
-          min-width: 0;
-        }
-
-        .filter-label {
-          font-size: 11px;
-          color: var(--text-sub, #777);
-          margin-bottom: 4px;
-        }
-
-        .filter-select {
-          font-size: 13px;
-          padding: 4px 6px;
-          border-radius: 6px;
-          border: 1px solid rgba(0, 0, 0, 0.12);
-          background: #fff;
-        }
-
-        .feed-message {
-          font-size: 12px;
-          padding: 12px 16px;
-          color: var(--text-sub, #777);
-        }
-
-        .feed-error {
-          color: #b00020;
-        }
-      `}</style>
     </div>
   );
 }

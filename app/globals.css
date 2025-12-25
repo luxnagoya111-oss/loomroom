@@ -12,7 +12,9 @@
   --accent: #d7b976;           /* シャンパンゴールド */
   --accent-soft: rgba(215, 185, 118, 0.18);
   --text-main: #2c2c30;
-  --text-sub: #87827a;               
+  --text-sub: #87827a;     
+  --gold-strong: #b89452;        /* ★ より深く濃いゴールドに修正 */
+  --gold-strong-text: #5a461e;   /* ゴールドに合わせた濃ブラウン */          
 
   /* 旧 ll-系も念のため残しておく（中身は同じ） */
   --ll-bg: var(--bg);
@@ -123,11 +125,14 @@ body {
   cursor: pointer;
 }
 
-/* メインスクロール領域 */
+/* ================================
+   Main Scroll Area（Global / 正）
+   ================================ */
+
 .app-main {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 16px 120px;
+  padding: 12px 16px 120px; /* 通常：下ナビ分 */
 }
 
 .app-main::-webkit-scrollbar {
@@ -137,6 +142,14 @@ body {
 .app-main::-webkit-scrollbar-thumb {
   background: #d4d4de;
   border-radius: 999px;
+}
+
+/* ================================
+   Main Scroll Variant : Console
+   ================================ */
+
+.console .app-main {
+  padding-bottom: 140px; /* footer save bar + 下ナビ */
 }
 
 /* ================================
@@ -514,50 +527,6 @@ body {
   margin-top: 4px;
 }
 
-/* ================================
-   いいねボタン・アクション行（共通）
-   ================================ */
-
-.post-actions {
-  margin-top: 6px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  font-size: 13px;
-  color: var(--text-sub);
-}
-
-.post-like-btn {
-  border: none;
-  background: transparent;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  font-size: 13px;
-  color: var(--text-sub);
-  cursor: pointer;
-}
-
-.post-like-icon {
-  font-size: 15px;
-  line-height: 1;
-}
-
-.post-like-count {
-  font-variant-numeric: tabular-nums;
-}
-
-/* いいね済みのときの見た目 */
-.post-like-btn--liked {
-  color: #e4688b;
-  font-weight: 600;
-}
-
-.post-like-btn--liked .post-like-icon {
-  text-shadow: 0 0 4px rgba(228, 104, 139, 0.4);
-}
-
 /* 他アクション（コメントなど）のテキスト */
 .post-action-text {
   cursor: default; /* 今はデモなのでクリックなし */
@@ -573,36 +542,6 @@ a:active {
   text-decoration: none !important;
 }
 
-/* ================================
-   共通ボタン
-   ================================ */
-
-.btn-primary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 10px 16px;
-  border-radius: 999px;
-  border: none;
-  outline: none;
-  font-size: 14px;
-  font-weight: 600;
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
-  box-shadow: 0 4px 10px rgba(215, 185, 118, 0.35);
-  transition: transform 0.08s ease, box-shadow 0.08s ease, opacity 0.1s ease;
-}
-
-.btn-primary:active {
-  transform: translateY(1px);
-  box-shadow: 0 2px 6px rgba(215, 185, 118, 0.25);
-}
-
-.btn-primary--full {
-  width: 100%;
-}
 
 /* サブ（枠線だけ） */
 .btn-ghost {
@@ -697,7 +636,7 @@ a:active {
 }
 
 /* ================================
-   フォームフィールド
+   Form Field（Global / 正）
    ================================ */
 
 .field {
@@ -710,14 +649,17 @@ a:active {
 .field-label {
   font-size: 12px;
   font-weight: 500;
+  color: var(--text-main);
 }
 
 .field-note {
   font-size: 11px;
   color: var(--text-sub);
+  line-height: 1.6;
 }
 
 .field-input {
+  width: 100%;
   border-radius: 10px;
   border: 1px solid var(--border);
   padding: 8px 10px;
@@ -729,6 +671,30 @@ a:active {
 .field-input:focus {
   border-color: var(--accent-soft);
   box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+/* ================================
+   Field Variant : Console
+   ================================ */
+
+/* Consoleページ全体に .console を付ける前提 */
+.console .field {
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
+.console .field-label {
+  font-weight: 600;
+}
+
+.console .field-input {
+  border-radius: 16px;
+  padding: 10px 12px;
+}
+
+.console .field-input:focus {
+  border-color: var(--accent);
+  box-shadow: none;
 }
 
 /* ================================
@@ -788,7 +754,6 @@ a:active {
 
 .profile-hero {
   padding: 4px 0 12px;
-  border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
 }
 
@@ -896,60 +861,6 @@ a:active {
   font-weight: 600;
   margin-bottom: 4px;
   color: var(--text-sub);
-}
-
-/* 共通トグルUI（mypage / store / search / compose などで使用） */
-.toggle-row {
-  width: 100%;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: var(--surface-soft);
-  padding: 10px 12px;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  cursor: pointer;
-}
-
-.toggle-main {
-  flex: 1;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.toggle-title {
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.3;
-}
-
-.toggle-caption {
-  font-size: 11px;
-  color: var(--text-sub);
-  line-height: 1.4;
-}
-
-.toggle-switch {
-  width: 40px;
-  height: 20px;
-  border-radius: 999px;
-  background: #c8cad3;
-  position: relative;
-  margin-top: 2px;
-  transition: background 0.2s ease;
-}
-
-.toggle-knob {
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: #ffffff;
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  transition: transform 0.2s ease;
 }
 
 /* ================================
@@ -1111,10 +1022,11 @@ a:active {
 }
 
 /* ================================
-   Timeline Post Actions (Global)
+   Post Actions（Global / 正）
    ================================ */
 
 .post-actions {
+  margin-top: 6px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1127,6 +1039,8 @@ a:active {
   flex: 1;
 }
 
+/* ---------- Like ---------- */
+
 .post-like-btn {
   display: inline-flex;
   align-items: center;
@@ -1135,23 +1049,38 @@ a:active {
   background: transparent;
   padding: 0;
   cursor: pointer;
-}
-
-.post-like-btn--liked .post-like-icon {
-  color: #e85a7b;
+  color: inherit;
+  font-size: inherit;
 }
 
 .post-like-icon {
   font-size: 14px;
+  line-height: 1;
 }
 
 .post-like-count {
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
+
+/* liked state */
+.post-like-btn--liked {
+  color: #e4688b;
+  font-weight: 600;
+}
+
+.post-like-btn--liked .post-like-icon {
+  text-shadow: 0 0 4px rgba(228, 104, 139, 0.4);
+}
+
+/* ---------- Text Action（replyなど） ---------- */
 
 .post-action-text {
   font-size: 12px;
+  cursor: default;
 }
+
+/* ---------- More Menu ---------- */
 
 .post-more {
   position: relative;
@@ -1197,6 +1126,8 @@ a:active {
     transform: translateY(0);
   }
 }
+
+/* ---------- Danger ---------- */
 
 .post-report-btn {
   width: 100%;
@@ -1329,15 +1260,6 @@ a:active {
   background: rgba(0, 0, 0, 0.06);
 }
 
-/* ================================
-   Follow Button (Gold Strong Ver.)
-   ================================ */
-
-:root {
-  --gold-strong: #b89452;        /* ★ より深く濃いゴールドに修正 */
-  --gold-strong-text: #5a461e;   /* ゴールドに合わせた濃ブラウン */
-}
-
 /* 未フォロー：濃いゴールドでしっかり塗りつぶし */
 .follow-button {
   padding: 4px 12px;
@@ -1381,10 +1303,6 @@ a:active {
   margin: 0 auto;
 }
 
-.app-main {
-  padding: 12px 16px 140px;
-}
-
 /* ---------- surface / card ---------- */
 .surface-card h2 {
   font-size: 13px;
@@ -1393,90 +1311,114 @@ a:active {
   color: var(--text-sub);
 }
 
-/* ---------- field ---------- */
-.field {
+/* ================================
+   Toggle UI（Global / 正）
+   ================================ */
+
+/* ---------- Base ---------- */
+
+.toggle-row {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.toggle-main {
+  flex: 1;
+  text-align: left;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.field-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-main);
-}
-
-.field-input {
-  width: 100%;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  padding: 10px 12px;
-  font-size: 13px;
-  background: #fff;
-}
-
-.field-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.field-note {
-  font-size: 11px;
-  color: var(--text-sub);
-  line-height: 1.6;
-}
-
-/* ---------- toggle ---------- */
-.toggle-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.toggle-text {
-  flex: 1;
-  min-width: 0;
+  gap: 2px;
 }
 
 .toggle-title {
   font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.toggle-caption {
+  font-size: 11px;
+  color: var(--text-sub);
+  line-height: 1.4;
+}
+
+/* ---------- Switch（Base） ---------- */
+
+.toggle-switch {
+  width: 40px;
+  height: 20px;
+  border-radius: 999px;
+  background: #c8cad3; /* OFF */
+  position: relative;
+  margin-top: 2px;
+  transition: background 0.2s ease;
+}
+
+.toggle-knob {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #ffffff;
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  transition: transform 0.2s ease;
+}
+
+/* ================================
+   Toggle Variant : Console
+   ================================ */
+
+.console .toggle-row {
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.console .toggle-main {
+  min-width: 0;
+}
+
+.console .toggle-title {
   font-weight: 600;
   margin-bottom: 2px;
 }
 
-.toggle-switch {
+.console .toggle-switch {
   width: 48px;
   height: 28px;
-  border-radius: 999px;
+  margin-top: 0;
   border: 1px solid rgba(0, 0, 0, 0.08);
-  position: relative;
-  padding: 0;
-  background: #d1d5db; /* OFF */
+  background: #d1d5db;
   cursor: pointer;
 }
 
-.toggle-switch.is-on {
-  background: linear-gradient(135deg, #d9b07c, #b4895a); /* ON */
+.console .toggle-switch.is-on {
+  background: linear-gradient(135deg, #d9b07c, #b4895a);
 }
 
-.toggle-knob {
-  position: absolute;
-  top: 3px;
-  left: 3px;
+.console .toggle-knob {
   width: 22px;
   height: 22px;
-  border-radius: 999px;
-  background: #fff;
-  transition: transform 0.15s ease;
+  top: 3px;
+  left: 3px;
 }
 
-.toggle-switch.is-on .toggle-knob {
+.console .toggle-switch.is-on .toggle-knob {
   transform: translateX(20px);
 }
 
-/* ---------- footer save bar ---------- */
+/* ================================
+   Console Footer Save Bar
+   ================================ */
+
 .console-footer-bar {
   position: fixed;
   bottom: 58px;
@@ -1496,20 +1438,31 @@ a:active {
   z-index: 25;
 }
 
-/* ---------- primary button ---------- */
+/* ================================
+   Primary Button（Global / 正）
+   ================================ */
+
 .btn-primary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
   border-radius: 999px;
   border: none;
-  padding: 10px 18px;
+  outline: none;
   font-size: 14px;
   font-weight: 600;
-  cursor: pointer;
   background: var(--accent);
   color: #fff;
-  box-shadow: 0 6px 16px rgba(180, 137, 90, 0.35);
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(215, 185, 118, 0.35);
+  transition: transform 0.08s ease, box-shadow 0.08s ease, opacity 0.1s ease;
+}
+
+.btn-primary:active {
+  transform: translateY(1px);
+  box-shadow: 0 2px 6px rgba(215, 185, 118, 0.25);
 }
 
 .btn-primary--full {
@@ -1519,6 +1472,15 @@ a:active {
 .btn-primary[disabled] {
   opacity: 0.6;
   cursor: default;
+}
+
+/* ================================
+   Primary Button Variant : Console
+   ================================ */
+
+.console .btn-primary {
+  padding: 10px 18px;
+  box-shadow: 0 6px 16px rgba(180, 137, 90, 0.35);
 }
 
 /* 見た目を“ボタンっぽくしない”ための共通 */
