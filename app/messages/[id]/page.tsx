@@ -527,7 +527,7 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId, isBlocked]);
 
-  // Realtime（DEBUG: filter無しで受信できるか確認）
+  // Realtime（DEBUG）
   useEffect(() => {
     if (!threadId || !currentUserId || isBlocked) return;
     if (!isUuid(threadId)) return;
@@ -536,16 +536,27 @@ const MessageDetailPage: React.FC = () => {
     let refetchTimer: any = null;
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
-    async function refetchMessages() { /* 既存 */ }
-    function scheduleRefetch() { /* 既存 */ }
-
     (async () => {
-      // ★ 先に Realtime auth 同期
-      try {
-        const { data } = await supabase.auth.getSession();
-        const token = data.session?.access_token;
-        if (token) supabase.realtime.setAuth(token);
-      } catch {}
+      // ★ ここを追加
+      const { data, error } = await supabase.auth.getSession();
+      console.log("[Realtime DEBUG] getSession:", {
+        error: error?.message ?? null,
+        hasSession: !!data.session,
+        userId: data.session?.user?.id ?? null,
+        tokenHead: data.session?.access_token?.slice(0, 20) ?? null,
+        expiresAt: data.session?.expires_at ?? null,
+      });
+
+      // ★ ここも追加
+      if (data.session?.access_token) {
+        supabase.realtime.setAuth(data.session.access_token);
+        console.log(
+          "[Realtime DEBUG] setAuth called:",
+          data.session.access_token.slice(0, 20)
+        );
+      } else {
+        console.warn("[Realtime DEBUG] no access token for realtime");
+      }
 
       if (cancelled) return;
 
@@ -553,10 +564,13 @@ const MessageDetailPage: React.FC = () => {
         .channel(`dm_messages_debug_${threadId}`)
         .on(
           "postgres_changes",
-          { event: "INSERT", schema: "public", table: "dm_messages" },
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "dm_messages",
+          },
           (payload) => {
-            console.log("[Messages] INSERT payload (NO FILTER):", payload);
-            scheduleRefetch();
+            console.log("[Messages] INSERT payload:", payload);
           }
         )
         .subscribe((status) => {
