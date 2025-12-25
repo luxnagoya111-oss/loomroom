@@ -78,6 +78,24 @@ function formatTime(date: Date): string {
   const m = date.getMinutes().toString().padStart(2, "0");
   return `${h}:${m}`;
 }
+
+function autosizeTextarea(el: HTMLTextAreaElement, maxRows = 5) {
+  // いったん縮めて scrollHeight を正しく測る
+  el.style.height = "0px";
+
+  const cs = window.getComputedStyle(el);
+  const lineHeight = parseFloat(cs.lineHeight || "0") || 18;
+
+  const paddingTop = parseFloat(cs.paddingTop || "0") || 0;
+  const paddingBottom = parseFloat(cs.paddingBottom || "0") || 0;
+
+  const maxHeight = lineHeight * maxRows + paddingTop + paddingBottom;
+
+  const next = Math.min(el.scrollHeight, maxHeight);
+  el.style.height = `${next}px`;
+  el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+}
+
 function formatDateString(date: Date): string {
   const y = date.getFullYear();
   const m = (date.getMonth() + 1).toString().padStart(2, "0");
@@ -186,6 +204,7 @@ const MessageDetailPage: React.FC = () => {
   const [isBlocked, setIsBlocked] = useState(false);
 
   const endRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // viewerId（Auth uuid 正）
   useEffect(() => {
@@ -513,8 +532,7 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId, isBlocked]);
 
-  // Realtime（相手の返信も即反映させる）
-  // Realtime（相手の返信も即反映させる）
+  // Realtime（DEBUG: filter無しで受信できるか確認）
   useEffect(() => {
     if (!threadId || !currentUserId || isBlocked) return;
     if (!isUuid(threadId)) return;
@@ -527,37 +545,35 @@ const MessageDetailPage: React.FC = () => {
       try {
         const stored = await getMessagesForThread(threadId);
         if (cancelled) return;
-
         setMessages(stored.map((m) => mapDbToUi(m, currentUserId)));
-
         await markThreadAsRead({ threadId, viewerId: currentUserId });
       } catch (e) {
         console.warn("[Messages] refetch on realtime failed:", e);
       }
     }
 
-    // INSERT を受けたら、軽くデバウンスして再取得
     function scheduleRefetch() {
       if (refetchTimer) clearTimeout(refetchTimer);
       refetchTimer = setTimeout(refetchMessages, 120);
     }
 
     const channelMessages = supabase
-      .channel(`dm_messages_${threadId}`)
+      .channel(`dm_messages_debug_${threadId}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "dm_messages",
-          filter: `thread_id=eq.${threadId}`,
+          // ★ filter を外す（デバッグ）
         },
-        () => {
+        (payload) => {
+          console.log("[Messages] INSERT payload (NO FILTER):", payload);
           scheduleRefetch();
         }
       )
       .subscribe((status) => {
-        console.log("[Messages] realtime subscribe:", status);
+        console.log("[Messages] realtime subscribe status:", status);
       });
 
     return () => {
@@ -565,8 +581,13 @@ const MessageDetailPage: React.FC = () => {
       if (refetchTimer) clearTimeout(refetchTimer);
       supabase.removeChannel(channelMessages);
     };
-  }  , [threadId, currentUserId, isBlocked]);
+  }, [threadId, currentUserId, isBlocked]);
 
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    autosizeTextarea(el, 5);
+  }, [text]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -740,16 +761,16 @@ const MessageDetailPage: React.FC = () => {
           <div className="chat-input-bar">
             <div className="chat-input-inner">
               <textarea
+                ref={inputRef}
                 className="chat-input"
                 value={text}
                 onChange={handleChange}
-                onKeyDown={handleKeyDown}
                 placeholder={
                   isBlocked
                     ? "ブロック中のためメッセージを送信できません"
                     : checkingStatus && currentRole === "therapist"
                     ? "所属状態を確認しています…"
-                    : "メッセージを入力（Enterで送信／改行はShift＋Enter）"
+                    : "メッセージを入力..."
                   }
                 rows={1}
                 disabled={inputDisabled}
@@ -931,9 +952,13 @@ const MessageDetailPage: React.FC = () => {
           resize: none;
           font-size: 13px;
           line-height: 1.4;
-          max-height: 80px;
-          padding: 2px 0;
+          /* max-height: 80px;  ←いったん外す（推奨） */
+          padding: 5px 0;
+          height: auto;          /* JSがheightを入れる前提 */
+          overflow-y: hidden;    /* JSが必要ならautoに切替 */
+          white-space: pre-wrap; /* 改行保持 */
         }
+
         .chat-input:focus {
           outline: none;
         }
