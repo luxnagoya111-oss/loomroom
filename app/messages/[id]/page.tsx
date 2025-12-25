@@ -514,6 +514,7 @@ const MessageDetailPage: React.FC = () => {
   }, [threadId, currentUserId, isBlocked]);
 
   // Realtime（相手の返信も即反映させる）
+  // Realtime（相手の返信も即反映させる）
   useEffect(() => {
     if (!threadId || !currentUserId || isBlocked) return;
     if (!isUuid(threadId)) return;
@@ -526,15 +527,16 @@ const MessageDetailPage: React.FC = () => {
       try {
         const stored = await getMessagesForThread(threadId);
         if (cancelled) return;
+
         setMessages(stored.map((m) => mapDbToUi(m, currentUserId)));
+
         await markThreadAsRead({ threadId, viewerId: currentUserId });
       } catch (e) {
-        // ここは握りつぶしてOK（ログだけ）
         console.warn("[Messages] refetch on realtime failed:", e);
       }
     }
 
-    // ★ INSERT を受けたら、軽くデバウンスして再取得
+    // INSERT を受けたら、軽くデバウンスして再取得
     function scheduleRefetch() {
       if (refetchTimer) clearTimeout(refetchTimer);
       refetchTimer = setTimeout(refetchMessages, 120);
@@ -563,7 +565,8 @@ const MessageDetailPage: React.FC = () => {
       if (refetchTimer) clearTimeout(refetchTimer);
       supabase.removeChannel(channelMessages);
     };
-  }, [threadId, currentUserId, isBlocked]);
+  }  , [threadId, currentUserId, isBlocked]);
+
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
