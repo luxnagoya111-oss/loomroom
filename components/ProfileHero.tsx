@@ -337,7 +337,6 @@ const ProfileHero: React.FC<Props> = (props) => {
           font-size: 12px;
           padding: 4px 10px;
           border-radius: 999px;
-          border: 1px solid var(--border);
           background: var(--surface);
           color: var(--text-main);
           text-decoration: none;
