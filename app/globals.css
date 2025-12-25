@@ -1565,6 +1565,7 @@ a:active {
   padding: 12px;
   box-shadow: 0 8px 24px rgba(10, 10, 10, 0.02);
   min-width: 0;
+  margin-bottom: 12px;
 }
 
 .admin-card-title-row {
@@ -1665,7 +1666,7 @@ a:active {
 }
 
 /* ================================
-   Admin Form Control
+   Admin Form Control（最終）
    ================================ */
 
 .admin-ctrl {
@@ -1684,14 +1685,14 @@ a:active {
   border: 1px solid var(--border);
   padding: 8px 10px;
   font-size: 13px;
-  background: var(--surface-soft);
+  background: #fff;          /* ★ 常時白 */
   outline: none;
 }
 
 .admin-ctrl-input:focus {
   border-color: var(--accent-soft);
   box-shadow: 0 0 0 2px var(--accent-soft);
-  background: #fff;
+  /* background指定は不要 */
 }
 
 /* ================================
