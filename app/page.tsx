@@ -208,7 +208,7 @@ export default function LoomRoomHome() {
               key={p.id}
               post={p}
               viewerReady={viewerReady}
-              viewerUuid={viewerReady && viewerUuid ? viewerUuid : null}
+              viewerUuid={viewerUuid}
               onOpenDetail={(id) => router.push(`/posts/${id}`)}
               onOpenProfile={(path) => {
                 if (!path) return;

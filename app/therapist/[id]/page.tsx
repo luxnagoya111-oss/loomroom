@@ -806,7 +806,7 @@ export default function TherapistProfilePage() {
                     key={p.id}
                     post={p}
                     viewerReady={viewerReady}
-                    viewerUuid={viewerReady && viewerUuid ? viewerUuid : null}
+                    viewerUuid={viewerUuid}
                     onOpenDetail={handleOpenDetail}
                     onOpenProfile={handleOpenProfile}
                     onToggleLike={handleToggleLike}
