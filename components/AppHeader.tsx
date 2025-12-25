@@ -14,10 +14,13 @@ type AppHeaderProps = {
   backAriaLabel?: string;
 };
 
+type Role = "user" | "therapist" | "store";
+
 type DbUserRow = {
   id: string;
-  role: "user" | "therapist" | "store" | null;
+  role: Role | null;
 };
+
 type DbStoreRow = { id: string };
 type DbTherapistRow = { id: string };
 
@@ -29,7 +32,14 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   backAriaLabel = "戻る",
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // 表示制御用
   const [loggedIn, setLoggedIn] = useState(false);
+  const [role, setRole] = useState<Role | null>(null);
+  const [hasStoreProfile, setHasStoreProfile] = useState(false);
+  const [hasTherapistProfile, setHasTherapistProfile] = useState(false);
+  const [loadingAccount, setLoadingAccount] = useState(false);
+
   const router = useRouter();
 
   const go = (href: string) => {
@@ -41,14 +51,100 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     if (typeof window !== "undefined") window.history.back();
   };
 
+  // ログイン状態（guest判定）＋アカウント情報の取得
   useEffect(() => {
+    let cancelled = false;
+
     const id = getCurrentUserId();
-    setLoggedIn(!isGuestId(id));
+    const isLoggedIn = !!id && !isGuestId(id);
+
+    setLoggedIn(isLoggedIn);
+
+    // 未ログインなら表示制御をリセット
+    if (!isLoggedIn) {
+      setRole(null);
+      setHasStoreProfile(false);
+      setHasTherapistProfile(false);
+      return;
+    }
+
+    (async () => {
+      setLoadingAccount(true);
+      try {
+        // まず users.role
+        const { data: u, error: uErr } = await supabase
+          .from("users")
+          .select("id, role")
+          .eq("id", id)
+          .maybeSingle<DbUserRow>();
+
+        if (cancelled) return;
+
+        if (uErr) {
+          console.error("[AppHeader] users.role fetch error:", uErr);
+          // role不明でも、登録導線は残しておく（安全側）
+          setRole(null);
+          setHasStoreProfile(false);
+          setHasTherapistProfile(false);
+          return;
+        }
+
+        const r = (u?.role ?? null) as Role | null;
+        setRole(r);
+
+        // role だけだと “実体プロフィール未作成” の可能性もあるので、
+        // 既存プロフィール（stores/therapists）も確認して表示制御に使う
+        const [storeRes, therapistRes] = await Promise.all([
+          supabase
+            .from("stores")
+            .select("id")
+            .eq("owner_user_id", id)
+            .maybeSingle<DbStoreRow>(),
+          supabase
+            .from("therapists")
+            .select("id")
+            .eq("user_id", id)
+            .maybeSingle<DbTherapistRow>(),
+        ]);
+
+        if (cancelled) return;
+
+        if (storeRes.error) {
+          console.error("[AppHeader] stores fetch error:", storeRes.error);
+          setHasStoreProfile(false);
+        } else {
+          setHasStoreProfile(!!storeRes.data?.id);
+        }
+
+        if (therapistRes.error) {
+          console.error("[AppHeader] therapists fetch error:", therapistRes.error);
+          setHasTherapistProfile(false);
+        } else {
+          setHasTherapistProfile(!!therapistRes.data?.id);
+        }
+      } catch (e) {
+        if (cancelled) return;
+        console.error("[AppHeader] account bootstrap exception:", e);
+        setRole(null);
+        setHasStoreProfile(false);
+        setHasTherapistProfile(false);
+      } finally {
+        if (cancelled) return;
+        setLoadingAccount(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleLogoutClick = async () => {
     await logout();
     setLoggedIn(false);
+    setRole(null);
+    setHasStoreProfile(false);
+    setHasTherapistProfile(false);
     setMenuOpen(false);
     router.push("/");
   };
@@ -86,9 +182,9 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           return;
         }
 
-        const role = u?.role ?? null;
+        const r = (u?.role ?? null) as Role | null;
 
-        if (role === "store") {
+        if (r === "store") {
           const { data: s, error: sErr } = await supabase
             .from("stores")
             .select("id")
@@ -100,7 +196,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           return;
         }
 
-        if (role === "therapist") {
+        if (r === "therapist") {
           const { data: t, error: tErr } = await supabase
             .from("therapists")
             .select("id")
@@ -118,6 +214,15 @@ const AppHeader: React.FC<AppHeaderProps> = ({
       }
     })();
   };
+
+  // ===== 表示制御 =====
+  // すでに詮信のプロフィールがあれば「会員登録（該当）」を非表示
+  // role が確定している場合も同様に非表示（store/therapist）
+  const hideStoreSignup = role === "store" || hasStoreProfile;
+  const hideTherapistSignup = role === "therapist" || hasTherapistProfile;
+
+  // ログイン中はログイン導線を出さない（要件）
+  const showLoginLink = !loggedIn;
 
   return (
     <>
@@ -197,7 +302,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 className="drawer-item drawer-item-button"
                 onClick={handleMyPageClick}
               >
-                マイ
+                マイページ
               </button>
 
               <button
@@ -210,13 +315,15 @@ const AppHeader: React.FC<AppHeaderProps> = ({
 
               <div className="drawer-section-label">会員 / アカウント</div>
 
-              <button
-                type="button"
-                className="drawer-item drawer-item-button"
-                onClick={() => go("/login")}
-              >
-                ログイン / 新規登録
-              </button>
+              {showLoginLink && (
+                <button
+                  type="button"
+                  className="drawer-item drawer-item-button"
+                  onClick={() => go("/login")}
+                >
+                  ログイン / 新規登録
+                </button>
+              )}
 
               {loggedIn && (
                 <button
@@ -228,21 +335,29 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 </button>
               )}
 
-              <button
-                type="button"
-                className="drawer-item drawer-item-button"
-                onClick={() => go("/signup/creator/start?kind=store")}
-              >
-                会員登録（店舗）
-              </button>
+              {/* ログイン済みでも出したいなら loggedIn 条件を外す。
+                  要件上は「既に登録済なら非表示」なので、まずは表示は維持しつつ非表示判定を入れる */}
+              {!hideStoreSignup && (
+                <button
+                  type="button"
+                  className="drawer-item drawer-item-button"
+                  onClick={() => go("/signup/creator/start?kind=store")}
+                  disabled={loadingAccount} // ロール取得中の誤表示タップを抑止（任意）
+                >
+                  会員登録（店舗）
+                </button>
+              )}
 
-              <button
-                type="button"
-                className="drawer-item drawer-item-button"
-                onClick={() => go("/signup/creator/start?kind=therapist")}
-              >
-                会員登録（セラピスト）
-              </button>
+              {!hideTherapistSignup && (
+                <button
+                  type="button"
+                  className="drawer-item drawer-item-button"
+                  onClick={() => go("/signup/creator/start?kind=therapist")}
+                  disabled={loadingAccount}
+                >
+                  会員登録（セラピスト）
+                </button>
+              )}
 
               <div className="drawer-section-label">ルール / ポリシー</div>
 
@@ -278,7 +393,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
         .app-header {
           position: sticky;
           top: 0;
-          z-index: 50; /* ★ BottomNavより上に固定 */
+          z-index: 50;
           width: 100%;
           height: 48px;
           background: rgba(253, 251, 247, 0.96);
@@ -369,7 +484,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           position: fixed;
           inset: 0;
           background: rgba(0, 0, 0, 0.25);
-          z-index: 100; /* ★ 最上位に固定 */
+          z-index: 100;
           display: flex;
           justify-content: flex-end;
         }
@@ -434,6 +549,11 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           text-align: left;
           border: none;
           cursor: pointer;
+        }
+
+        .drawer-item-button:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
         }
 
         .drawer-section-label {
