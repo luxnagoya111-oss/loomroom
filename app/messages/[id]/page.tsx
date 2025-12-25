@@ -534,47 +534,40 @@ const MessageDetailPage: React.FC = () => {
 
     let cancelled = false;
     let refetchTimer: any = null;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
 
-    async function refetchMessages() {
-      if (cancelled) return;
+    async function refetchMessages() { /* 既存 */ }
+    function scheduleRefetch() { /* 既存 */ }
+
+    (async () => {
+      // ★ 先に Realtime auth 同期
       try {
-        const stored = await getMessagesForThread(threadId);
-        if (cancelled) return;
-        setMessages(stored.map((m) => mapDbToUi(m, currentUserId)));
-        await markThreadAsRead({ threadId, viewerId: currentUserId });
-      } catch (e) {
-        console.warn("[Messages] refetch on realtime failed:", e);
-      }
-    }
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (token) supabase.realtime.setAuth(token);
+      } catch {}
 
-    function scheduleRefetch() {
-      if (refetchTimer) clearTimeout(refetchTimer);
-      refetchTimer = setTimeout(refetchMessages, 120);
-    }
+      if (cancelled) return;
 
-    const channelMessages = supabase
-      .channel(`dm_messages_debug_${threadId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "dm_messages",
-          // ★ filter を外す（デバッグ）
-        },
-        (payload) => {
-          console.log("[Messages] INSERT payload (NO FILTER):", payload);
-          scheduleRefetch();
-        }
-      )
-      .subscribe((status) => {
-        console.log("[Messages] realtime subscribe status:", status);
-      });
+      channel = supabase
+        .channel(`dm_messages_debug_${threadId}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "dm_messages" },
+          (payload) => {
+            console.log("[Messages] INSERT payload (NO FILTER):", payload);
+            scheduleRefetch();
+          }
+        )
+        .subscribe((status) => {
+          console.log("[Messages] realtime subscribe status:", status);
+        });
+    })();
 
     return () => {
       cancelled = true;
       if (refetchTimer) clearTimeout(refetchTimer);
-      supabase.removeChannel(channelMessages);
+      if (channel) supabase.removeChannel(channel);
     };
   }, [threadId, currentUserId, isBlocked]);
 
@@ -930,6 +923,7 @@ const MessageDetailPage: React.FC = () => {
           box-sizing: border-box;
           z-index: 40;
         }
+
         .chat-input-inner {
           display: flex;
           align-items: flex-end;
@@ -940,6 +934,7 @@ const MessageDetailPage: React.FC = () => {
           padding: 6px 8px 6px 12px;
           box-shadow: 0 4px 10px rgba(0, 0, 0, 0.03);
         }
+
         .chat-input {
           flex: 1;
           border: none;
