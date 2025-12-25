@@ -17,11 +17,6 @@ if (!supabaseAnonKey) {
  * - PKCE（Google OAuth）の code_verifier はブラウザ側ストレージを正とする
  * - OAuth の code 交換は /auth/callback のみで行う
  * - SSR / cookie 同期はここでは扱わない
- *
- * ★追加：
- * - Realtime(WebSocket) へ auth(JWT) を常時同期（RLS下でも changes を受け取れるようにする）
- * - 初回ロード時の既存セッションも同期
- * - token refresh / login / logout を onAuthStateChange で追従
  */
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
@@ -34,22 +29,31 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 });
 
 // ==============================
-// Realtime auth sync（安全版）
+// Realtime auth sync（壊さない安全版）
 // ==============================
-// - supabase は Client Component から import される前提だが、念のため browser only ガード
-// - エラーは握りつぶし（ここで落とさない）
+// - Realtime(WebSocket) に JWT が乗っていないと RLS 下で changes が届かないことがあるため
+//   Auth セッションと Realtime auth を同期する。
+// - ここでは「token が取れた時だけ setAuth」し、例外は握りつぶす。
+// - 同じ token を何度も setAuth しない（副作用最小化）
+let lastRealtimeTokenHead: string | null = null;
+
 function setRealtimeAuthSafe(token: string | null | undefined) {
   try {
     if (!token) return;
+
+    // 同一 token の連続 setAuth を抑制（先頭だけ比較で十分）
+    const head = token.slice(0, 24);
+    if (lastRealtimeTokenHead === head) return;
+    lastRealtimeTokenHead = head;
+
     supabase.realtime.setAuth(token);
   } catch {
-    // noop（realtime未初期化/環境差異を吸収）
+    // noop（ここで落とさない）
   }
 }
 
 if (typeof window !== "undefined") {
-  // 1) 初回：既存セッションがあれば同期
-  //    （persistSession=true のため、リロード後も token があることが多い）
+  // 1) 初回ロード：persistSession の既存セッションがあれば同期
   supabase.auth
     .getSession()
     .then(({ data }) => {

@@ -527,60 +527,52 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId, isBlocked]);
 
-  // Realtime（DEBUG）
+  // Realtime（dm_messages INSERT → 即 append）
   useEffect(() => {
     if (!threadId || !currentUserId || isBlocked) return;
     if (!isUuid(threadId)) return;
 
     let cancelled = false;
-    let refetchTimer: any = null;
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
-    (async () => {
-      // ★ ここを追加
-      const { data, error } = await supabase.auth.getSession();
-      console.log("[Realtime DEBUG] getSession:", {
-        error: error?.message ?? null,
-        hasSession: !!data.session,
-        userId: data.session?.user?.id ?? null,
-        tokenHead: data.session?.access_token?.slice(0, 20) ?? null,
-        expiresAt: data.session?.expires_at ?? null,
-      });
+    channel = supabase
+      .channel(`dm_messages_${threadId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "dm_messages",
+          // filter を使うならここ（任意）
+          // filter: `thread_id=eq.${threadId}`,
+        },
+        (payload) => {
+          if (cancelled) return;
 
-      // ★ ここも追加
-      if (data.session?.access_token) {
-        supabase.realtime.setAuth(data.session.access_token);
-        console.log(
-          "[Realtime DEBUG] setAuth called:",
-          data.session.access_token.slice(0, 20)
-        );
-      } else {
-        console.warn("[Realtime DEBUG] no access token for realtime");
-      }
+          const row = payload.new as any;
 
-      if (cancelled) return;
+          // thread_id が取れる構造なら保険で弾く（filter無し運用でも安全）
+          if (row?.thread_id && row.thread_id !== threadId) return;
 
-      channel = supabase
-        .channel(`dm_messages_debug_${threadId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "INSERT",
-            schema: "public",
-            table: "dm_messages",
-          },
-          (payload) => {
-            console.log("[Messages] INSERT payload:", payload);
-          }
-        )
-        .subscribe((status) => {
-          console.log("[Messages] realtime subscribe status:", status);
-        });
-    })();
+          // 自分の送信は send後にUI反映してるので、二重追加を避ける
+          if (row?.from_user_id === currentUserId) return;
+
+          setMessages((prev) => {
+            // 重複ガード（同じidは追加しない）
+            if (row?.id && prev.some((m) => m.id === row.id)) return prev;
+            // DB→UI 変換（既存の mapDbToUi を使う）
+            const ui = mapDbToUi(row as DbDmMessageRow, currentUserId);
+            return [...prev, ui];
+          });
+
+          // 既読化（相手→自分の新着が来たタイミングで）
+          markThreadAsRead({ threadId, viewerId: currentUserId }).catch(() => {});
+        }
+      )
+      .subscribe();
 
     return () => {
       cancelled = true;
-      if (refetchTimer) clearTimeout(refetchTimer);
       if (channel) supabase.removeChannel(channel);
     };
   }, [threadId, currentUserId, isBlocked]);
