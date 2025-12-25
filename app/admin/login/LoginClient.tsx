@@ -228,9 +228,9 @@ export default function LoginClient() {
         .admin-login-center {
           min-height: calc(100vh - 32px);
           display: flex;
-          align-items: center;
+          align-items: flex-start; 
           justify-content: center;
-          padding: 10px 0 20px;
+          padding-top: 24px; 
         }
 
         .login-wrap {

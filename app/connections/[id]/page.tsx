@@ -641,7 +641,7 @@ const ConnectionsPage: React.FC = () => {
     idsInOrder: string[],
     viewerId: string
   ): Promise<ConnectionUser[]> {
-    const ids = idsInOrder.filter((id) => id !== viewerId);
+    const ids = idsInOrder; // viewerId を除外しない
     if (ids.length === 0) return [];
 
     const { data: users, error: uErr } = await supabase
@@ -729,10 +729,8 @@ const ConnectionsPage: React.FC = () => {
         if (t) {
           if (!baseDisplayName && normalizeFreeText(t.display_name))
             displayName = normalizeFreeText(t.display_name);
-          if (!baseArea && normalizeFreeText(t.area))
-            area = normalizeFreeText(t.area);
-          if (!baseIntro && normalizeFreeText(t.profile))
-            intro = normalizeFreeText(t.profile);
+          if (!baseArea && normalizeFreeText(t.area)) area = normalizeFreeText(t.area);
+          if (!baseIntro && normalizeFreeText(t.profile)) intro = normalizeFreeText(t.profile);
           if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(t.avatar_url))
             avatarRaw = t.avatar_url;
         }
@@ -743,8 +741,7 @@ const ConnectionsPage: React.FC = () => {
         if (s) {
           if (!baseDisplayName && normalizeFreeText(s.name))
             displayName = normalizeFreeText(s.name);
-          if (!baseArea && normalizeFreeText(s.area))
-            area = normalizeFreeText(s.area);
+          if (!baseArea && normalizeFreeText(s.area)) area = normalizeFreeText(s.area);
           if (!baseIntro && normalizeFreeText(s.description))
             intro = normalizeFreeText(s.description);
           if (!looksValidAvatarUrl(avatarRaw) && looksValidAvatarUrl(s.avatar_url))
@@ -752,15 +749,19 @@ const ConnectionsPage: React.FC = () => {
         }
       }
 
+      const isMe = id === viewerId;
+
       return {
         userId: id,
         role,
-        displayName,
+        displayName: isMe ? `${displayName}（自分）` : displayName,
         handle: buildHandle(id),
         intro: intro || "",
         area,
         avatar_url: avatarRaw,
-        isFollowing: followingSet.has(id),
+
+        // 自分自身は “フォロー中” という概念がないので false 固定（表示は hideFollow で消える想定）
+        isFollowing: isMe ? false : followingSet.has(id),
       };
     });
   }
