@@ -1510,3 +1510,205 @@ a:active {
   cursor: default;
   opacity: 1;
 }
+
+/* ================================
+   Admin Base Layout
+   ================================ */
+
+.admin-shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.admin-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.admin-page-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.admin-page-lead {
+  font-size: 12px;
+  color: var(--text-sub);
+  line-height: 1.7;
+}
+
+/* ================================
+   Admin Grid / Card
+   ================================ */
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .admin-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.admin-card {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(10, 10, 10, 0.02);
+  min-width: 0;
+}
+
+.admin-card-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.admin-card-title {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.admin-right-muted {
+  font-size: 11px;
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+
+/* ================================
+   Admin Meta List
+   ================================ */
+
+.admin-meta {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-meta-row {
+  display: grid;
+  grid-template-columns: 86px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.admin-meta-row:last-child {
+  border-bottom: none;
+}
+
+.admin-meta-key {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.admin-meta-val {
+  font-size: 12px;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+/* ================================
+   Admin Pill
+   ================================ */
+
+.admin-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.7);
+  white-space: nowrap;
+}
+
+/* status */
+.admin-pill--status-new {
+  background: rgba(215, 185, 118, 0.22);
+  border-color: rgba(215, 185, 118, 0.45);
+}
+.admin-pill--status-triaging {
+  background: rgba(147, 197, 253, 0.18);
+}
+.admin-pill--status-waiting_user {
+  background: rgba(251, 191, 36, 0.16);
+}
+.admin-pill--status-resolved {
+  background: rgba(74, 222, 128, 0.14);
+}
+.admin-pill--status-closed {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+/* priority */
+.admin-pill--prio-high {
+  background: rgba(239, 68, 68, 0.08);
+}
+.admin-pill--prio-normal {
+  background: rgba(148, 163, 184, 0.12);
+}
+.admin-pill--prio-low {
+  background: rgba(203, 213, 225, 0.12);
+}
+
+/* ================================
+   Admin Form Control
+   ================================ */
+
+.admin-ctrl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-ctrl-label {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.admin-ctrl-input {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--surface-soft);
+  outline: none;
+}
+
+.admin-ctrl-input:focus {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  background: #fff;
+}
+
+/* ================================
+   Admin Buttons
+   ================================ */
+
+.admin-btn-outline {
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+
+.admin-btn-outline:disabled {
+  opacity: 0.7;
+}
+

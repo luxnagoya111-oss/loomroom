@@ -22,14 +22,13 @@ const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_KEY ?? "";
 
 async function adminFetch(input: string, init?: RequestInit) {
   const headers = new Headers(init?.headers);
-
-  // GET には Content-Type 不要（CORS/プリフライトの癖を減らす）
   const method = (init?.method || "GET").toUpperCase();
+
   if (!headers.get("Content-Type") && method !== "GET") {
     headers.set("Content-Type", "application/json");
   }
-
   if (ADMIN_KEY) headers.set("x-admin-key", ADMIN_KEY);
+
   return fetch(input, { ...init, headers, cache: "no-store" });
 }
 
@@ -43,8 +42,7 @@ function timeLabel(iso: string) {
 }
 
 function shortId(id: string) {
-  if (!id) return "";
-  return id.replace(/-/g, "").slice(0, 8);
+  return id ? id.replace(/-/g, "").slice(0, 8) : "";
 }
 
 function clip(s: string, n = 60) {
@@ -55,8 +53,8 @@ function clip(s: string, n = 60) {
 export default function AdminContactListPage() {
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<Ticket[]>([]);
-  const [status, setStatus] = useState<string>(""); // filter
-  const [q, setQ] = useState<string>(""); // search
+  const [status, setStatus] = useState<string>("");
+  const [q, setQ] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const queryString = useMemo(() => {
@@ -70,17 +68,16 @@ export default function AdminContactListPage() {
   const load = async () => {
     setLoading(true);
     setErrorMsg(null);
-
     try {
-      const res = await adminFetch(`/api/admin/contact?${queryString}`, { method: "GET" });
+      const res = await adminFetch(`/api/admin/contact?${queryString}`);
       const text = await res.text();
       const json = text ? JSON.parse(text) : {};
       if (!res.ok || !json?.ok) {
-        setErrorMsg(json?.error || `load failed (status=${res.status})`);
+        setErrorMsg(json?.error || `load failed (${res.status})`);
         setItems([]);
         return;
       }
-      setItems((json.data ?? []) as Ticket[]);
+      setItems(json.data ?? []);
     } catch (e: any) {
       setErrorMsg(e?.message ?? "load failed");
       setItems([]);
@@ -95,332 +92,128 @@ export default function AdminContactListPage() {
   }, [queryString]);
 
   return (
-    <div className="page-root">
-      <div className="page-head">
+    <div className="admin-shell">
+      {/* ===== Header ===== */}
+      <div className="admin-page-head">
         <div>
-          <h1 className="page-title">問い合わせ</h1>
-          <p className="page-lead">
+          <h1 className="admin-page-title">問い合わせ</h1>
+          <p className="admin-page-lead">
             contact_tickets の受信一覧です。クリックで詳細へ移動します。
           </p>
         </div>
 
-        <button type="button" className="btn-outline" onClick={load} disabled={loading}>
+        <button
+          type="button"
+          className="admin-btn-outline"
+          onClick={load}
+          disabled={loading}
+        >
           再読み込み
         </button>
       </div>
 
-      <div className="toolbar">
-        <div className="filter">
-          <label className="filter-label">ステータス</label>
-          <select className="filter-input" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">すべて</option>
-            <option value="new">new</option>
-            <option value="triaging">triaging</option>
-            <option value="waiting_user">waiting_user</option>
-            <option value="resolved">resolved</option>
-            <option value="closed">closed</option>
-          </select>
-        </div>
+      {/* ===== Toolbar ===== */}
+      <div className="admin-grid" style={{ gridTemplateColumns: "1fr" }}>
+        <div className="admin-card">
+          <div className="controls">
+            <div className="admin-ctrl">
+              <label className="admin-ctrl-label">ステータス</label>
+              <select
+                className="admin-ctrl-input"
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+              >
+                <option value="">すべて</option>
+                <option value="new">new</option>
+                <option value="triaging">triaging</option>
+                <option value="waiting_user">waiting_user</option>
+                <option value="resolved">resolved</option>
+                <option value="closed">closed</option>
+              </select>
+            </div>
 
-        <div className="filter grow">
-          <label className="filter-label">検索（user_id / name / email / body）</label>
-          <input
-            className="filter-input"
-            value={q}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setQ(e.target.value)}
-            placeholder="例）guest- / bug / メール / 文面 など"
-          />
-        </div>
+            <div className="admin-ctrl" style={{ gridColumn: "span 2" }}>
+              <label className="admin-ctrl-label">
+                検索（user_id / name / email / body）
+              </label>
+              <input
+                className="admin-ctrl-input"
+                value={q}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setQ(e.target.value)
+                }
+                placeholder="例）guest- / bug / メール / 文面 など"
+              />
+            </div>
 
-        <div className="count">{items.length} 件</div>
+            <div className="admin-right-muted">
+              {items.length} 件
+            </div>
+          </div>
+        </div>
       </div>
 
-      {errorMsg && <div className="status-message error">{errorMsg}</div>}
+      {errorMsg && (
+        <div className="status-message error">{errorMsg}</div>
+      )}
 
       {loading ? (
         <div className="status-message">読み込み中...</div>
       ) : items.length === 0 ? (
-        <div className="status-message">該当する問い合わせがありません。</div>
+        <div className="status-message">
+          該当する問い合わせがありません。
+        </div>
       ) : (
-        <div className="list">
+        <div className="admin-grid">
           {items.map((t) => (
-            <Link key={t.id} href={`/admin/contact/${t.id}`} className="row">
-              <div className="row-top">
-                <div className="row-left">
-                  <span className={"pill status-" + t.status}>{t.status}</span>
-                  <span className={"pill prio-" + t.priority}>{t.priority}</span>
-                  <span className="pill cat">{t.category}</span>
+            <Link
+              key={t.id}
+              href={`/admin/contact/${t.id}`}
+              className="admin-card"
+            >
+              <div className="admin-card-title-row">
+                <div>
+                  <span
+                    className={`admin-pill admin-pill--status-${t.status}`}
+                  >
+                    {t.status}
+                  </span>{" "}
+                  <span
+                    className={`admin-pill admin-pill--prio-${t.priority}`}
+                  >
+                    {t.priority}
+                  </span>{" "}
+                  <span className="admin-pill">{t.category}</span>
                 </div>
-                <div className="row-time">{timeLabel(t.created_at)}</div>
+                <div className="admin-right-muted">
+                  {timeLabel(t.created_at)}
+                </div>
               </div>
 
-              <div className="row-mid">
-                <div className="row-name">{t.name || "（名前なし）"}</div>
-                <div className="row-sub">
-                  <span className="mono">{t.user_type}</span>
-                  <span className="dot">·</span>
-                  <span className="mono">{shortId(t.user_id)}</span>
-                  {t.email ? (
-                    <>
-                      <span className="dot">·</span>
-                      <span className="mono">email</span>
-                    </>
-                  ) : null}
+              <div className="admin-meta">
+                <div className="admin-meta-row">
+                  <div className="admin-meta-key">名前</div>
+                  <div className="admin-meta-val">
+                    {t.name || "（名前なし）"}
+                  </div>
+                </div>
+
+                <div className="admin-meta-row">
+                  <div className="admin-meta-key">ユーザー</div>
+                  <div className="admin-meta-val mono">
+                    {t.user_type} · {shortId(t.user_id)}
+                    {t.email ? " · email" : ""}
+                  </div>
                 </div>
               </div>
 
-              <div className="row-body">{clip(t.body, 90)}</div>
+              <div className="admin-right-muted" style={{ marginTop: 6 }}>
+                {clip(t.body, 90)}
+              </div>
             </Link>
           ))}
         </div>
       )}
-
-      <style jsx>{`
-        .page-root {
-          max-width: 1100px;
-          margin: 0 auto;
-        }
-
-        .page-head {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 12px;
-          margin-bottom: 10px;
-        }
-
-        .page-title {
-          font-size: 18px;
-          font-weight: 800;
-          letter-spacing: 0.02em;
-          margin-bottom: 4px;
-        }
-
-        .page-lead {
-          font-size: 12px;
-          color: var(--text-sub, #6b7280);
-          line-height: 1.7;
-        }
-
-        .btn-outline {
-          font-size: 12px;
-          padding: 8px 12px;
-          border-radius: 999px;
-          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
-          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
-          color: var(--text-sub, #6b7280);
-          white-space: nowrap;
-        }
-
-        .btn-outline:disabled {
-          opacity: 0.7;
-        }
-
-        .toolbar {
-          display: flex;
-          gap: 10px;
-          align-items: flex-end;
-          flex-wrap: wrap;
-          margin: 10px 0 10px;
-        }
-
-        .filter {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-          min-width: 160px;
-        }
-
-        .filter.grow {
-          flex: 1;
-          min-width: 240px;
-        }
-
-        .filter-label {
-          font-size: 11px;
-          color: var(--text-sub, #6b7280);
-        }
-
-        .filter-input {
-          border-radius: 10px;
-          border: 1px solid var(--border, rgba(220, 210, 200, 0.9));
-          padding: 8px 10px;
-          font-size: 13px;
-          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
-          color: inherit;
-          outline: none;
-        }
-
-        .filter-input:focus {
-          border-color: rgba(215, 185, 118, 0.9);
-          box-shadow: 0 0 0 2px rgba(215, 185, 118, 0.18);
-          background: var(--surface, #fff);
-        }
-
-        .count {
-          font-size: 12px;
-          color: var(--text-sub, #6b7280);
-          white-space: nowrap;
-          margin-left: auto;
-          padding-bottom: 2px;
-        }
-
-        .status-message {
-          font-size: 13px;
-          color: var(--text-sub, #6b7280);
-          padding: 10px 2px;
-        }
-
-        .status-message.error {
-          color: #b94a48;
-        }
-
-        .list {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 10px;
-          margin-top: 8px;
-        }
-
-        .row {
-          display: block;
-          text-decoration: none;
-          color: inherit;
-
-          border-radius: 16px;
-          border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.06));
-          background: var(--surface-soft, rgba(255, 255, 255, 0.92));
-          padding: 10px;
-
-          transition: transform 0.08s ease, border-color 0.08s ease, box-shadow 0.08s ease;
-        }
-
-        .row:hover {
-          transform: translateY(-1px);
-          border-color: rgba(215, 185, 118, 0.45);
-          box-shadow: 0 10px 24px rgba(10, 10, 10, 0.04);
-        }
-
-        .row-top {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          margin-bottom: 6px;
-        }
-
-        .row-left {
-          display: flex;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
-
-        .row-time {
-          font-size: 11px;
-          color: var(--text-sub, #6b7280);
-          white-space: nowrap;
-        }
-
-        .pill {
-          font-size: 11px;
-          padding: 2px 8px;
-          border-radius: 999px;
-          border: 1px solid var(--border-light, rgba(0, 0, 0, 0.06));
-          background: rgba(255, 255, 255, 0.7);
-          white-space: nowrap;
-        }
-
-        /* ステータス色（軽いトーンで統一） */
-        .status-new {
-          background: rgba(215, 185, 118, 0.22);
-          border-color: rgba(215, 185, 118, 0.45);
-        }
-        .status-triaging {
-          background: rgba(147, 197, 253, 0.18);
-          border-color: rgba(147, 197, 253, 0.35);
-        }
-        .status-waiting_user {
-          background: rgba(251, 191, 36, 0.16);
-          border-color: rgba(251, 191, 36, 0.32);
-        }
-        .status-resolved {
-          background: rgba(74, 222, 128, 0.14);
-          border-color: rgba(74, 222, 128, 0.28);
-        }
-        .status-closed {
-          background: rgba(148, 163, 184, 0.14);
-          border-color: rgba(148, 163, 184, 0.28);
-        }
-
-        .prio-high {
-          border-color: rgba(239, 68, 68, 0.22);
-          background: rgba(239, 68, 68, 0.08);
-        }
-        .prio-normal {
-          background: rgba(148, 163, 184, 0.12);
-        }
-        .prio-low {
-          background: rgba(203, 213, 225, 0.12);
-        }
-
-        .cat {
-          background: rgba(255, 255, 255, 0.7);
-        }
-
-        .row-mid {
-          display: flex;
-          align-items: baseline;
-          justify-content: space-between;
-          gap: 10px;
-          margin-bottom: 4px;
-        }
-
-        .row-name {
-          font-size: 13px;
-          font-weight: 800;
-          color: var(--text-main, #111827);
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          max-width: 60%;
-        }
-
-        .row-sub {
-          font-size: 11px;
-          color: var(--text-sub, #6b7280);
-          white-space: nowrap;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .mono {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-            monospace;
-        }
-
-        .dot {
-          opacity: 0.6;
-        }
-
-        .row-body {
-          font-size: 12px;
-          color: var(--text-sub, #6b7280);
-          line-height: 1.6;
-        }
-
-        @media (max-width: 860px) {
-          .list {
-            grid-template-columns: 1fr;
-          }
-          .row-name {
-            max-width: 58%;
-          }
-          .count {
-            margin-left: 0;
-          }
-        }
-      `}</style>
     </div>
   );
 }
