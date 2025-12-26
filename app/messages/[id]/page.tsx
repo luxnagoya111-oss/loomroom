@@ -1,18 +1,13 @@
 // app/messages/[id]/page.tsx
 "use client";
 
-import React, {
-  useState,
-  useEffect,
-  useRef,
-  ChangeEvent,
-  KeyboardEvent,
-} from "react";
+import React, { useState, useEffect, useRef, ChangeEvent } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
+import ComposerBar from "@/components/ComposerBar";
 
 import { getCurrentUserId, getCurrentUserRole } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
@@ -77,18 +72,6 @@ function formatTime(date: Date): string {
   const h = date.getHours().toString().padStart(2, "0");
   const m = date.getMinutes().toString().padStart(2, "0");
   return `${h}:${m}`;
-}
-
-function autosizeTextarea(el: HTMLTextAreaElement, maxRows = 5) {
-  // いったん縮めて scrollHeight を正しく測る
-  el.style.height = "0px";
-
-  const next = el.scrollHeight;
-  el.style.height = `${next}px`;
-
-  // スクロールバーは出さない
-  el.style.overflowY = "hidden";
-
 }
 
 function formatDateString(date: Date): string {
@@ -199,7 +182,6 @@ const MessageDetailPage: React.FC = () => {
   const [isBlocked, setIsBlocked] = useState(false);
 
   const endRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // viewerId（Auth uuid 正）
   useEffect(() => {
@@ -393,7 +375,7 @@ const MessageDetailPage: React.FC = () => {
         const resolvedRole = normalizeRole(u?.role);
         setPartnerRole(resolvedRole);
 
-        // ★ 変更：相手ID6桁（一覧と同ルール）
+        // ★ 相手ID6桁
         const handle = `@${toShortId(partnerId) || "------"}`;
         setPartnerHandle(handle);
 
@@ -434,7 +416,6 @@ const MessageDetailPage: React.FC = () => {
         if (cancelled) return;
         console.warn("[Messages] resolve partner failed:", e);
 
-        // ★ フォールバックも6桁IDへ
         setPartnerName("メッセージ相手");
         setPartnerHandle(partnerId ? `@${toShortId(partnerId)}` : "");
         setPartnerRole("guest");
@@ -529,7 +510,6 @@ const MessageDetailPage: React.FC = () => {
 
   // ===== Realtime Auth: トークン更新のたびに同期（安定化の最重要）=====
   useEffect(() => {
-    // 1) 初回同期（保険）
     (async () => {
       try {
         const { data } = await supabase.auth.getSession();
@@ -538,7 +518,6 @@ const MessageDetailPage: React.FC = () => {
       } catch {}
     })();
 
-    // 2) トークン更新のたびに同期（ここが本丸）
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       const token = session?.access_token;
       if (token) supabase.realtime.setAuth(token);
@@ -563,7 +542,7 @@ const MessageDetailPage: React.FC = () => {
         {
           event: "INSERT",
           schema: "public",
-         table: "dm_messages",
+          table: "dm_messages",
           filter: `thread_id=eq.${threadId}`,
         },
         (payload) => {
@@ -572,17 +551,12 @@ const MessageDetailPage: React.FC = () => {
           const row = payload.new as DbDmMessageRow;
 
           setMessages((prev) => {
-            // ① すでに正式IDがあれば何もしない
             if (prev.some((m) => m.id === row.id)) return prev;
 
-            // ② 自分の optimistic 行（local_）があれば置き換える
             if (row.from_user_id === currentUserId) {
               const idx = prev.findIndex(
-                (m) =>
-                  m.id.startsWith("local_") &&
-                  m.text === row.text
+                (m) => m.id.startsWith("local_") && m.text === row.text
               );
-
               if (idx !== -1) {
                 const next = [...prev];
                 next[idx] = mapDbToUi(row, currentUserId);
@@ -590,7 +564,6 @@ const MessageDetailPage: React.FC = () => {
               }
             }
 
-            // ③ それ以外は普通に append
             return [...prev, mapDbToUi(row, currentUserId)];
           });
 
@@ -607,12 +580,6 @@ const MessageDetailPage: React.FC = () => {
       supabase.removeChannel(channel);
     };
   }, [threadId, currentUserId, isBlocked]);
-
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    autosizeTextarea(el, 5);
-  }, [text]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -634,7 +601,6 @@ const MessageDetailPage: React.FC = () => {
       return;
     }
 
-    // ★ isReplyForPolicy を使う（相手未返信でも送れる）
     const allowed = canSendDm(currentRole, partnerRole, isReplyForPolicy);
     if (!allowed) {
       alert("この組み合わせではDMを送ることができません。");
@@ -655,12 +621,11 @@ const MessageDetailPage: React.FC = () => {
         return;
       }
 
-      // ★ 送信した自分の文を即時反映（全件再fetchはしない）
       const now = new Date();
       setMessages((prev) => [
         ...prev,
         {
-          id: `local_${now.getTime()}`, // 仮ID（重複防止）
+          id: `local_${now.getTime()}`,
           from: "me",
           text: trimmed,
           time: formatTime(now),
@@ -682,19 +647,19 @@ const MessageDetailPage: React.FC = () => {
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) =>
     setText(e.target.value);
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   const inputDisabled =
     isBlocked ||
     !currentUserId ||
     !allowedByRole ||
     (currentRole === "therapist" && isUnaffiliatedTherapist) ||
     (currentRole === "therapist" && checkingStatus);
+
+  const composerPlaceholder =
+    isBlocked
+      ? "ブロック中のためメッセージを送信できません"
+      : checkingStatus && currentRole === "therapist"
+      ? "所属状態を確認しています…"
+      : "メッセージを入力...";
 
   return (
     <>
@@ -796,33 +761,17 @@ const MessageDetailPage: React.FC = () => {
             </p>
           </div>
         ) : (
-          <div className="chat-input-bar">
-            <div className="chat-input-inner">
-              <textarea
-                ref={inputRef}
-                className="chat-input"
-                value={text}
-                onChange={handleChange}
-                placeholder={
-                  isBlocked
-                    ? "ブロック中のためメッセージを送信できません"
-                    : checkingStatus && currentRole === "therapist"
-                    ? "所属状態を確認しています…"
-                    : "メッセージを入力..."
-                  }
-                rows={1}
-                disabled={inputDisabled}
-              />
-             <button
-                type="button"
-                className="chat-send-btn"
-                onClick={handleSend}
-                disabled={inputDisabled || !text.trim() || sending}
-              >
-                送信
-              </button>
-            </div>
-          </div>
+          <ComposerBar
+            value={text}
+            onChange={setText}
+            onSend={handleSend}
+            placeholder={composerPlaceholder}
+            disabled={inputDisabled}
+            sending={sending}
+            bottomOffset={70}
+            maxWidth={430}
+            sendOnEnter={true}
+          />
         )}
 
         <BottomNav active="messages" hasUnread={hasUnread} />
@@ -898,7 +847,6 @@ const MessageDetailPage: React.FC = () => {
           flex-shrink: 0;
         }
 
-        /* ★ 日付：小さく、薄いグレー、中央 */
         .date-divider {
           display: flex;
           justify-content: center;
@@ -910,7 +858,7 @@ const MessageDetailPage: React.FC = () => {
           font-size: 10px;
           line-height: 1;
           background: rgba(0, 0, 0, 0.06);
-          color: var(--text-sub); /* ←あなたのテーマに存在する変数 */
+          color: var(--text-sub);
           letter-spacing: 0.02em;
         }
 
@@ -954,70 +902,6 @@ const MessageDetailPage: React.FC = () => {
           color: var(--text-sub);
           margin-top: 2px;
           text-align: right;
-        }
-
-        .chat-input-bar {
-          position: fixed;
-          left: 50%;
-          transform: translateX(-50%);
-          bottom: 70px;
-          width: 100%;
-          max-width: 430px;
-          padding: 6px 10px 10px;
-          background: linear-gradient(
-            to top,
-            rgba(253, 251, 247, 0.96),
-            rgba(253, 251, 247, 0.78),
-            transparent
-          );
-          box-sizing: border-box;
-          z-index: 40;
-        }
-
-        .chat-input-inner {
-          display: flex;
-          align-items: flex-end;
-          gap: 8px;
-          border-radius: 20px;
-          background: var(--surface);
-          border: 1px solid var(--border);
-          padding: 6px 8px 6px 12px;
-          box-shadow: 0 4px 10px rgba(0, 0, 0, 0.03);
-        }
-
-        .chat-input {
-          flex: 1;
-          border: none;
-          background: transparent;
-          resize: none;
-          font-size: 13px;
-          line-height: 1.4;
-          padding: 7px 0 5px 12px; /* 上 右 下 左 */
-          height: auto;          /* JSがheightを入れる前提 */
-          overflow-y: hidden;    /* JSが必要ならautoに切替 */
-          white-space: pre-wrap; /* 改行保持 */
-        }
-
-        .chat-input:focus {
-          outline: none;
-        }
-
-        .chat-send-btn {
-          border: none;
-          border-radius: 999px;
-          padding: 6px 12px;
-          font-size: 13px;
-          font-weight: 700;
-          cursor: pointer;
-          background: var(--accent);
-          color: #fff;
-          box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
-          flex-shrink: 0;
-        }
-        .chat-send-btn:disabled {
-          opacity: 0.5;
-          cursor: default;
-          box-shadow: none;
         }
 
         .chat-status-bar {
