@@ -7,7 +7,7 @@ import { useParams, useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
-import PostActionsMenu from "@/components/PostActionsMenu";
+import PostCard from "@/components/PostCard";
 
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
@@ -15,6 +15,8 @@ import { toPublicHandleFromUserId } from "@/lib/handle";
 import { ensureViewerId } from "@/lib/auth";
 import { getRelationsForUser } from "@/lib/repositories/relationRepository";
 import type { DbRelationRow } from "@/types/db";
+import type { UiPost } from "@/lib/postFeedHydrator";
+import type { UserId } from "@/types/user";
 
 type AuthorRole = "therapist" | "store" | "user";
 
@@ -30,22 +32,18 @@ type DetailPost = {
 
   author_role: AuthorRole;
   author_name: string;
-
   author_handle: string | null;
 
   avatar_url: string | null;
-
   profile_path: string | null;
 
   // ★ 投稿画像（public URLに変換済み）
   image_urls: string[];
 
-  // ★ いいね/返信
   like_count: number;
   reply_count: number;
   liked: boolean;
 
-  // 親投稿は基本 null（将来の保険）
   reply_to_id: string | null;
 };
 
@@ -109,9 +107,7 @@ type DbStoreLite = {
   avatar_url: string | null;
 };
 
-type DbPostLikeRow = {
-  post_id: string;
-};
+type DbPostLikeRow = { post_id: string };
 
 const hasUnread = false;
 
@@ -136,11 +132,6 @@ function isProbablyHttpUrl(url: string): boolean {
  */
 const AVATAR_BUCKET = "avatars";
 
-/**
- * avatar_url が
- * - https://... ならそのまま
- * - それ以外（storage path）なら public URL に変換
- */
 function resolveAvatarUrl(raw: string | null | undefined): string | null {
   const v = normalizeUrl(raw);
   if (!v) return null;
@@ -159,13 +150,6 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
  */
 const POST_IMAGES_BUCKET = "post-images";
 
-/**
- * 投稿画像を「表示用 public URL 配列」に正規化
- * - http(s) はそのまま
- * - storage path は post-images の public URL に変換
- * - "post-images/xxx" のような値でも耐える
- * - 最大4枚
- */
 function resolvePostImageUrls(raw: unknown): string[] {
   const arr = Array.isArray(raw) ? raw : [];
   const out: string[] = [];
@@ -200,9 +184,6 @@ function pickRawPostImages(row: any): unknown {
   return row?.image_paths ?? row?.image_urls ?? null;
 }
 
-/**
- * viewerUuid（users.id）
- */
 async function resolveViewerUuid(): Promise<string | null> {
   try {
     const id = await ensureViewerId();
@@ -212,12 +193,6 @@ async function resolveViewerUuid(): Promise<string | null> {
   }
 }
 
-/**
- * 返信 insert 用に viewer の author_id / author_kind を解決
- * - therapist: therapists.user_id = viewerUuid があれば author_kind="therapist", author_id=therapists.id
- * - store: stores.owner_user_id = viewerUuid があれば author_kind="store", author_id=stores.id
- * - else: user
- */
 async function resolveViewerAuthorIdentity(
   viewerUuid: string
 ): Promise<{ authorKind: AuthorRole; authorId: string }> {
@@ -240,6 +215,29 @@ async function resolveViewerAuthorIdentity(
   return { authorKind: "user", authorId: viewerUuid };
 }
 
+// DetailPost → UiPost（PostCard 用アダプタ）
+function toUiPostAdapter(p: DetailPost): UiPost {
+  return {
+    id: p.id,
+    body: p.body,
+    timeAgoText: timeAgo(p.created_at),
+
+    // PostCard は canonical(users.id) 前提で mute/block/isOwner 判定する
+    authorId: (p.canonical_user_id ?? "") as any,
+    authorKind: p.author_role,
+    authorName: p.author_name,
+    authorHandle: p.author_handle,
+    avatarUrl: p.avatar_url,
+    profilePath: p.profile_path,
+
+    imageUrls: p.image_urls ?? [],
+
+    likeCount: p.like_count ?? 0,
+    replyCount: p.reply_count ?? 0,
+    liked: !!p.liked,
+  } as UiPost;
+}
+
 export default function PostDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -249,8 +247,8 @@ export default function PostDetailPage() {
     return typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "";
   }, [params]);
 
-  const [viewerUuid, setViewerUuid] = useState<string | null>(null);
-  const viewerReady = !!viewerUuid && isUuid(viewerUuid);
+  const [viewerUuid, setViewerUuid] = useState<UserId | null>(null);
+  const viewerReady = !!viewerUuid && isUuid(String(viewerUuid));
 
   const [relations, setRelations] = useState<DbRelationRow[] | null>(null);
 
@@ -258,8 +256,6 @@ export default function PostDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [post, setPost] = useState<DetailPost | null>(null);
-
-  const [actionsOpen, setActionsOpen] = useState(false);
 
   // Replies
   const [loadingReplies, setLoadingReplies] = useState(false);
@@ -269,13 +265,18 @@ export default function PostDetailPage() {
   const [replyText, setReplyText] = useState("");
   const [sendingReply, setSendingReply] = useState(false);
 
+  const uiPost: UiPost | null = useMemo(() => {
+    if (!post) return null;
+    return toUiPostAdapter(post);
+  }, [post]);
+
   // ========== viewer ==========
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const v = await resolveViewerUuid();
       if (cancelled) return;
-      setViewerUuid(v);
+      setViewerUuid((v as any) ?? null);
     })();
     return () => {
       cancelled = true;
@@ -292,7 +293,7 @@ export default function PostDetailPage() {
         return;
       }
       try {
-        const rel = await getRelationsForUser(viewerUuid);
+        const rel = await getRelationsForUser(String(viewerUuid));
         if (cancelled) return;
         setRelations(rel ?? []);
       } catch (e) {
@@ -324,6 +325,7 @@ export default function PostDetailPage() {
       setError(null);
 
       try {
+        // ★ camelCase(imageUrls)は絶対に入れない
         const { data: row, error: postErr } = await supabase
           .from("posts")
           .select(
@@ -340,11 +342,11 @@ export default function PostDetailPage() {
 
         // likes (viewer)
         let liked = false;
-        if (viewerUuid && isUuid(viewerUuid)) {
+        if (viewerUuid && isUuid(String(viewerUuid))) {
           const { data: likeRow, error: likeErr } = await supabase
             .from("post_likes")
             .select("post_id")
-            .eq("user_id", viewerUuid)
+            .eq("user_id", String(viewerUuid))
             .eq("post_id", postId)
             .maybeSingle();
 
@@ -486,11 +488,9 @@ export default function PostDetailPage() {
 
           author_role: inferredKind,
           author_name: authorName,
-
           author_handle: authorHandle,
 
           avatar_url: avatarUrl,
-
           profile_path: profilePath,
 
           image_urls: imageUrls,
@@ -519,21 +519,18 @@ export default function PostDetailPage() {
     };
   }, [postId, viewerUuid]);
 
-  const profileClickable = !!post?.profile_path;
-
-  const goToProfile = () => {
-    if (!post?.profile_path) return;
-    router.push(post.profile_path);
+  const focusReplyComposer = () => {
+    const el = document.getElementById("replyTextarea");
+    if (el) (el as HTMLTextAreaElement).focus();
   };
 
   // ========== like (main post) ==========
-  const handleToggleLike = async () => {
+  const toggleLikeMain = async () => {
     if (!post || !viewerReady || !viewerUuid) return;
 
     const nextLiked = !post.liked;
     const prevLikeCount = post.like_count;
 
-    // optimistic
     setPost((prev) =>
       prev
         ? {
@@ -548,7 +545,7 @@ export default function PostDetailPage() {
       if (nextLiked) {
         const { error: insErr } = await supabase.from("post_likes").insert([
           {
-            user_id: viewerUuid,
+            user_id: String(viewerUuid),
             post_id: post.id,
           },
         ]);
@@ -557,35 +554,22 @@ export default function PostDetailPage() {
         const { error: delErr } = await supabase
           .from("post_likes")
           .delete()
-          .eq("user_id", viewerUuid)
+          .eq("user_id", String(viewerUuid))
           .eq("post_id", post.id);
         if (delErr) throw delErr;
       }
 
-      // count sync（軽量）
       await supabase
         .from("posts")
         .update({ like_count: Math.max(0, prevLikeCount + (nextLiked ? 1 : -1)) })
         .eq("id", post.id);
     } catch (e: any) {
       console.error("[postDetail.like] failed:", e);
-      // rollback
       setPost((prev) =>
-        prev
-          ? {
-              ...prev,
-              liked: !nextLiked,
-              like_count: prevLikeCount,
-            }
-          : prev
+        prev ? { ...prev, liked: !nextLiked, like_count: prevLikeCount } : prev
       );
       alert(e?.message ?? "いいねの更新に失敗しました。");
     }
-  };
-
-  const handleReply = () => {
-    const el = document.getElementById("replyTextarea");
-    if (el) (el as HTMLTextAreaElement).focus();
   };
 
   // ========== replies load ==========
@@ -612,7 +596,6 @@ export default function PostDetailPage() {
         return;
       }
 
-      // author_ids 集める
       const authorIds = Array.from(
         new Set(replyRows.map((r) => (r.author_id ?? "").trim()).filter(Boolean))
       );
@@ -687,12 +670,12 @@ export default function PostDetailPage() {
       }
 
       let likedSet = new Set<string>();
-      if (viewerUuid && isUuid(viewerUuid)) {
+      if (viewerUuid && isUuid(String(viewerUuid))) {
         const replyIds = replyRows.map((r) => r.id);
         const { data: likeData, error: likeErr } = await supabase
           .from("post_likes")
           .select("post_id")
-          .eq("user_id", viewerUuid)
+          .eq("user_id", String(viewerUuid))
           .in("post_id", replyIds);
 
         if (likeErr) {
@@ -842,7 +825,11 @@ export default function PostDetailPage() {
     setReplies((prev) =>
       prev.map((x) =>
         x.id === r.id
-          ? { ...x, liked: nextLiked, likeCount: Math.max(0, x.likeCount + (nextLiked ? 1 : -1)) }
+          ? {
+              ...x,
+              liked: nextLiked,
+              likeCount: Math.max(0, x.likeCount + (nextLiked ? 1 : -1)),
+            }
           : x
       )
     );
@@ -850,14 +837,14 @@ export default function PostDetailPage() {
     try {
       if (nextLiked) {
         const { error: insErr } = await supabase.from("post_likes").insert([
-          { user_id: viewerUuid, post_id: r.id },
+          { user_id: String(viewerUuid), post_id: r.id },
         ]);
         if (insErr) throw insErr;
       } else {
         const { error: delErr } = await supabase
           .from("post_likes")
           .delete()
-          .eq("user_id", viewerUuid)
+          .eq("user_id", String(viewerUuid))
           .eq("post_id", r.id);
         if (delErr) throw delErr;
       }
@@ -868,7 +855,6 @@ export default function PostDetailPage() {
         .eq("id", r.id);
     } catch (e: any) {
       console.error("[reply.like] failed:", e);
-      // rollback
       setReplies((prev) =>
         prev.map((x) =>
           x.id === r.id ? { ...x, liked: !nextLiked, likeCount: prevCount } : x
@@ -881,7 +867,7 @@ export default function PostDetailPage() {
   // ========== reply send ==========
   const handleSendReply = async () => {
     if (!post || !postId || !isUuid(postId)) return;
-    if (!viewerUuid || !isUuid(viewerUuid)) {
+    if (!viewerUuid || !isUuid(String(viewerUuid))) {
       alert("返信はログイン後に利用できます。");
       return;
     }
@@ -901,7 +887,7 @@ export default function PostDetailPage() {
     setPost((prev) => (prev ? { ...prev, reply_count: prev.reply_count + 1 } : prev));
 
     try {
-      const identity = await resolveViewerAuthorIdentity(viewerUuid);
+      const identity = await resolveViewerAuthorIdentity(String(viewerUuid));
 
       const { error: insErr } = await supabase.from("posts").insert([
         {
@@ -939,68 +925,6 @@ export default function PostDetailPage() {
     }
   };
 
-  // ========== PostActionsMenu ==========
-  const handleDeletePost = async () => {
-    if (!post) return;
-    if (!viewerReady || !viewerUuid) {
-      alert("削除はログイン後に利用できます。");
-      return;
-    }
-    if (post.canonical_user_id !== viewerUuid) {
-      alert("この投稿は削除できません。");
-      return;
-    }
-
-    const ok = window.confirm("この投稿を削除しますか？");
-    if (!ok) return;
-
-    try {
-      // 依存関係：like を先に削除（FKがある場合の保険）
-      await supabase.from("post_likes").delete().eq("post_id", post.id);
-
-      const { error: delErr } = await supabase.from("posts").delete().eq("id", post.id);
-      if (delErr) throw delErr;
-
-      router.back();
-    } catch (e: any) {
-      console.error("[postDetail.delete] failed:", e);
-      alert(e?.message ?? "削除に失敗しました。");
-    } finally {
-      setActionsOpen(false);
-    }
-  };
-
-  const handleReportPost = async () => {
-    if (!post) return;
-    if (!viewerReady || !viewerUuid) {
-      alert("通報はログイン後に利用できます。");
-      return;
-    }
-
-    const ok = window.confirm("この投稿を通報しますか？");
-    if (!ok) return;
-
-    try {
-      // reports テーブルがある前提（既存実装に合わせて最小）
-      const { error: repErr } = await supabase.from("reports").insert([
-        {
-          reporter_id: viewerUuid,
-          target_kind: "post",
-          target_id: post.id,
-          reason: "user_report",
-        },
-      ]);
-      if (repErr) throw repErr;
-
-      alert("通報しました。ありがとうございます。");
-    } catch (e: any) {
-      console.error("[postDetail.report] failed:", e);
-      alert(e?.message ?? "通報に失敗しました。");
-    } finally {
-      setActionsOpen(false);
-    }
-  };
-
   return (
     <div className="app-root">
       <AppHeader title="投稿" />
@@ -1013,120 +937,30 @@ export default function PostDetailPage() {
         {loading && <div className="text-meta">読み込み中…</div>}
         {error && <div className="text-meta text-error">{error}</div>}
 
-        {!loading && post && (
-          <article className="post-detail">
-            <div
-              className="post-header"
-              role={profileClickable ? "button" : undefined}
-              tabIndex={profileClickable ? 0 : -1}
-              aria-label={profileClickable ? "投稿者プロフィールを見る" : undefined}
-              onClick={() => {
-                if (!profileClickable) return;
-                goToProfile();
+        {!loading && uiPost && (
+          <>
+            {/* =========================
+               親投稿：PostCard をそのまま使う（最優先）
+               ========================= */}
+            <PostCard
+              post={uiPost}
+              viewerReady={viewerReady}
+              viewerUuid={viewerUuid}
+              onOpenDetail={() => {
+                // ここは詳細ページなので何もしない（TLと同型のため必須props）
               }}
-              onKeyDown={(e) => {
-                if (!profileClickable) return;
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  goToProfile();
-                }
+              onOpenProfile={(path) => {
+                if (!path) return;
+                router.push(path);
               }}
-              style={{ cursor: profileClickable ? "pointer" : "default" }}
-            >
-              <AvatarCircle
-                size={40}
-                avatarUrl={post.avatar_url}
-                displayName={post.author_name}
-                alt={post.author_name}
-              />
-
-              <div className="post-author">
-                <div className="post-name">{post.author_name}</div>
-                {post.author_handle && (
-                  <div className="post-username">{post.author_handle}</div>
-                )}
-                <div className="post-meta">{timeAgo(post.created_at)}</div>
-              </div>
-            </div>
-
-            {post.image_urls.length > 0 && (
-              <div
-                className={`media-grid media-grid--${post.image_urls.length}`}
-                aria-label="投稿画像"
-              >
-                {post.image_urls.map((url, idx) => (
-                  <a
-                    key={`${post.id}_${idx}`}
-                    href={url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="media-tile"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={url} alt="投稿画像" loading="lazy" decoding="async" />
-                  </a>
-                ))}
-              </div>
-            )}
-
-            <div className="post-body">
-              {post.body.split("\n").map((line, i) => (
-                <p key={i}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
-              ))}
-            </div>
-
-            {/* ===== PostCard.tsx と同じ class に統一 ===== */}
-            <div className="post-footer">
-              <button
-                type="button"
-                className={`plainBtn post-like-btn ${post.liked ? "liked" : ""}`}
-                disabled={!viewerReady}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleToggleLike();
-                }}
-                aria-label="いいね"
-              >
-                <span className="post-like-icon">♥</span>
-                <span className="post-like-count">{post.like_count}</span>
-              </button>
-
-              <button
-                type="button"
-                className="plainBtn post-reply-btn"
-                disabled={!viewerReady}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleReply();
-                }}
-                aria-label="返信"
-              >
-                <span className="post-reply-icon">💬</span>
-                <span className="post-reply-count">{post.reply_count}</span>
-              </button>
-
-              {/* メニューは footer に混ぜず“右寄せ枠”に逃がす */}
-              <div className="post-menu-wrap" onClick={(e) => e.stopPropagation()}>
-                <PostActionsMenu
-                  open={actionsOpen}
-                  onToggle={() => setActionsOpen((v) => !v)}
-                  isOwner={post.canonical_user_id === viewerUuid}
-                  viewerReady={viewerReady}
-                  onDelete={handleDeletePost}
-                  onReport={handleReportPost}
-                />
-              </div>
-            </div>
-
-            {!viewerReady && (
-              <div className="feed-message">
-                いいね・通報・返信はログイン後に利用できます。
-              </div>
-            )}
+              onToggleLike={() => void toggleLikeMain()}
+              onReply={() => focusReplyComposer()}
+              onDeleted={() => router.back()}
+              showBadges={true}
+            />
 
             {/* =========================
-               返信セクション
+               返信セクション（※次ステップで components 化）
                ========================= */}
             <section className="replies-section" aria-label="返信一覧">
               <div className="replies-head">
@@ -1188,6 +1022,7 @@ export default function PostDetailPage() {
               <div className="replies-list">
                 {replies.map((r) => {
                   const clickable = !!r.profilePath;
+
                   return (
                     <article key={r.id} className="reply-item">
                       <div
@@ -1249,7 +1084,7 @@ export default function PostDetailPage() {
                         ))}
                       </div>
 
-                      {/* Reply いいねも PostCard と揃える */}
+                      {/* ★ 返信いいね行：PostCard基準のクラスに統一 */}
                       <div className="post-footer">
                         <button
                           type="button"
@@ -1270,7 +1105,7 @@ export default function PostDetailPage() {
                 })}
               </div>
             </section>
-          </article>
+          </>
         )}
       </main>
 
@@ -1286,47 +1121,12 @@ export default function PostDetailPage() {
           cursor: pointer;
         }
 
-        .post-detail {
-          margin-top: 8px;
-        }
-
-        .post-header {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-          margin-bottom: 12px;
-          border-radius: 10px;
-          padding: 6px 4px;
-        }
-
-        .post-header:focus {
-          outline: 2px solid rgba(0, 0, 0, 0.18);
-          outline-offset: 2px;
-        }
-
-        .media-tile img {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-        }
-
-        /* PostCard と同じクラス前提（global/postCard側と競合しない最小だけ） */
-        .post-menu-wrap {
-          margin-left: auto;
-          display: flex;
-          align-items: center;
-        }
-
         /* =========================
-           返信一覧
+           返信一覧（ページ固有：最小限）
            ========================= */
         .replies-section {
           margin-top: 18px;
-          padding-top: 14px;
-          border-top: 1px solid rgba(0, 0, 0, 0.06);
+          padding: 0 16px 12px;
         }
 
         .replies-head {
@@ -1453,11 +1253,14 @@ export default function PostDetailPage() {
           margin-top: 8px;
         }
 
-        .reply-footer {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-top: 8px;
+        /* media は PostCard と同じ class を使う（global 側が正） */
+        .media-tile img {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
         }
       `}</style>
     </div>
