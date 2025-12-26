@@ -1080,12 +1080,13 @@ export default function PostDetailPage() {
             <div className="post-footer">
               <button
                 type="button"
-                className={`post-like-btn ${post.liked ? "liked" : ""}`}
+                className={`plainBtn post-like-btn ${post.liked ? "liked" : ""}`}
                 disabled={!viewerReady}
                 onClick={(e) => {
                   e.stopPropagation();
                   void handleToggleLike();
                 }}
+                aria-label="いいね"
               >
                 <span className="post-like-icon">♥</span>
                 <span className="post-like-count">{post.like_count}</span>
@@ -1093,16 +1094,19 @@ export default function PostDetailPage() {
 
               <button
                 type="button"
-                className="post-reply-btn"
+                className="plainBtn post-reply-btn"
+                disabled={!viewerReady}
                 onClick={(e) => {
                   e.stopPropagation();
                   handleReply();
                 }}
+                aria-label="返信"
               >
                 <span className="post-reply-icon">💬</span>
                 <span className="post-reply-count">{post.reply_count}</span>
               </button>
 
+              {/* メニューは footer に混ぜず“右寄せ枠”に逃がす */}
               <div className="post-menu-wrap" onClick={(e) => e.stopPropagation()}>
                 <PostActionsMenu
                   open={actionsOpen}
@@ -1246,15 +1250,16 @@ export default function PostDetailPage() {
                       </div>
 
                       {/* Reply いいねも PostCard と揃える */}
-                      <div className="reply-footer">
+                      <div className="post-footer">
                         <button
                           type="button"
-                          className={`post-like-btn ${r.liked ? "liked" : ""}`}
+                          className={`plainBtn post-like-btn ${r.liked ? "liked" : ""}`}
                           disabled={!viewerReady}
                           onClick={(e) => {
                             e.stopPropagation();
                             void handleToggleLikeOnReply(r);
                           }}
+                          aria-label="いいね"
                         >
                           <span className="post-like-icon">♥</span>
                           <span className="post-like-count">{r.likeCount}</span>
