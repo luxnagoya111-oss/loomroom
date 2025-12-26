@@ -116,12 +116,7 @@ export default function ComposerBar({
           transform: translateX(-50%);
           width: 100%;
           padding: 6px 10px 10px;
-          background: linear-gradient(
-            to top,
-            rgba(253, 251, 247, 0.96),
-            rgba(253, 251, 247, 0.78),
-            transparent
-          );
+          background: transparent;
           box-sizing: border-box;
           z-index: 40;
         }

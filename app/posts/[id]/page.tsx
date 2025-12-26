@@ -8,7 +8,7 @@ import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
 import PostCard from "@/components/PostCard";
-import ReplyComposer from "@/components/ReplyComposer";
+import ComposerBar from "@/components/ComposerBar";
 
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
@@ -39,7 +39,6 @@ type DetailPost = {
   avatar_url: string | null;
   profile_path: string | null;
 
-  // ★ 投稿画像（public URLに変換済み）
   image_urls: string[];
 
   like_count: number;
@@ -52,7 +51,7 @@ type DetailPost = {
 type ReplyItem = {
   id: string;
 
-  authorId: string; // canonical users.id（取れない場合は raw ）
+  authorId: string;
   authorKind: AuthorRole;
   authorName: string;
   authorHandle: string | null;
@@ -81,10 +80,7 @@ type DbPostRow = {
 
   reply_to_id?: string | null;
 
-  // 正：Storage path配列
   image_paths?: string[] | null;
-
-  // 保険（snake_case のみ）
   image_urls?: string[] | null;
 };
 
@@ -224,7 +220,6 @@ function toUiPostAdapter(p: DetailPost): UiPost {
     body: p.body,
     timeAgoText: timeAgo(p.created_at),
 
-    // PostCard は canonical(users.id) 前提で mute/block/isOwner 判定する
     authorId: (p.canonical_user_id ?? "") as any,
     authorKind: p.author_role,
     authorName: p.author_name,
@@ -327,7 +322,6 @@ export default function PostDetailPage() {
       setError(null);
 
       try {
-        // ★ camelCase(imageUrls)は絶対に入れない
         const { data: row, error: postErr } = await supabase
           .from("posts")
           .select(
@@ -472,7 +466,6 @@ export default function PostDetailPage() {
           if (canonicalUserId) profilePath = `/mypage/${canonicalUserId}`;
         }
 
-        // 画像
         const rawImages = pickRawPostImages(row as any);
         const imageUrls = resolvePostImageUrls(rawImages);
 
@@ -520,11 +513,6 @@ export default function PostDetailPage() {
       cancelled = true;
     };
   }, [postId, viewerUuid]);
-
-  const focusReplyComposer = () => {
-    const el = document.getElementById("replyTextarea");
-    if (el) (el as HTMLTextAreaElement).focus();
-  };
 
   // ========== like (main post) ==========
   const toggleLikeMain = async () => {
@@ -927,11 +915,17 @@ export default function PostDetailPage() {
     }
   };
 
+  // 返信入力にフォーカス（固定バーなので、必要ならここで軽くスクロール補助）
+  const focusReplyComposer = () => {
+    const el = document.getElementById("replyTextarea") as HTMLTextAreaElement | null;
+    if (el) el.focus();
+  };
+
   return (
     <div className="app-root">
       <AppHeader title="投稿" />
 
-      <main className="app-main">
+      <main className="app-main post-detail-main">
         <button type="button" className="back-btn" onClick={() => router.back()}>
           ← 戻る
         </button>
@@ -941,15 +935,13 @@ export default function PostDetailPage() {
 
         {!loading && uiPost && (
           <>
-            {/* =========================
-               親投稿：PostCard をそのまま使う（最優先）
-               ========================= */}
+            {/* 親投稿 */}
             <PostCard
               post={uiPost}
               viewerReady={viewerReady}
               viewerUuid={viewerUuid}
               onOpenDetail={() => {
-                // ここは詳細ページなので no-op
+                // 詳細ページなので no-op
               }}
               onOpenProfile={(path) => {
                 if (!path) return;
@@ -961,9 +953,7 @@ export default function PostDetailPage() {
               showBadges={true}
             />
 
-            {/* =========================
-               返信セクション（※次ステップで components 化）
-               ========================= */}
+            {/* 返信セクション */}
             <section className="replies-section" aria-label="返信一覧">
               <div className="replies-head">
                 <div className="replies-title">返信</div>
@@ -976,18 +966,6 @@ export default function PostDetailPage() {
                   {loadingReplies ? "更新中…" : "更新"}
                 </button>
               </div>
-
-              {/* ★ ReplyComposer（messages入力欄DOM）へ差し替え */}
-              <ReplyComposer
-                textareaId="replyTextarea"
-                value={replyText}
-                onChange={setReplyText}
-                onSend={handleSendReply}
-                disabled={!viewerReady}
-                sending={sendingReply}
-                placeholder={viewerReady ? "返信を書く…" : "返信はログイン後に利用できます"}
-                variant="inline"
-              />
 
               {/* 文字数/状態表示（必要最小） */}
               <div className="reply-hint-row">
@@ -1075,7 +1053,7 @@ export default function PostDetailPage() {
                         ))}
                       </div>
 
-                      {/* ★ 返信いいね行：PostCard基準のクラスに統一 */}
+                      {/* 返信いいね行：PostCard基準のクラスに統一 */}
                       <div className="post-footer">
                         <button
                           type="button"
@@ -1100,9 +1078,28 @@ export default function PostDetailPage() {
         )}
       </main>
 
+      {/* ★ 返信入力は messages と同じ「BottomNavの少し上に固定」 */}
+      <ComposerBar
+        textareaId="replyTextarea"
+        value={replyText}
+        onChange={setReplyText}
+        onSend={handleSendReply}
+        disabled={!viewerReady}
+        sending={sendingReply}
+        placeholder={viewerReady ? "返信を書く…" : "返信はログイン後に利用できます"}
+        sendOnEnter={true}
+        bottomOffset={70} // BottomNav 高さ
+        maxWidth={430}
+      />
+
       <BottomNav active="home" hasUnread={hasUnread} />
 
       <style jsx>{`
+        .post-detail-main {
+          /* ComposerBar（bottom固定）+ BottomNav 分の余白を確保 */
+          padding-bottom: 160px;
+        }
+
         .back-btn {
           border: none;
           background: transparent;
@@ -1212,31 +1209,6 @@ export default function PostDetailPage() {
         /* =========================
            画像グリッド（返信）
            ========================= */
-        .media-grid {
-          margin-top: 10px;
-          display: grid;
-          gap: 6px;
-        }
-
-        .media-grid--1 {
-          grid-template-columns: 1fr;
-        }
-        .media-grid--2 {
-          grid-template-columns: 1fr 1fr;
-        }
-        .media-grid--3 {
-          grid-template-columns: 1fr 1fr;
-        }
-        .media-grid--4 {
-          grid-template-columns: 1fr 1fr;
-        }
-
-        .media-tile {
-          display: block;
-          overflow: hidden;
-          border-radius: 12px;
-          border: 1px solid rgba(0, 0, 0, 0.06);
-        }
 
         .media-tile img {
           width: 100%;
