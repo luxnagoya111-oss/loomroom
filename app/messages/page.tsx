@@ -1,7 +1,7 @@
 // app/messages/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import Link from "next/link";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
@@ -120,6 +120,18 @@ export default function MessagesPage() {
   // 自分→相手 relations（uuid会員のみ）
   const [relations, setRelations] = useState<DbRelationRow[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+
+  /**
+   * ★ Realtimeイベントが連続で来ると「再読込連打」→体感が不安定になる
+   * → ここで再読込をデバウンス（300ms 以内は1回に間引く）
+   */
+  const reloadTimerRef = useRef<number | null>(null);
+  const bumpReload = () => {
+    if (reloadTimerRef.current) window.clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = window.setTimeout(() => {
+      setReloadKey((k) => k + 1);
+    }, 300);
+  };
 
   // viewerId 確定（Auth uuid を優先）
   useEffect(() => {
@@ -342,7 +354,8 @@ export default function MessagesPage() {
           })
           .sort(
             (a, b) =>
-              new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+              new Date(b.lastMessageAt).getTime() -
+              new Date(a.lastMessageAt).getTime()
           );
 
         if (cancelled) return;
@@ -357,7 +370,7 @@ export default function MessagesPage() {
     };
   }, [viewerId, relations, reloadKey]);
 
-  // Realtime：dm_threads の INSERT / UPDATE を購読して再読込
+  // Realtime：dm_threads の INSERT / UPDATE を購読して再読込（間引きあり）
   useEffect(() => {
     if (!viewerId || !isUuid(viewerId)) return;
 
@@ -374,22 +387,19 @@ export default function MessagesPage() {
           (oldRow.user_a_id === viewerId || oldRow.user_b_id === viewerId));
 
       if (!isMine) return;
-      setReloadKey((k) => k + 1);
+
+      // ★ 連打防止（重要）
+      bumpReload();
     };
 
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
     (async () => {
-      // ★ 追加：Realtime subscribe 前に auth 同期（詳細ページと同じ発想）
+      // ★ subscribe 前に auth 同期（RLS/Realtime安定化）
       try {
         const { data } = await supabase.auth.getSession();
         const token = data.session?.access_token;
-        if (token) {
-          supabase.realtime.setAuth(token);
-          // console.log("[messages RT] realtime auth set");
-        } else {
-          // console.log("[messages RT] no token");
-        }
+        if (token) supabase.realtime.setAuth(token);
       } catch (e) {
         console.warn("[messages RT] getSession failed:", e);
       }
@@ -414,7 +424,9 @@ export default function MessagesPage() {
     return () => {
       cancelled = true;
       if (channel) supabase.removeChannel(channel);
+      if (reloadTimerRef.current) window.clearTimeout(reloadTimerRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerId]);
 
   const hasUnread = useMemo(() => threads.some((t) => t.unreadCount > 0), [threads]);
