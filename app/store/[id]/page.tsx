@@ -1013,28 +1013,6 @@ export default function StoreProfilePage() {
           margin-top: 6px;
           padding-bottom: 8px;
         }
-
-        .profile-section-title {
-          font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 4px;
-          color: var(--text-sub);
-        }
-
-        .empty-hint {
-          font-size: 12px;
-          color: var(--text-sub);
-          line-height: 1.6;
-        }
-
-        .feed-list {
-          display: block;
-        }
-
-        :global(.no-link-style) {
-          color: inherit;
-          text-decoration: none;
-        }
       `}</style>
     </div>
   );
