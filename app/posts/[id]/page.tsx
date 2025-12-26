@@ -84,9 +84,8 @@ type DbPostRow = {
   // 正：Storage path配列
   image_paths?: string[] | null;
 
-  // 保険（古い揺れ）
+  // 保険（snake_case のみ）
   image_urls?: string[] | null;
-  imageUrls?: string[] | null;
 };
 
 type DbUserRow = {
@@ -198,7 +197,7 @@ function resolvePostImageUrls(raw: unknown): string[] {
 }
 
 function pickRawPostImages(row: any): unknown {
-  return row?.image_paths ?? row?.image_urls ?? row?.imageUrls ?? null;
+  return row?.image_paths ?? row?.image_urls ?? null;
 }
 
 /**
@@ -328,7 +327,7 @@ export default function PostDetailPage() {
         const { data: row, error: postErr } = await supabase
           .from("posts")
           .select(
-            "id, body, created_at, author_id, author_kind, like_count, reply_count, reply_to_id, image_paths, image_urls, imageUrls"
+            "id, body, created_at, author_id, author_kind, like_count, reply_count, reply_to_id, image_paths, image_urls"
           )
           .eq("id", postId)
           .maybeSingle();
@@ -600,7 +599,7 @@ export default function PostDetailPage() {
       const { data: rows, error: repErr } = await supabase
         .from("posts")
         .select(
-          "id, body, created_at, author_id, author_kind, like_count, reply_count, reply_to_id, image_paths, image_urls, imageUrls"
+          "id, body, created_at, author_id, author_kind, like_count, reply_count, reply_to_id, image_paths, image_urls"
         )
         .eq("reply_to_id", postId)
         .order("created_at", { ascending: true });
