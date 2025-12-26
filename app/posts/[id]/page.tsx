@@ -982,16 +982,16 @@ export default function PostDetailPage() {
   };
 
   return (
-    <div className="page-root">
+    <div className="app-root">
       <AppHeader title="投稿" />
 
-      <main className="page-main">
+      <main className="app-main">
         <button type="button" className="back-btn" onClick={() => router.back()}>
           ← 戻る
         </button>
 
-        {loading && <div className="page-message">読み込み中…</div>}
-        {error && <div className="page-message page-error">{error}</div>}
+        {loading && <div className="text-meta">読み込み中…</div>}
+        {error && <div className="text-meta text-error">{error}</div>}
 
         {!loading && post && (
           <article className="post-detail">
@@ -1021,11 +1021,11 @@ export default function PostDetailPage() {
               />
 
               <div className="post-author">
-                <div className="post-author-name">{post.author_name}</div>
+                <div className="post-name">{post.author_name}</div>
                 {post.author_handle && (
-                  <div className="post-author-handle">{post.author_handle}</div>
+                  <div className="post-username">{post.author_handle}</div>
                 )}
-                <div className="post-time">{timeAgo(post.created_at)}</div>
+                <div className="post-meta">{timeAgo(post.created_at)}</div>
               </div>
             </div>
               
@@ -1056,7 +1056,7 @@ export default function PostDetailPage() {
               ))}
             </div>
 
-            <div className="post-footer">
+            <div className="post-actions">
               <button
                 type="button"
                 className={`post-like-btn ${post.liked ? "liked" : ""}`}
@@ -1072,7 +1072,7 @@ export default function PostDetailPage() {
 
               <button
                 type="button"
-                className="post-reply-btn"
+                className="post-action-btn is-liked"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleReply();
@@ -1098,7 +1098,7 @@ export default function PostDetailPage() {
               </div>
 
               {!viewerReady && (
-                <div className="post-footer-note">
+                <div className="post-action-note">
                   いいね・通報・返信はログイン後に利用できます。
                 </div>
               )}
@@ -1121,10 +1121,10 @@ export default function PostDetailPage() {
               </div>
 
               {/* ★ A：返信フォーム */}
-              <div className="reply-compose">
+              <div className="field">
                 <textarea
                   id="replyTextarea"
-                  className="reply-textarea"
+                  className="field-textarea"
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
                   placeholder={
@@ -1135,7 +1135,7 @@ export default function PostDetailPage() {
                   disabled={!viewerReady || sendingReply}
                   rows={3}
                 />
-                <div className="reply-compose-footer">
+                <div className="field-footer">
                   <div className="reply-hint">
                     {viewerReady ? (
                       <span>{replyText.trim().length}/200</span>
@@ -1145,7 +1145,7 @@ export default function PostDetailPage() {
                   </div>
                   <button
                     type="button"
-                    className="reply-send"
+                    className="btn-primary"
                     disabled={
                       !viewerReady ||
                       sendingReply ||
@@ -1160,15 +1160,15 @@ export default function PostDetailPage() {
               </div>
 
               {repliesError && (
-                <div className="page-message page-error">{repliesError}</div>
+                <div className="text-meta text-error">{repliesError}</div>
               )}
 
               {!repliesError && loadingReplies && (
-                <div className="page-message">返信を読み込み中…</div>
+                <div className="text-meta">返信を読み込み中…</div>
               )}
 
               {!loadingReplies && !repliesError && replies.length === 0 && (
-                <div className="page-message">返信はまだありません。</div>
+                <div className="text-meta">返信はまだありません。</div>
               )}
 
               <div className="replies-list">
@@ -1270,19 +1270,6 @@ export default function PostDetailPage() {
       <BottomNav active="home" hasUnread={hasUnread} />
 
       <style jsx>{`
-        .page-root {
-          min-height: 100vh;
-          background: var(--background, #ffffff);
-          color: var(--foreground, #171717);
-          display: flex;
-          flex-direction: column;
-        }
-
-        .page-main {
-          padding: 16px;
-          padding-bottom: 64px;
-        }
-
         .back-btn {
           border: none;
           background: transparent;
@@ -1310,105 +1297,6 @@ export default function PostDetailPage() {
           outline-offset: 2px;
         }
 
-        .post-author-name {
-          font-weight: 600;
-          font-size: 14px;
-        }
-
-        .post-author-handle {
-          font-size: 12px;
-          color: #777;
-          margin-top: 2px;
-        }
-
-        .post-time {
-          font-size: 12px;
-          color: #777;
-          margin-top: 2px;
-        }
-
-        .post-body {
-          font-size: 14px;
-          line-height: 1.8;
-          margin-top: 10px;
-        }
-
-        .page-message {
-          font-size: 13px;
-          color: #777;
-          padding: 10px 0;
-        }
-
-        .page-error {
-          color: #b00020;
-        }
-
-        /* =========================
-           画像グリッド（Homeと同等）
-           ========================= */
-        .media-grid {
-          margin-top: 10px;
-          border-radius: 14px;
-          overflow: hidden;
-          border: 1px solid rgba(0, 0, 0, 0.06);
-          background: #f6f6f6;
-          display: grid;
-          gap: 2px;
-        }
-
-        .media-grid--1 {
-          grid-template-columns: 1fr;
-        }
-        .media-grid--2 {
-          grid-template-columns: 1fr 1fr;
-        }
-        .media-grid--3 {
-          grid-template-columns: 1fr 1fr;
-        }
-        .media-grid--4 {
-          grid-template-columns: 1fr 1fr;
-        }
-
-        .media-tile {
-          position: relative;
-          width: 100%;
-          aspect-ratio: 1 / 1;
-          background: #eee;
-          display: block;
-        }
-
-        .media-tile img {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-        }
-
-        /* =========================
-           フッター（いいね/返信）
-           ========================= */
-        .post-footer {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-top: 10px;
-        }
-
-        .post-like-btn,
-        .post-reply-btn {
-          border: none;
-          background: transparent;
-          padding: 2px 4px;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          font-size: 12px;
-          color: var(--text-sub, #777777);
-          cursor: pointer;
-        }
-
         .post-like-btn:disabled,
         .post-reply-btn:disabled {
           opacity: 0.5;
@@ -1417,12 +1305,6 @@ export default function PostDetailPage() {
 
         .post-like-btn.liked .post-like-icon {
           color: #e0245e;
-        }
-
-        .post-footer-note {
-          margin-left: auto;
-          font-size: 11px;
-          color: var(--text-sub, #777);
         }
 
         .post-actions-offset {
@@ -1467,53 +1349,14 @@ export default function PostDetailPage() {
           cursor: not-allowed;
         }
 
-        /* 返信フォーム */
-        .reply-compose {
-          border: 1px solid rgba(0, 0, 0, 0.06);
-          border-radius: 14px;
-          padding: 10px;
-          background: #fff;
-          margin-bottom: 12px;
-        }
-
-        .reply-textarea {
-          width: 100%;
-          border: 1px solid rgba(0, 0, 0, 0.12);
-          border-radius: 12px;
-          padding: 10px 10px;
-          font-size: 13px;
-          line-height: 1.6;
-          resize: vertical;
-          min-height: 70px;
-          outline: none;
-        }
-
         .reply-textarea:disabled {
           background: rgba(0, 0, 0, 0.03);
           color: #666;
         }
 
-        .reply-compose-footer {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          margin-top: 8px;
-        }
-
         .reply-hint {
           font-size: 11px;
           color: var(--text-sub, #777);
-        }
-
-        .reply-send {
-          border: none;
-          border-radius: 12px;
-          padding: 8px 12px;
-          font-size: 12px;
-          cursor: pointer;
-          background: rgba(0, 0, 0, 0.9);
-          color: #fff;
         }
 
         .reply-send:disabled {

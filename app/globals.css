@@ -2006,3 +2006,37 @@ a:active {
 .admin-status-message--error {
   color: #b94a48;
 }
+
+/* =========================
+画像グリッド（Homeと同等）
+========================= */
+.media-grid {
+  margin-top: 10px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: #f6f6f6;
+  display: grid;
+  gap: 2px;
+}
+
+.media-grid--1 {
+  grid-template-columns: 1fr;
+}
+.media-grid--2 {
+  grid-template-columns: 1fr 1fr;
+}
+.media-grid--3 {
+  grid-template-columns: 1fr 1fr;
+}
+.media-grid--4 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.media-tile {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: #eee;
+  display: block;
+}
