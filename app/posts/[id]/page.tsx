@@ -8,12 +8,14 @@ import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
 import PostCard from "@/components/PostCard";
+import ReplyComposer from "@/components/ReplyComposer";
 
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
 import { toPublicHandleFromUserId } from "@/lib/handle";
 import { ensureViewerId } from "@/lib/auth";
 import { getRelationsForUser } from "@/lib/repositories/relationRepository";
+
 import type { DbRelationRow } from "@/types/db";
 import type { UiPost } from "@/lib/postFeedHydrator";
 import type { UserId } from "@/types/user";
@@ -947,7 +949,7 @@ export default function PostDetailPage() {
               viewerReady={viewerReady}
               viewerUuid={viewerUuid}
               onOpenDetail={() => {
-                // ここは詳細ページなので何もしない（TLと同型のため必須props）
+                // ここは詳細ページなので no-op
               }}
               onOpenProfile={(path) => {
                 if (!path) return;
@@ -975,38 +977,27 @@ export default function PostDetailPage() {
                 </button>
               </div>
 
-              <div className="reply-compose">
-                <textarea
-                  id="replyTextarea"
-                  className="reply-textarea"
-                  value={replyText}
-                  onChange={(e) => setReplyText(e.target.value)}
-                  placeholder={viewerReady ? "返信を書く…" : "返信はログイン後に利用できます"}
-                  disabled={!viewerReady || sendingReply}
-                  rows={3}
-                />
-                <div className="reply-compose-footer">
-                  <div className="reply-hint">
-                    {viewerReady ? (
-                      <span>{replyText.trim().length}/200</span>
-                    ) : (
-                      <span>ログインが必要です</span>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    className="reply-send"
-                    disabled={
-                      !viewerReady ||
-                      sendingReply ||
-                      replyText.trim().length === 0 ||
-                      replyText.trim().length > 200
-                    }
-                    onClick={() => void handleSendReply()}
-                  >
-                    {sendingReply ? "送信中…" : "送信"}
-                  </button>
-                </div>
+              {/* ★ ReplyComposer（messages入力欄DOM）へ差し替え */}
+              <ReplyComposer
+                textareaId="replyTextarea"
+                value={replyText}
+                onChange={setReplyText}
+                onSend={handleSendReply}
+                disabled={!viewerReady}
+                sending={sendingReply}
+                placeholder={viewerReady ? "返信を書く…" : "返信はログイン後に利用できます"}
+                variant="inline"
+              />
+
+              {/* 文字数/状態表示（必要最小） */}
+              <div className="reply-hint-row">
+                {viewerReady ? (
+                  <span className={replyText.trim().length > 200 ? "hint-warn" : ""}>
+                    {replyText.trim().length}/200
+                  </span>
+                ) : (
+                  <span>ログインが必要です</span>
+                )}
               </div>
 
               {repliesError && <div className="text-meta text-error">{repliesError}</div>}
@@ -1122,129 +1113,94 @@ export default function PostDetailPage() {
         }
 
         /* =========================
-           返信一覧（ページ固有：最小限）
+           返信一覧
            ========================= */
         .replies-section {
           margin-top: 18px;
-          padding: 0 16px 12px;
+          padding-top: 14px;
+          border-top: 1px solid rgba(0, 0, 0, 0.06);
         }
 
         .replies-head {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          gap: 12px;
-          margin-bottom: 8px;
+          margin-bottom: 10px;
         }
 
         .replies-title {
           font-size: 13px;
-          font-weight: 700;
+          font-weight: 800;
+          color: rgba(0, 0, 0, 0.78);
         }
 
         .replies-reload {
-          border: 1px solid rgba(0, 0, 0, 0.12);
+          border: 1px solid rgba(0, 0, 0, 0.1);
           background: #fff;
-          border-radius: 10px;
+          border-radius: 999px;
           padding: 6px 10px;
           font-size: 12px;
           cursor: pointer;
-          color: #333;
-          -webkit-text-fill-color: #333;
         }
 
         .replies-reload:disabled {
-          opacity: 0.5;
+          opacity: 0.6;
           cursor: not-allowed;
         }
 
-        .reply-compose {
-          border: 1px solid rgba(0, 0, 0, 0.06);
-          border-radius: 14px;
-          padding: 10px;
-          background: #fff;
-          margin-bottom: 12px;
-        }
-
-        .reply-textarea {
-          width: 100%;
-          border: 1px solid rgba(0, 0, 0, 0.12);
-          border-radius: 12px;
-          padding: 10px 10px;
-          font-size: 13px;
-          line-height: 1.6;
-          resize: vertical;
-          min-height: 70px;
-          outline: none;
-        }
-
-        .reply-textarea:disabled {
-          background: rgba(0, 0, 0, 0.03);
-          color: #666;
-        }
-
-        .reply-compose-footer {
+        .reply-hint-row {
           display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          margin-top: 8px;
-        }
-
-        .reply-hint {
-          font-size: 11px;
-          color: var(--text-sub, #777);
-        }
-
-        .reply-send {
-          border: none;
-          border-radius: 12px;
-          padding: 8px 12px;
+          justify-content: flex-end;
           font-size: 12px;
-          cursor: pointer;
-          background: rgba(0, 0, 0, 0.9);
-          color: #fff;
+          color: rgba(0, 0, 0, 0.55);
+          margin: 6px 2px 12px;
         }
 
-        .reply-send:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
+        .hint-warn {
+          color: rgba(220, 38, 38, 0.9);
+          font-weight: 700;
         }
 
         .replies-list {
           display: flex;
           flex-direction: column;
-          gap: 10px;
+          gap: 12px;
         }
 
         .reply-item {
           border: 1px solid rgba(0, 0, 0, 0.06);
           border-radius: 14px;
-          padding: 10px 10px;
+          padding: 10px;
           background: #fff;
         }
 
         .reply-head {
           display: flex;
           gap: 10px;
-          align-items: center;
+          align-items: flex-start;
+        }
+
+        .reply-author {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
         }
 
         .reply-author-name {
-          font-weight: 600;
           font-size: 13px;
+          font-weight: 800;
+          color: rgba(0, 0, 0, 0.82);
         }
 
         .reply-author-handle {
-          font-size: 11px;
-          color: #777;
-          margin-top: 2px;
+          font-size: 12px;
+          color: rgba(0, 0, 0, 0.45);
         }
 
         .reply-time {
-          font-size: 11px;
-          color: #777;
-          margin-top: 2px;
+          font-size: 12px;
+          color: rgba(0, 0, 0, 0.45);
         }
 
         .reply-body {
@@ -1253,13 +1209,38 @@ export default function PostDetailPage() {
           margin-top: 8px;
         }
 
-        /* media は PostCard と同じ class を使う（global 側が正） */
+        /* =========================
+           画像グリッド（返信）
+           ========================= */
+        .media-grid {
+          margin-top: 10px;
+          display: grid;
+          gap: 6px;
+        }
+
+        .media-grid--1 {
+          grid-template-columns: 1fr;
+        }
+        .media-grid--2 {
+          grid-template-columns: 1fr 1fr;
+        }
+        .media-grid--3 {
+          grid-template-columns: 1fr 1fr;
+        }
+        .media-grid--4 {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .media-tile {
+          display: block;
+          overflow: hidden;
+          border-radius: 12px;
+          border: 1px solid rgba(0, 0, 0, 0.06);
+        }
+
         .media-tile img {
-          position: absolute;
-          inset: 0;
           width: 100%;
-          height: 100%;
-          object-fit: cover;
+          height: auto;
           display: block;
         }
       `}</style>
