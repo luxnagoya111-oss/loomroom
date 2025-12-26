@@ -3,16 +3,18 @@
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
+
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import AvatarCircle from "@/components/AvatarCircle";
+import PostActionsMenu from "@/components/PostActionsMenu";
+
 import { supabase } from "@/lib/supabaseClient";
 import { timeAgo } from "@/lib/timeAgo";
 import { toPublicHandleFromUserId } from "@/lib/handle";
 import { ensureViewerId } from "@/lib/auth";
 import { getRelationsForUser } from "@/lib/repositories/relationRepository";
 import type { DbRelationRow } from "@/types/db";
-import PostActionsMenu from "@/components/PostActionsMenu";
 
 type AuthorRole = "therapist" | "store" | "user";
 
@@ -200,173 +202,161 @@ function pickRawPostImages(row: any): unknown {
 }
 
 /**
- * viewerUuid（users.id）から「投稿の author_id / author_kind」を推定
- * - therapist: therapists.user_id == viewerUuid -> author_id = therapists.id, kind="therapist"
- * - store:     stores.owner_user_id == viewerUuid -> author_id = stores.id, kind="store"
- * - else:      author_id = viewerUuid, kind="user"
- *
- * ※ 既存投稿が role-table id を使うケースに寄せて、違和感なく混在できるようにする
+ * viewerUuid（users.id）
  */
-async function resolveViewerAuthorIdentity(viewerUuid: string): Promise<{
-  authorId: string;
-  authorKind: AuthorRole;
-}> {
-  // therapist
-  const { data: tRow } = await supabase
+async function resolveViewerUuid(): Promise<string | null> {
+  try {
+    const id = await ensureViewerId();
+    return isUuid(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 返信 insert 用に viewer の author_id / author_kind を解決
+ * - therapist: therapists.user_id = viewerUuid があれば author_kind="therapist", author_id=therapists.id
+ * - store: stores.owner_user_id = viewerUuid があれば author_kind="store", author_id=stores.id
+ * - else: user
+ */
+async function resolveViewerAuthorIdentity(
+  viewerUuid: string
+): Promise<{ authorKind: AuthorRole; authorId: string }> {
+  const { data: t } = await supabase
     .from("therapists")
     .select("id, user_id")
     .eq("user_id", viewerUuid)
     .maybeSingle();
 
-  if (tRow?.id) {
-    return { authorId: String(tRow.id), authorKind: "therapist" };
-  }
+  if (t?.id) return { authorKind: "therapist", authorId: t.id };
 
-  // store
-  const { data: sRow } = await supabase
+  const { data: s } = await supabase
     .from("stores")
     .select("id, owner_user_id")
     .eq("owner_user_id", viewerUuid)
     .maybeSingle();
 
-  if (sRow?.id) {
-    return { authorId: String(sRow.id), authorKind: "store" };
-  }
+  if (s?.id) return { authorKind: "store", authorId: s.id };
 
-  return { authorId: viewerUuid, authorKind: "user" };
+  return { authorKind: "user", authorId: viewerUuid };
 }
 
 export default function PostDetailPage() {
+  const params = useParams();
   const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const postId = params?.id;
+
+  const postId = useMemo(() => {
+    const raw = (params as any)?.id;
+    return typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "";
+  }, [params]);
 
   const [viewerUuid, setViewerUuid] = useState<string | null>(null);
-
-  const [post, setPost] = useState<DetailPost | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [actionsOpen, setActionsOpen] = useState(false);
-
-  // relations（mute/block）
-  const [relations, setRelations] = useState<DbRelationRow[]>([]);
-
-  // 返信一覧
-  const [replies, setReplies] = useState<ReplyItem[]>([]);
-  const [loadingReplies, setLoadingReplies] = useState<boolean>(false);
-  const [repliesError, setRepliesError] = useState<string | null>(null);
-
-  // ★ A：返信入力
-  const [replyText, setReplyText] = useState<string>("");
-  const [sendingReply, setSendingReply] = useState<boolean>(false);
-
-  const profileClickable = useMemo(
-    () => !!post?.profile_path,
-    [post?.profile_path]
-  );
-
   const viewerReady = !!viewerUuid && isUuid(viewerUuid);
 
-  // viewerUuid（uuidのみ）確定
+  const [relations, setRelations] = useState<DbRelationRow[] | null>(null);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [post, setPost] = useState<DetailPost | null>(null);
+
+  const [actionsOpen, setActionsOpen] = useState(false);
+
+  // Replies
+  const [loadingReplies, setLoadingReplies] = useState(false);
+  const [repliesError, setRepliesError] = useState<string | null>(null);
+  const [replies, setReplies] = useState<ReplyItem[]>([]);
+
+  const [replyText, setReplyText] = useState("");
+  const [sendingReply, setSendingReply] = useState(false);
+
+  // ========== viewer ==========
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const uid = await ensureViewerId(); // uuid or null
-        if (cancelled) return;
-        setViewerUuid(uid);
-      } catch {
-        if (cancelled) return;
-        setViewerUuid(null);
-      }
+      const v = await resolveViewerUuid();
+      if (cancelled) return;
+      setViewerUuid(v);
     })();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // relations 取得（viewerUuid が uuid のときだけ）
+  // ========== relations (block/mute filter) ==========
   useEffect(() => {
-    if (!viewerUuid || !isUuid(viewerUuid)) {
-      setRelations([]);
-      return;
-    }
-
     let cancelled = false;
 
-    (async () => {
+    async function loadRelations() {
+      if (!viewerReady || !viewerUuid) {
+        setRelations(null);
+        return;
+      }
       try {
-        const rows = await getRelationsForUser(viewerUuid);
+        const rel = await getRelationsForUser(viewerUuid);
         if (cancelled) return;
-        setRelations(rows ?? []);
-      } catch (e: any) {
+        setRelations(rel ?? []);
+      } catch (e) {
         if (cancelled) return;
-        console.error("[postDetail.getRelationsForUser] error:", e);
+        console.warn("[postDetail.relations] failed:", e);
         setRelations([]);
       }
-    })();
+    }
+
+    void loadRelations();
 
     return () => {
       cancelled = true;
     };
-  }, [viewerUuid]);
+  }, [viewerReady, viewerUuid]);
 
-  // 投稿詳細ロード
+  // ========== fetch post detail ==========
   useEffect(() => {
-    if (!postId) return;
-
-    if (!isUuid(postId)) {
-      setError("不正な投稿IDです。");
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
 
-    (async () => {
-      try {
-        setLoading(true);
-        setError(null);
+    async function fetchPost() {
+      if (!postId || !isUuid(postId)) {
+        setError("投稿IDが不正です。");
+        setLoading(false);
+        return;
+      }
 
-        const { data: postRow, error: postErr } = await supabase
+      setLoading(true);
+      setError(null);
+
+      try {
+        const { data: row, error: postErr } = await supabase
           .from("posts")
           .select(
-            "id, body, created_at, author_id, author_kind, like_count, reply_count, reply_to_id, image_paths"
+            "id, body, created_at, author_id, author_kind, like_count, reply_count, reply_to_id, image_paths, image_urls, imageUrls"
           )
           .eq("id", postId)
           .maybeSingle();
 
-        if (cancelled) return;
+        if (postErr) throw postErr;
+        if (!row) throw new Error("投稿が見つかりませんでした。");
 
-        if (postErr || !postRow) {
-          console.error("[postDetail.posts] error:", postErr);
-          setError("投稿が見つかりませんでした。");
-          setLoading(false);
-          return;
-        }
+        const rawAuthorId = (row as any).author_id ?? null;
+        const rawKind = ((row as any).author_kind ?? "user") as AuthorRole;
 
-        const row = postRow as DbPostRow;
-        const rawAuthorId = row.author_id;
-        const rawKind: AuthorRole = (row.author_kind ?? "user") as AuthorRole;
-
-        // like済み判定（ログイン時のみ）
+        // likes (viewer)
         let liked = false;
         if (viewerUuid && isUuid(viewerUuid)) {
           const { data: likeRow, error: likeErr } = await supabase
             .from("post_likes")
             .select("post_id")
             .eq("user_id", viewerUuid)
-            .eq("post_id", row.id)
-            .maybeSingle<DbPostLikeRow>();
+            .eq("post_id", postId)
+            .maybeSingle();
 
           if (likeErr) {
-            console.error("[postDetail.post_likes] error:", likeErr);
+            console.warn("[postDetail.like] error:", likeErr);
           } else {
             liked = !!likeRow;
           }
         }
 
-        // user / therapist / store 解決
+        // user / therapist / store resolve
         let user: DbUserRow | null = null;
         if (rawAuthorId && isUuid(rawAuthorId)) {
           const { data: userRow, error: userErr } = await supabase
@@ -479,7 +469,7 @@ export default function PostDetailPage() {
           if (canonicalUserId) profilePath = `/mypage/${canonicalUserId}`;
         }
 
-        // 画像：image_paths を正としてURL配列に変換
+        // 画像
         const rawImages = pickRawPostImages(row as any);
         const imageUrls = resolvePostImageUrls(rawImages);
 
@@ -489,157 +479,117 @@ export default function PostDetailPage() {
           id: row.id,
           body: row.body ?? "",
           created_at: row.created_at,
-          raw_author_id: rawAuthorId ?? null,
+
+          raw_author_id: rawAuthorId,
           raw_author_kind: rawKind,
+
           canonical_user_id: canonicalUserId,
+
           author_role: inferredKind,
           author_name: authorName,
-          author_handle: authorHandle ?? null,
+
+          author_handle: authorHandle,
+
           avatar_url: avatarUrl,
+
           profile_path: profilePath,
+
           image_urls: imageUrls,
-          like_count: row.like_count ?? 0,
-          reply_count: row.reply_count ?? 0,
+
+          like_count: Number((row as any).like_count ?? 0),
+          reply_count: Number((row as any).reply_count ?? 0),
           liked,
+
           reply_to_id: (row as any).reply_to_id ?? null,
         });
-
-        setLoading(false);
       } catch (e: any) {
-        if (cancelled) return;
-        console.error("post detail error:", e);
-        setError(e?.message ?? "読み込み中にエラーが発生しました");
-        setLoading(false);
+        console.error("[postDetail.fetch] error:", e);
+        if (!cancelled) {
+          setError(e?.message ?? "読み込みに失敗しました。");
+          setPost(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    })();
+    }
+
+    void fetchPost();
 
     return () => {
       cancelled = true;
     };
   }, [postId, viewerUuid]);
 
+  const profileClickable = !!post?.profile_path;
+
   const goToProfile = () => {
     if (!post?.profile_path) return;
     router.push(post.profile_path);
   };
 
+  // ========== like (main post) ==========
   const handleToggleLike = async () => {
-    if (!post) return;
-    if (!viewerUuid || !isUuid(viewerUuid)) return;
+    if (!post || !viewerReady || !viewerUuid) return;
 
-    const previousLiked = post.liked;
-    const previousCount = post.like_count;
+    const nextLiked = !post.liked;
+    const prevLikeCount = post.like_count;
 
+    // optimistic
     setPost((prev) =>
       prev
         ? {
             ...prev,
-            liked: !previousLiked,
-            like_count: previousCount + (!previousLiked ? 1 : -1),
+            liked: nextLiked,
+            like_count: Math.max(0, prev.like_count + (nextLiked ? 1 : -1)),
           }
         : prev
     );
 
     try {
-      if (!previousLiked) {
-        const { error: likeError } = await supabase
-          .from("post_likes")
-          .insert([{ post_id: post.id, user_id: viewerUuid }]);
-        if (likeError) throw likeError;
-
-        const { error: updateError } = await supabase
-          .from("posts")
-          .update({ like_count: previousCount + 1 })
-          .eq("id", post.id);
-        if (updateError) throw updateError;
+      if (nextLiked) {
+        const { error: insErr } = await supabase.from("post_likes").insert([
+          {
+            user_id: viewerUuid,
+            post_id: post.id,
+          },
+        ]);
+        if (insErr) throw insErr;
       } else {
-        const { error: deleteError } = await supabase
+        const { error: delErr } = await supabase
           .from("post_likes")
           .delete()
-          .eq("post_id", post.id)
-          .eq("user_id", viewerUuid);
-        if (deleteError) throw deleteError;
-
-        const { error: updateError } = await supabase
-          .from("posts")
-          .update({ like_count: Math.max(previousCount - 1, 0) })
-          .eq("id", post.id);
-        if (updateError) throw updateError;
+          .eq("user_id", viewerUuid)
+          .eq("post_id", post.id);
+        if (delErr) throw delErr;
       }
-    } catch (e: any) {
-      console.error("Supabase like toggle error:", e);
 
+      // count sync（軽量）
+      await supabase
+        .from("posts")
+        .update({ like_count: Math.max(0, prevLikeCount + (nextLiked ? 1 : -1)) })
+        .eq("id", post.id);
+    } catch (e: any) {
+      console.error("[postDetail.like] failed:", e);
+      // rollback
       setPost((prev) =>
-        prev ? { ...prev, liked: previousLiked, like_count: previousCount } : prev
-      );
-
-      alert(
-        e?.message ??
-          "いいねの反映中にエラーが発生しました。時間をおいて再度お試しください。"
-      );
-    }
-  };
-
-  const handleToggleLikeOnReply = async (reply: ReplyItem) => {
-    if (!viewerUuid || !isUuid(viewerUuid)) return;
-
-    const prevLiked = reply.liked;
-    const prevCount = reply.likeCount;
-
-    setReplies((prev) =>
-      prev.map((r) =>
-        r.id === reply.id
+        prev
           ? {
-              ...r,
-              liked: !prevLiked,
-              likeCount: prevCount + (!prevLiked ? 1 : -1),
+              ...prev,
+              liked: !nextLiked,
+              like_count: prevLikeCount,
             }
-          : r
-      )
-    );
-
-    try {
-      if (!prevLiked) {
-        const { error: likeError } = await supabase
-          .from("post_likes")
-          .insert([{ post_id: reply.id, user_id: viewerUuid }]);
-        if (likeError) throw likeError;
-
-        const { error: updateError } = await supabase
-          .from("posts")
-          .update({ like_count: prevCount + 1 })
-          .eq("id", reply.id);
-        if (updateError) throw updateError;
-      } else {
-        const { error: deleteError } = await supabase
-          .from("post_likes")
-          .delete()
-          .eq("post_id", reply.id)
-          .eq("user_id", viewerUuid);
-        if (deleteError) throw deleteError;
-
-        const { error: updateError } = await supabase
-          .from("posts")
-          .update({ like_count: Math.max(prevCount - 1, 0) })
-          .eq("id", reply.id);
-        if (updateError) throw updateError;
-      }
-    } catch (e: any) {
-      console.error("Supabase reply like toggle error:", e);
-
-      setReplies((prev) =>
-        prev.map((r) =>
-          r.id === reply.id ? { ...r, liked: prevLiked, likeCount: prevCount } : r
-        )
+          : prev
       );
-
-      alert(
-        e?.message ??
-          "いいねの反映中にエラーが発生しました。時間をおいて再度お試しください。"
-      );
+      alert(e?.message ?? "いいねの更新に失敗しました。");
     }
   };
 
+  const handleReply = () => {
+    const el = document.getElementById("replyTextarea");
+    if (el) (el as HTMLTextAreaElement).focus();
+  };
+
+  // ========== replies load ==========
   const loadReplies = useCallback(async () => {
     if (!postId || !isUuid(postId)) return;
 
@@ -647,53 +597,48 @@ export default function PostDetailPage() {
     setRepliesError(null);
 
     try {
-      const { data: replyRows, error: replyErr } = await supabase
+      const { data: rows, error: repErr } = await supabase
         .from("posts")
         .select(
-          "id, body, created_at, author_id, author_kind, like_count, reply_count, reply_to_id, image_paths, image_urls"
+          "id, body, created_at, author_id, author_kind, like_count, reply_count, reply_to_id, image_paths, image_urls, imageUrls"
         )
         .eq("reply_to_id", postId)
-        .order("created_at", { ascending: true })
-        .limit(200);
+        .order("created_at", { ascending: true });
 
-      if (replyErr) {
-        console.error("[postDetail.replies] error:", replyErr);
-        setReplies([]);
-        setRepliesError(replyErr.message ?? "返信の取得に失敗しました。");
-        return;
-      }
+      if (repErr) throw repErr;
 
-      const rows = (replyRows ?? []) as DbPostRow[];
-      if (!rows.length) {
+      const replyRows = (rows ?? []) as DbPostRow[];
+      if (replyRows.length === 0) {
         setReplies([]);
         return;
       }
 
+      // author_ids 集める
       const authorIds = Array.from(
-        new Set(rows.map((r) => r.author_id).filter((v): v is string => !!v))
+        new Set(replyRows.map((r) => (r.author_id ?? "").trim()).filter(Boolean))
       );
 
-      const therapistByUserId = new Map<string, DbTherapistLite>();
       const therapistById = new Map<string, DbTherapistLite>();
-      const storeByOwnerId = new Map<string, DbStoreLite>();
+      const therapistByUserId = new Map<string, DbTherapistLite>();
       const storeById = new Map<string, DbStoreLite>();
+      const storeByOwnerId = new Map<string, DbStoreLite>();
 
       if (authorIds.length) {
-        const { data: therByUserData } = await supabase
+        const { data: thData } = await supabase
           .from("therapists")
           .select("id, user_id, display_name, avatar_url")
-          .in("user_id", authorIds);
-        (therByUserData ?? []).forEach((t: any) => {
+          .in("id", authorIds);
+        (thData ?? []).forEach((t: any) => {
           const r = t as DbTherapistLite;
           if (r.user_id) therapistByUserId.set(r.user_id, r);
           therapistById.set(r.id, r);
         });
 
-        const { data: therByIdData } = await supabase
+        const { data: thByUserData } = await supabase
           .from("therapists")
           .select("id, user_id, display_name, avatar_url")
-          .in("id", authorIds);
-        (therByIdData ?? []).forEach((t: any) => {
+          .in("user_id", authorIds);
+        (thByUserData ?? []).forEach((t: any) => {
           const r = t as DbTherapistLite;
           if (r.user_id) therapistByUserId.set(r.user_id, r);
           therapistById.set(r.id, r);
@@ -744,7 +689,7 @@ export default function PostDetailPage() {
 
       let likedSet = new Set<string>();
       if (viewerUuid && isUuid(viewerUuid)) {
-        const replyIds = rows.map((r) => r.id);
+        const replyIds = replyRows.map((r) => r.id);
         const { data: likeData, error: likeErr } = await supabase
           .from("post_likes")
           .select("post_id")
@@ -760,7 +705,7 @@ export default function PostDetailPage() {
         }
       }
 
-      const mappedAll: ReplyItem[] = rows.map((row) => {
+      const mappedAll: ReplyItem[] = replyRows.map((row) => {
         const rawAuthorId = row.author_id ?? "";
 
         const inferredKind: AuthorRole =
@@ -783,9 +728,7 @@ export default function PostDetailPage() {
 
         const store =
           inferredKind === "store"
-            ? storeById.get(rawAuthorId) ??
-              storeByOwnerId.get(rawAuthorId) ??
-              null
+            ? storeById.get(rawAuthorId) ?? storeByOwnerId.get(rawAuthorId) ?? null
             : null;
 
         let canonicalUserId = rawAuthorId;
@@ -832,19 +775,13 @@ export default function PostDetailPage() {
 
         let profilePath: string | null = null;
         if (inferredKind === "therapist") {
-          profilePath = therapist?.id
-            ? `/therapist/${therapist.id}`
-            : isUuid(canonicalUserId)
-            ? `/mypage/${canonicalUserId}`
-            : null;
+          profilePath = therapist?.id ? `/therapist/${therapist.id}` : null;
+          if (!profilePath && canonicalUserId) profilePath = `/mypage/${canonicalUserId}`;
         } else if (inferredKind === "store") {
-          profilePath = store?.id
-            ? `/store/${store.id}`
-            : isUuid(canonicalUserId)
-            ? `/mypage/${canonicalUserId}`
-            : null;
+          profilePath = store?.id ? `/store/${store.id}` : null;
+          if (!profilePath && canonicalUserId) profilePath = `/mypage/${canonicalUserId}`;
         } else {
-          profilePath = isUuid(canonicalUserId) ? `/mypage/${canonicalUserId}` : null;
+          if (canonicalUserId) profilePath = `/mypage/${canonicalUserId}`;
         }
 
         const rawImages = pickRawPostImages(row as any);
@@ -861,29 +798,27 @@ export default function PostDetailPage() {
           body: row.body ?? "",
           createdAt: row.created_at,
           timeAgoText: timeAgo(row.created_at),
-          likeCount: row.like_count ?? 0,
+          likeCount: Number((row as any).like_count ?? 0),
           liked: likedSet.has(row.id),
           imageUrls,
         };
       });
 
-      // ★ B：mute/block を replies に適用（canonical users.id 基準）
-      const mutedTargets = new Set<string>();
-      const blockedTargets = new Set<string>();
-      relations.forEach((r) => {
-        if (r.type === "mute") mutedTargets.add(r.target_id);
-        if (r.type === "block") blockedTargets.add(r.target_id);
+      // block/mute フィルタ（最小）
+      const blockedOrMuted = new Set<string>();
+      (relations ?? []).forEach((r: any) => {
+        if (r?.type === "block" || r?.type === "mute") {
+          if (r?.target_id) blockedOrMuted.add(String(r.target_id));
+        }
       });
 
-      const mappedFiltered = mappedAll.filter((r) => {
-        if (isUuid(r.authorId)) {
-          if (mutedTargets.has(r.authorId)) return false;
-          if (blockedTargets.has(r.authorId)) return false;
-        }
+      const filtered = mappedAll.filter((r) => {
+        if (!viewerReady) return true;
+        if (blockedOrMuted.has(r.authorId)) return false;
         return true;
       });
 
-      setReplies(mappedFiltered);
+      setReplies(filtered);
     } catch (e: any) {
       console.error("[postDetail.replies] unexpected:", e);
       setReplies([]);
@@ -891,14 +826,60 @@ export default function PostDetailPage() {
     } finally {
       setLoadingReplies(false);
     }
-  }, [postId, viewerUuid, relations]);
+  }, [postId, viewerUuid, relations, viewerReady]);
 
   useEffect(() => {
     if (!postId || !isUuid(postId)) return;
     void loadReplies();
   }, [postId, loadReplies]);
 
-  // ★ A：返信送信（保存）
+  // ========== like (reply) ==========
+  const handleToggleLikeOnReply = async (r: ReplyItem) => {
+    if (!viewerReady || !viewerUuid) return;
+
+    const nextLiked = !r.liked;
+    const prevCount = r.likeCount;
+
+    setReplies((prev) =>
+      prev.map((x) =>
+        x.id === r.id
+          ? { ...x, liked: nextLiked, likeCount: Math.max(0, x.likeCount + (nextLiked ? 1 : -1)) }
+          : x
+      )
+    );
+
+    try {
+      if (nextLiked) {
+        const { error: insErr } = await supabase.from("post_likes").insert([
+          { user_id: viewerUuid, post_id: r.id },
+        ]);
+        if (insErr) throw insErr;
+      } else {
+        const { error: delErr } = await supabase
+          .from("post_likes")
+          .delete()
+          .eq("user_id", viewerUuid)
+          .eq("post_id", r.id);
+        if (delErr) throw delErr;
+      }
+
+      await supabase
+        .from("posts")
+        .update({ like_count: Math.max(0, prevCount + (nextLiked ? 1 : -1)) })
+        .eq("id", r.id);
+    } catch (e: any) {
+      console.error("[reply.like] failed:", e);
+      // rollback
+      setReplies((prev) =>
+        prev.map((x) =>
+          x.id === r.id ? { ...x, liked: !nextLiked, likeCount: prevCount } : x
+        )
+      );
+      alert(e?.message ?? "いいねの更新に失敗しました。");
+    }
+  };
+
+  // ========== reply send ==========
   const handleSendReply = async () => {
     if (!post || !postId || !isUuid(postId)) return;
     if (!viewerUuid || !isUuid(viewerUuid)) {
@@ -909,7 +890,6 @@ export default function PostDetailPage() {
     const body = replyText.trim();
     if (!body) return;
 
-    // 最低限の暴走防止（必要なら後で調整）
     if (body.length > 200) {
       alert("返信が長すぎます（200文字以内）。");
       return;
@@ -918,53 +898,38 @@ export default function PostDetailPage() {
     if (sendingReply) return;
     setSendingReply(true);
 
-    // UIを壊さないために、まずローカルで reply_count を楽観更新
     const prevReplyCount = post.reply_count;
     setPost((prev) => (prev ? { ...prev, reply_count: prev.reply_count + 1 } : prev));
 
     try {
-      // author_id / author_kind を既存の投稿形式に寄せる
       const identity = await resolveViewerAuthorIdentity(viewerUuid);
 
-      // 1) 返信投稿を insert
-      const { data: inserted, error: insErr } = await supabase
-        .from("posts")
-        .insert([
-          {
-            author_id: identity.authorId,
-            author_kind: identity.authorKind,
-            body,
-            reply_to_id: postId,
-            // image_paths は今回は無し（画像返信は次ステップで）
-          },
-        ])
-        .select("id")
-        .maybeSingle();
+      const { error: insErr } = await supabase.from("posts").insert([
+        {
+          author_id: identity.authorId,
+          author_kind: identity.authorKind,
+          body,
+          reply_to_id: postId,
+        },
+      ]);
 
       if (insErr) throw insErr;
 
-      // 2) 親投稿 reply_count を更新（軽量整合性）
-      //    ※ 競合しても致命的ではない。後でRPC化するならここを置換。
       const { error: updErr } = await supabase
         .from("posts")
         .update({ reply_count: prevReplyCount + 1 })
         .eq("id", postId);
 
       if (updErr) {
-        // 返信自体は保存できているので、ここは警告ログに留める
         console.warn("[reply] parent reply_count update failed:", updErr);
       }
 
-      // 3) 入力クリア → 返信一覧再取得
       setReplyText("");
       await loadReplies();
     } catch (e: any) {
       console.error("[reply] send failed:", e);
 
-      // ロールバック（親の表示だけ戻す）
-      setPost((prev) =>
-        prev ? { ...prev, reply_count: prevReplyCount } : prev
-      );
+      setPost((prev) => (prev ? { ...prev, reply_count: prevReplyCount } : prev));
 
       alert(
         e?.message ??
@@ -975,10 +940,66 @@ export default function PostDetailPage() {
     }
   };
 
-  const handleReply = () => {
-    // 返信機能はここで実装済み：入力欄へ誘導
-    const el = document.getElementById("replyTextarea");
-    if (el) (el as HTMLTextAreaElement).focus();
+  // ========== PostActionsMenu ==========
+  const handleDeletePost = async () => {
+    if (!post) return;
+    if (!viewerReady || !viewerUuid) {
+      alert("削除はログイン後に利用できます。");
+      return;
+    }
+    if (post.canonical_user_id !== viewerUuid) {
+      alert("この投稿は削除できません。");
+      return;
+    }
+
+    const ok = window.confirm("この投稿を削除しますか？");
+    if (!ok) return;
+
+    try {
+      // 依存関係：like を先に削除（FKがある場合の保険）
+      await supabase.from("post_likes").delete().eq("post_id", post.id);
+
+      const { error: delErr } = await supabase.from("posts").delete().eq("id", post.id);
+      if (delErr) throw delErr;
+
+      router.back();
+    } catch (e: any) {
+      console.error("[postDetail.delete] failed:", e);
+      alert(e?.message ?? "削除に失敗しました。");
+    } finally {
+      setActionsOpen(false);
+    }
+  };
+
+  const handleReportPost = async () => {
+    if (!post) return;
+    if (!viewerReady || !viewerUuid) {
+      alert("通報はログイン後に利用できます。");
+      return;
+    }
+
+    const ok = window.confirm("この投稿を通報しますか？");
+    if (!ok) return;
+
+    try {
+      // reports テーブルがある前提（既存実装に合わせて最小）
+      const { error: repErr } = await supabase.from("reports").insert([
+        {
+          reporter_id: viewerUuid,
+          target_kind: "post",
+          target_id: post.id,
+          reason: "user_report",
+        },
+      ]);
+      if (repErr) throw repErr;
+
+      alert("通報しました。ありがとうございます。");
+    } catch (e: any) {
+      console.error("[postDetail.report] failed:", e);
+      alert(e?.message ?? "通報に失敗しました。");
+    } finally {
+      setActionsOpen(false);
+    }
   };
 
   return (
@@ -1023,12 +1044,12 @@ export default function PostDetailPage() {
               <div className="post-author">
                 <div className="post-name">{post.author_name}</div>
                 {post.author_handle && (
-                  <div className="ppost-username">{post.author_handle}</div>
+                  <div className="post-username">{post.author_handle}</div>
                 )}
-                <div className="post-meta ">{timeAgo(post.created_at)}</div>
+                <div className="post-meta">{timeAgo(post.created_at)}</div>
               </div>
             </div>
-              
+
             {post.image_urls.length > 0 && (
               <div
                 className={`media-grid media-grid--${post.image_urls.length}`}
@@ -1056,10 +1077,11 @@ export default function PostDetailPage() {
               ))}
             </div>
 
-            <div className="post-actions">
+            {/* ===== PostCard.tsx と同じ class に統一 ===== */}
+            <div className="post-footer">
               <button
                 type="button"
-                className={`post-action-btn ${post.liked ? "liked" : ""}`}
+                className={`post-like-btn ${post.liked ? "liked" : ""}`}
                 disabled={!viewerReady}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1072,7 +1094,7 @@ export default function PostDetailPage() {
 
               <button
                 type="button"
-                className="post-action-btn.is-liked"
+                className="post-reply-btn"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleReply();
@@ -1082,30 +1104,26 @@ export default function PostDetailPage() {
                 <span className="post-reply-count">{post.reply_count}</span>
               </button>
 
-              <div className="post-actions-offset" onClick={(e) => e.stopPropagation()}>
+              <div className="post-menu-wrap" onClick={(e) => e.stopPropagation()}>
                 <PostActionsMenu
                   open={actionsOpen}
                   onToggle={() => setActionsOpen((v) => !v)}
                   isOwner={post.canonical_user_id === viewerUuid}
                   viewerReady={viewerReady}
-                  onDelete={async () => {
-                    // TODO
-                  }}
-                  onReport={async () => {
-                    // TODO
-                  }}
+                  onDelete={handleDeletePost}
+                  onReport={handleReportPost}
                 />
               </div>
-
-              {!viewerReady && (
-                <div className="post-action-note">
-                  いいね・通報・返信はログイン後に利用できます。
-                </div>
-              )}
             </div>
 
+            {!viewerReady && (
+              <div className="feed-message">
+                いいね・通報・返信はログイン後に利用できます。
+              </div>
+            )}
+
             {/* =========================
-               返信セクション（A+B）
+               返信セクション
                ========================= */}
             <section className="replies-section" aria-label="返信一覧">
               <div className="replies-head">
@@ -1120,18 +1138,13 @@ export default function PostDetailPage() {
                 </button>
               </div>
 
-              {/* ★ A：返信フォーム */}
               <div className="reply-compose">
                 <textarea
                   id="replyTextarea"
                   className="reply-textarea"
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
-                  placeholder={
-                    viewerReady
-                      ? "返信を書く…"
-                      : "返信はログイン後に利用できます"
-                  }
+                  placeholder={viewerReady ? "返信を書く…" : "返信はログイン後に利用できます"}
                   disabled={!viewerReady || sendingReply}
                   rows={3}
                 />
@@ -1159,9 +1172,7 @@ export default function PostDetailPage() {
                 </div>
               </div>
 
-              {repliesError && (
-                <div className="text-meta text-error">{repliesError}</div>
-              )}
+              {repliesError && <div className="text-meta text-error">{repliesError}</div>}
 
               {!repliesError && loadingReplies && (
                 <div className="text-meta">返信を読み込み中…</div>
@@ -1202,9 +1213,7 @@ export default function PostDetailPage() {
                         <div className="reply-author">
                           <div className="reply-author-name">{r.authorName}</div>
                           {r.authorHandle && (
-                            <div className="reply-author-handle">
-                              {r.authorHandle}
-                            </div>
+                            <div className="reply-author-handle">{r.authorHandle}</div>
                           )}
                           <div className="reply-time">{r.timeAgoText}</div>
                         </div>
@@ -1225,12 +1234,7 @@ export default function PostDetailPage() {
                               onClick={(e) => e.stopPropagation()}
                             >
                               {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={url}
-                                alt="返信画像"
-                                loading="lazy"
-                                decoding="async"
-                              />
+                              <img src={url} alt="返信画像" loading="lazy" decoding="async" />
                             </a>
                           ))}
                         </div>
@@ -1238,16 +1242,15 @@ export default function PostDetailPage() {
 
                       <div className="reply-body">
                         {r.body.split("\n").map((line, i) => (
-                          <p key={i}>
-                            {line || <span style={{ opacity: 0.3 }}>　</span>}
-                          </p>
+                          <p key={i}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
                         ))}
                       </div>
 
+                      {/* Reply いいねも PostCard と揃える */}
                       <div className="reply-footer">
                         <button
                           type="button"
-                          className={`post-action-btn ${r.liked ? "liked" : ""}`}
+                          className={`post-like-btn ${r.liked ? "liked" : ""}`}
                           disabled={!viewerReady}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1270,12 +1273,6 @@ export default function PostDetailPage() {
       <BottomNav active="home" hasUnread={hasUnread} />
 
       <style jsx>{`
-
-        .page-main {
-          padding: 16px;
-          padding-bottom: 64px;
-        }
-
         .back-btn {
           border: none;
           background: transparent;
@@ -1312,18 +1309,11 @@ export default function PostDetailPage() {
           display: block;
         }
 
-        .post-like-btn:disabled,
-        .post-reply-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .post-like-btn.liked .post-like-icon {
-          color: #e0245e;
-        }
-
-        .post-actions-offset {
-          margin-top: -5px; /* ← ここを追加 or 調整 */
+        /* PostCard と同じクラス前提（global/postCard側と競合しない最小だけ） */
+        .post-menu-wrap {
+          margin-left: auto;
+          display: flex;
+          align-items: center;
         }
 
         /* =========================
@@ -1355,16 +1345,15 @@ export default function PostDetailPage() {
           padding: 6px 10px;
           font-size: 12px;
           cursor: pointer;
-          color: #333;                 /* ← 追加 */
-          -webkit-text-fill-color: #333; /* ← iOS対策 */
+          color: #333;
+          -webkit-text-fill-color: #333;
         }
 
         .replies-reload:disabled {
-          opacity: 0.6;
+          opacity: 0.5;
           cursor: not-allowed;
         }
 
-        /* 返信フォーム */
         .reply-compose {
           border: 1px solid rgba(0, 0, 0, 0.06);
           border-radius: 14px;
