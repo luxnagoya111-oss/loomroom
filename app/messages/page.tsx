@@ -361,6 +361,8 @@ export default function MessagesPage() {
   useEffect(() => {
     if (!viewerId || !isUuid(viewerId)) return;
 
+    let cancelled = false;
+
     const handleChange = (payload: any) => {
       const newRow = (payload.new ?? null) as DbDmThreadRow | null;
       const oldRow = (payload.old ?? null) as DbDmThreadRow | null;
@@ -375,22 +377,43 @@ export default function MessagesPage() {
       setReloadKey((k) => k + 1);
     };
 
-    const channel = supabase
-      .channel(`dm_threads_user_${viewerId}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "dm_threads" },
-        handleChange
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "dm_threads" },
-        handleChange
-      )
-      .subscribe();
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    (async () => {
+      // ★ 追加：Realtime subscribe 前に auth 同期（詳細ページと同じ発想）
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (token) {
+          supabase.realtime.setAuth(token);
+          // console.log("[messages RT] realtime auth set");
+        } else {
+          // console.log("[messages RT] no token");
+        }
+      } catch (e) {
+        console.warn("[messages RT] getSession failed:", e);
+      }
+
+      if (cancelled) return;
+
+      channel = supabase
+        .channel(`dm_threads_user_${viewerId}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "dm_threads" },
+          handleChange
+        )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "dm_threads" },
+          handleChange
+        )
+        .subscribe();
+    })();
 
     return () => {
-      supabase.removeChannel(channel);
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
     };
   }, [viewerId]);
 
