@@ -536,12 +536,18 @@ const MessageDetailPage: React.FC = () => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
     (async () => {
-      // ★ 重要：Realtime 用に auth を同期（これが本命）
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (token) {
-        supabase.realtime.setAuth(token);
-        console.log("[DM RT] realtime auth set");
+      // ★ Realtime 用に auth を同期
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (token) {
+          supabase.realtime.setAuth(token);
+          console.log("[DM RT] realtime auth set");
+        } else {
+          console.log("[DM RT] no token");
+        }
+      } catch (e) {
+        console.warn("[DM RT] getSession failed:", e);
       }
 
       if (cancelled) return;
@@ -554,18 +560,24 @@ const MessageDetailPage: React.FC = () => {
             event: "INSERT",
             schema: "public",
             table: "dm_messages",
-            filter: `thread_id=eq.${threadId}`,
+            // ★ まずは filter 無し（全INSERTが来るか確認）
+            // filter: `thread_id=eq.${threadId}`,
           },
           (payload) => {
             if (cancelled) return;
 
+            console.log("[DM RT] INSERT RAW:", payload);
+
             const row = payload.new as DbDmMessageRow;
 
             // 自分の送信は二重反映しない
-            if (row.from_user_id === currentUserId) return;
+            if (row?.from_user_id === currentUserId) return;
+
+            // 念のため：別スレッドを弾く（filter無いので）
+            if (row?.thread_id && row.thread_id !== threadId) return;
 
             setMessages((prev) => {
-              if (prev.some((m) => m.id === row.id)) return prev;
+              if (row?.id && prev.some((m) => m.id === row.id)) return prev;
               return [...prev, mapDbToUi(row, currentUserId)];
             });
 
