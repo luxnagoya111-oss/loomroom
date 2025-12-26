@@ -549,7 +549,7 @@ const MessageDetailPage: React.FC = () => {
     };
   }, []);
 
-  // Realtime（INSERT → 即 append / 順序保証）
+  // Realtime（INSERT → optimistic置き換え → 順序保証）
   useEffect(() => {
     if (!threadId || !currentUserId || isBlocked) return;
     if (!isUuid(threadId)) return;
@@ -563,8 +563,7 @@ const MessageDetailPage: React.FC = () => {
         {
           event: "INSERT",
           schema: "public",
-          table: "dm_messages",
-          // ★ filter は戻す（安定化・負荷低減・ノイズ排除）
+         table: "dm_messages",
           filter: `thread_id=eq.${threadId}`,
         },
         (payload) => {
@@ -572,11 +571,26 @@ const MessageDetailPage: React.FC = () => {
 
           const row = payload.new as DbDmMessageRow;
 
-          // 自分の送信は二重反映しない（※後述：送信側は optimistic へ）
-          if (row?.from_user_id === currentUserId) return;
-
           setMessages((prev) => {
-            if (row?.id && prev.some((m) => m.id === row.id)) return prev;
+            // ① すでに正式IDがあれば何もしない
+            if (prev.some((m) => m.id === row.id)) return prev;
+
+            // ② 自分の optimistic 行（local_）があれば置き換える
+            if (row.from_user_id === currentUserId) {
+              const idx = prev.findIndex(
+                (m) =>
+                  m.id.startsWith("local_") &&
+                  m.text === row.text
+              );
+
+              if (idx !== -1) {
+                const next = [...prev];
+                next[idx] = mapDbToUi(row, currentUserId);
+                return next;
+              }
+            }
+
+            // ③ それ以外は普通に append
             return [...prev, mapDbToUi(row, currentUserId)];
           });
 
@@ -589,7 +603,6 @@ const MessageDetailPage: React.FC = () => {
 
     return () => {
       cancelled = true;
-      // ★ unsubscribe 明示（removeChannelだけより安定する）
       channel.unsubscribe();
       supabase.removeChannel(channel);
     };
