@@ -1023,9 +1023,9 @@ export default function PostDetailPage() {
               <div className="post-author">
                 <div className="post-name">{post.author_name}</div>
                 {post.author_handle && (
-                  <div className="post-username">{post.author_handle}</div>
+                  <div className="ppost-username">{post.author_handle}</div>
                 )}
-                <div className="post-meta">{timeAgo(post.created_at)}</div>
+                <div className="post-meta ">{timeAgo(post.created_at)}</div>
               </div>
             </div>
               
@@ -1059,7 +1059,7 @@ export default function PostDetailPage() {
             <div className="post-actions">
               <button
                 type="button"
-                className={`post-like-btn ${post.liked ? "liked" : ""}`}
+                className={`post-action-btn ${post.liked ? "liked" : ""}`}
                 disabled={!viewerReady}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1072,7 +1072,7 @@ export default function PostDetailPage() {
 
               <button
                 type="button"
-                className="post-action-btn is-liked"
+                className="post-action-btn.is-liked"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleReply();
@@ -1121,10 +1121,10 @@ export default function PostDetailPage() {
               </div>
 
               {/* ★ A：返信フォーム */}
-              <div className="field">
+              <div className="reply-compose">
                 <textarea
                   id="replyTextarea"
-                  className="field-textarea"
+                  className="reply-textarea"
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
                   placeholder={
@@ -1135,7 +1135,7 @@ export default function PostDetailPage() {
                   disabled={!viewerReady || sendingReply}
                   rows={3}
                 />
-                <div className="field-footer">
+                <div className="reply-compose-footer">
                   <div className="reply-hint">
                     {viewerReady ? (
                       <span>{replyText.trim().length}/200</span>
@@ -1145,7 +1145,7 @@ export default function PostDetailPage() {
                   </div>
                   <button
                     type="button"
-                    className="btn-primary"
+                    className="reply-send"
                     disabled={
                       !viewerReady ||
                       sendingReply ||
@@ -1247,7 +1247,7 @@ export default function PostDetailPage() {
                       <div className="reply-footer">
                         <button
                           type="button"
-                          className={`post-like-btn ${r.liked ? "liked" : ""}`}
+                          className={`post-action-btn ${r.liked ? "liked" : ""}`}
                           disabled={!viewerReady}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1270,6 +1270,12 @@ export default function PostDetailPage() {
       <BottomNav active="home" hasUnread={hasUnread} />
 
       <style jsx>{`
+
+        .page-main {
+          padding: 16px;
+          padding-bottom: 64px;
+        }
+
         .back-btn {
           border: none;
           background: transparent;
@@ -1295,6 +1301,15 @@ export default function PostDetailPage() {
         .post-header:focus {
           outline: 2px solid rgba(0, 0, 0, 0.18);
           outline-offset: 2px;
+        }
+
+        .media-tile img {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
         }
 
         .post-like-btn:disabled,
@@ -1349,14 +1364,53 @@ export default function PostDetailPage() {
           cursor: not-allowed;
         }
 
+        /* 返信フォーム */
+        .reply-compose {
+          border: 1px solid rgba(0, 0, 0, 0.06);
+          border-radius: 14px;
+          padding: 10px;
+          background: #fff;
+          margin-bottom: 12px;
+        }
+
+        .reply-textarea {
+          width: 100%;
+          border: 1px solid rgba(0, 0, 0, 0.12);
+          border-radius: 12px;
+          padding: 10px 10px;
+          font-size: 13px;
+          line-height: 1.6;
+          resize: vertical;
+          min-height: 70px;
+          outline: none;
+        }
+
         .reply-textarea:disabled {
           background: rgba(0, 0, 0, 0.03);
           color: #666;
         }
 
+        .reply-compose-footer {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-top: 8px;
+        }
+
         .reply-hint {
           font-size: 11px;
           color: var(--text-sub, #777);
+        }
+
+        .reply-send {
+          border: none;
+          border-radius: 12px;
+          padding: 8px 12px;
+          font-size: 12px;
+          cursor: pointer;
+          background: rgba(0, 0, 0, 0.9);
+          color: #fff;
         }
 
         .reply-send:disabled {
