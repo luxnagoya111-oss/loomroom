@@ -527,71 +527,71 @@ const MessageDetailPage: React.FC = () => {
     };
   }, [threadId, currentUserId, isBlocked]);
 
+  // ===== Realtime Auth: トークン更新のたびに同期（安定化の最重要）=====
+  useEffect(() => {
+    // 1) 初回同期（保険）
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (token) supabase.realtime.setAuth(token);
+      } catch {}
+    })();
+
+    // 2) トークン更新のたびに同期（ここが本丸）
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      const token = session?.access_token;
+      if (token) supabase.realtime.setAuth(token);
+    });
+
+    return () => {
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
   // Realtime（INSERT → 即 append / 順序保証）
   useEffect(() => {
     if (!threadId || !currentUserId || isBlocked) return;
     if (!isUuid(threadId)) return;
 
     let cancelled = false;
-    let channel: ReturnType<typeof supabase.channel> | null = null;
 
-    (async () => {
-      // ★ Realtime 用に auth を同期
-      try {
-        const { data } = await supabase.auth.getSession();
-        const token = data.session?.access_token;
-        if (token) {
-          supabase.realtime.setAuth(token);
-          console.log("[DM RT] realtime auth set");
-        } else {
-          console.log("[DM RT] no token");
+    const channel = supabase
+      .channel(`dm_messages_${threadId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "dm_messages",
+          // ★ filter は戻す（安定化・負荷低減・ノイズ排除）
+          filter: `thread_id=eq.${threadId}`,
+        },
+        (payload) => {
+          if (cancelled) return;
+
+          const row = payload.new as DbDmMessageRow;
+
+          // 自分の送信は二重反映しない（※後述：送信側は optimistic へ）
+          if (row?.from_user_id === currentUserId) return;
+
+          setMessages((prev) => {
+            if (row?.id && prev.some((m) => m.id === row.id)) return prev;
+            return [...prev, mapDbToUi(row, currentUserId)];
+          });
+
+          markThreadAsRead({ threadId, viewerId: currentUserId }).catch(() => {});
         }
-      } catch (e) {
-        console.warn("[DM RT] getSession failed:", e);
-      }
-
-      if (cancelled) return;
-
-      channel = supabase
-        .channel(`dm_messages_${threadId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "INSERT",
-            schema: "public",
-            table: "dm_messages",
-            // ★ まずは filter 無し（全INSERTが来るか確認）
-            // filter: `thread_id=eq.${threadId}`,
-          },
-          (payload) => {
-            if (cancelled) return;
-
-            console.log("[DM RT] INSERT RAW:", payload);
-
-            const row = payload.new as DbDmMessageRow;
-
-            // 自分の送信は二重反映しない
-            if (row?.from_user_id === currentUserId) return;
-
-            // 念のため：別スレッドを弾く（filter無いので）
-            if (row?.thread_id && row.thread_id !== threadId) return;
-
-            setMessages((prev) => {
-              if (row?.id && prev.some((m) => m.id === row.id)) return prev;
-              return [...prev, mapDbToUi(row, currentUserId)];
-            });
-
-            markThreadAsRead({ threadId, viewerId: currentUserId }).catch(() => {});
-          }
-        )
-        .subscribe((status) => {
-          console.log("[DM RT] status:", status);
-        });
-    })();
+      )
+      .subscribe((status) => {
+        console.log("[DM RT] status:", status);
+      });
 
     return () => {
       cancelled = true;
-      if (channel) supabase.removeChannel(channel);
+      // ★ unsubscribe 明示（removeChannelだけより安定する）
+      channel.unsubscribe();
+      supabase.removeChannel(channel);
     };
   }, [threadId, currentUserId, isBlocked]);
 
@@ -621,7 +621,7 @@ const MessageDetailPage: React.FC = () => {
       return;
     }
 
-    // ★ 修正：isReplyForPolicy を使う（相手未返信でも送れる）
+    // ★ isReplyForPolicy を使う（相手未返信でも送れる）
     const allowed = canSendDm(currentRole, partnerRole, isReplyForPolicy);
     if (!allowed) {
       alert("この組み合わせではDMを送ることができません。");
@@ -642,8 +642,19 @@ const MessageDetailPage: React.FC = () => {
         return;
       }
 
-      const stored = await getMessagesForThread(threadId);
-      setMessages(stored.map((m) => mapDbToUi(m, currentUserId)));
+      // ★ 送信した自分の文を即時反映（全件再fetchはしない）
+      const now = new Date();
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `local_${now.getTime()}`, // 仮ID（重複防止）
+          from: "me",
+          text: trimmed,
+          time: formatTime(now),
+          date: formatDateString(now),
+        },
+      ]);
+
       setText("");
 
       await markThreadAsRead({ threadId, viewerId: currentUserId });
@@ -655,7 +666,9 @@ const MessageDetailPage: React.FC = () => {
     }
   };
 
-  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => setText(e.target.value);
+  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) =>
+    setText(e.target.value);
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();

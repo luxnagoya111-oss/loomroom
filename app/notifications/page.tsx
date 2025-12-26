@@ -183,6 +183,43 @@ export default function NotificationsPage() {
     load().catch(() => {});
   }, [viewerId, load]);
 
+  // ▼ Realtime 通知購読（追加）
+  useEffect(() => {
+    if (!viewerId) return;
+
+    // Realtime チャンネル作成
+    const channel = supabase
+      .channel(`notifications:${viewerId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "notifications",
+          filter: `to_user_id=eq.${viewerId}`,
+        },
+        (payload) => {
+          const n = payload.new as DbNotificationRow;
+
+          // すでにある通知は重複追加しない
+          setItems((prev) => {
+            if (prev.some((x) => x.id === n.id)) return prev;
+            return [n, ...prev];
+          });
+
+          // from_user の情報が未取得なら取りに行く
+          if (n.from_user_id) {
+            fetchFromUsers([n.from_user_id]);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [viewerId, fetchFromUsers]);
+
   const onLoadMore = async () => {
     if (!viewerId) return;
     if (loadingMore) return;

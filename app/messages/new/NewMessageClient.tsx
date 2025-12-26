@@ -31,15 +31,53 @@ function isUuid(id: string | null | undefined): id is string {
   return !!id && UUID_REGEX.test(id);
 }
 
+function safeText(v: any): string {
+  return typeof v === "string" ? v.trim() : String(v ?? "").trim();
+}
+
 function normalizeRole(raw: string | null | undefined): Role {
   const v = (raw ?? "").toString();
   if (v === "store" || v === "therapist" || v === "user") return v;
   return "guest";
 }
 
-function safeUrl(v: string | null | undefined): string | null {
-  const s = (v ?? "").trim();
-  return s.length > 0 ? s : null;
+function isProbablyHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * ★ 6桁ID（表示用）
+ * - uuid なら "-" を除去して先頭6文字
+ * - それ以外も先頭6文字
+ */
+function toShortId(id: string): string {
+  const s = safeText(id);
+  if (!s) return "";
+  const compact = isUuid(s) ? s.replace(/-/g, "") : s;
+  return compact.slice(0, 6);
+}
+
+/**
+ * ★ SearchPage踏襲：avatar URL 解決（storage path / http 両対応）
+ */
+const AVATAR_BUCKET = "avatars";
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  const v = safeText(raw);
+  if (!v) return null;
+  if (isProbablyHttpUrl(v)) return v;
+
+  const path = v.startsWith(`${AVATAR_BUCKET}/`)
+    ? v.slice(AVATAR_BUCKET.length + 1)
+    : v;
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return data?.publicUrl ?? null;
+}
+
+function autosizeTextarea(el: HTMLTextAreaElement) {
+  el.style.height = "0px";
+  el.style.height = `${el.scrollHeight}px`;
+  el.style.overflowY = "hidden";
 }
 
 type DbUserMini = {
@@ -56,7 +94,6 @@ type DbTherapistMini = {
 };
 
 type DbStoreMini = {
-  id: string;
   owner_user_id: string | null;
   name: string | null;
   avatar_url: string | null;
@@ -95,6 +132,7 @@ export default function NewMessageClient() {
   const [pageError, setPageError] = useState<string | null>(null);
 
   const endRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // 1) 宛先(to)チェック
   useEffect(() => {
@@ -158,6 +196,29 @@ export default function NewMessageClient() {
     };
   }, [router, targetUserId]);
 
+  // ★ Realtime auth（このページ自体は購読しないが、遷移後の /messages/[id] で安定させるため同期）
+  useEffect(() => {
+    if (!authChecked) return;
+    if (!isUuid(viewerId)) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (!cancelled && token) {
+          supabase.realtime.setAuth(token);
+        }
+      } catch (e) {
+        console.warn("[MessagesNew] realtime setAuth failed:", e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authChecked, viewerId]);
+
   // 3) 相手表示情報を DB から解決（users.role を正）
   useEffect(() => {
     if (!isUuid(targetUserId)) return;
@@ -179,17 +240,14 @@ export default function NewMessageClient() {
         const resolvedRole = normalizeRole(u?.role);
         setPartnerRole(resolvedRole);
 
-        const handle =
-          u?.name && u.name.trim().length > 0
-            ? `@${u.name.trim()}`
-            : `@${targetUserId}`;
-        setPartnerHandle(handle);
+        // ★ 一覧/詳細と統一：@xxxxxx（相手ID短縮）
+        setPartnerHandle(`@${toShortId(targetUserId) || "------"}`);
 
         let resolvedName =
           u?.name && u.name.trim().length > 0 ? u.name.trim() : "メッセージ相手";
 
-        // avatar: users.avatar_url を最優先
-        let resolvedAvatar: string | null = safeUrl(u?.avatar_url);
+        // avatar: users.avatar_url を最優先（resolveAvatarUrl必須）
+        let resolvedAvatar: string | null = resolveAvatarUrl(u?.avatar_url);
 
         // therapist fallback
         if (resolvedRole === "therapist") {
@@ -204,7 +262,7 @@ export default function NewMessageClient() {
               console.warn("[MessagesNew] partner therapist fetch error:", thErr);
             if (th) {
               if (th.display_name?.trim()) resolvedName = th.display_name.trim();
-              if (!resolvedAvatar) resolvedAvatar = safeUrl(th.avatar_url);
+              if (!resolvedAvatar) resolvedAvatar = resolveAvatarUrl(th.avatar_url);
             }
           }
         }
@@ -213,7 +271,7 @@ export default function NewMessageClient() {
         if (resolvedRole === "store") {
           const { data: st, error: stErr } = await supabase
             .from("stores")
-            .select("id, owner_user_id, name, avatar_url")
+            .select("owner_user_id, name, avatar_url")
             .eq("owner_user_id", targetUserId)
             .maybeSingle<DbStoreMini>();
 
@@ -221,7 +279,8 @@ export default function NewMessageClient() {
             if (stErr) console.warn("[MessagesNew] partner store fetch error:", stErr);
             if (st) {
               if (st.name?.trim()) resolvedName = st.name.trim();
-              if (safeUrl(st.avatar_url)) resolvedAvatar = safeUrl(st.avatar_url);
+              const stAv = resolveAvatarUrl(st.avatar_url);
+              if (stAv) resolvedAvatar = stAv;
             }
           }
         }
@@ -234,7 +293,7 @@ export default function NewMessageClient() {
         if (cancelled) return;
         console.warn("[MessagesNew] resolve partner failed:", e);
         setPartnerName("メッセージ相手");
-        setPartnerHandle(isUuid(targetUserId) ? `@${targetUserId}` : "");
+        setPartnerHandle(isUuid(targetUserId) ? `@${toShortId(targetUserId)}` : "");
         setPartnerRole("guest");
         setPartnerAvatarUrl(null);
       }
@@ -330,6 +389,13 @@ export default function NewMessageClient() {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, []);
 
+  // textarea autosize
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    autosizeTextarea(el);
+  }, [text]);
+
   // 送信（ここで初回 thread が作成される）
   const handleSend = async () => {
     const trimmed = text.trim();
@@ -356,6 +422,11 @@ export default function NewMessageClient() {
     setPageError(null);
 
     try {
+      /**
+       * ここはあなたのDB/RPC仕様に合わせる必要がある。
+       * 現状コードは「p_target_user_id, p_text」を受けて thread_id を返すRPCを呼ぶ前提。
+       * もし別名なら、ここだけ合わせる。
+       */
       const { data, error } = await supabase.rpc("dm_send_message", {
         p_target_user_id: targetUserId,
         p_text: trimmed,
@@ -407,7 +478,10 @@ export default function NewMessageClient() {
           <div className="chat-inner">
             <div className="partner-badge">
               <div className="avatar-wrap avatar-wrap--lg">
-                <AvatarCircle displayName={partnerName} src={partnerAvatarUrl} />
+                <AvatarCircle
+                  displayName={partnerName}
+                  avatarUrl={partnerAvatarUrl}
+                />
               </div>
               <div className="partner-badge-main">
                 <div className="partner-badge-name">{partnerName}</div>
@@ -461,6 +535,7 @@ export default function NewMessageClient() {
           <div className="chat-input-bar">
             <div className="chat-input-inner">
               <textarea
+                ref={inputRef}
                 className="chat-input"
                 value={text}
                 onChange={handleChange}
@@ -491,66 +566,146 @@ export default function NewMessageClient() {
       </div>
 
       <style jsx>{`
-        .chat-main { padding: 12px 12px 120px; }
-        .chat-inner { display:flex; flex-direction:column; gap:10px; }
+        .chat-main {
+          padding: 12px 12px 120px;
+        }
+        .chat-inner {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
 
-        .avatar-wrap { flex-shrink:0; display:flex; align-items:center; justify-content:center; }
-        .avatar-wrap--lg { width:44px; height:44px; }
-        .avatar-wrap--sm { width:32px; height:32px; }
+        .avatar-wrap {
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .avatar-wrap--lg {
+          width: 44px;
+          height: 44px;
+        }
+        .avatar-wrap--sm {
+          width: 32px;
+          height: 32px;
+        }
 
         .partner-badge {
-          display:flex; align-items:center; gap:10px;
-          padding:10px 10px; border-radius:14px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 10px;
+          border-radius: 14px;
           background: var(--surface-soft);
-          border:1px solid var(--border);
-          margin-bottom:6px;
+          border: 1px solid var(--border);
+          margin-bottom: 6px;
         }
-        .partner-badge-main { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
-        .partner-badge-name { font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .partner-badge-main {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          min-width: 0;
+          flex: 1;
+        }
+        .partner-badge-name {
+          font-size: 13px;
+          font-weight: 700;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
         .partner-badge-sub {
-          display:flex; align-items:center; gap:8px;
-          font-size:11px; color:var(--text-sub);
-          white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 11px;
+          color: var(--text-sub);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .partner-badge-pill {
-          font-size:10px; padding:2px 8px; border-radius:999px;
-          border:1px solid var(--border);
+          font-size: 10px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--border);
           background: var(--surface);
           color: var(--text-sub);
-          font-weight:700; flex-shrink:0;
+          font-weight: 700;
+          flex-shrink: 0;
         }
 
         .chat-input-bar {
-          position:fixed; left:50%; transform:translateX(-50%);
-          bottom:58px; width:100%; max-width:430px;
-          padding:6px 10px 10px;
-          background: linear-gradient(to top, rgba(253,251,247,0.96), rgba(253,251,247,0.78), transparent);
-          box-sizing:border-box; z-index:40;
+          position: fixed;
+          left: 50%;
+          transform: translateX(-50%);
+          bottom: 58px;
+          width: 100%;
+          max-width: 430px;
+          padding: 6px 10px 10px;
+          background: linear-gradient(
+            to top,
+            rgba(253, 251, 247, 0.96),
+            rgba(253, 251, 247, 0.78),
+            transparent
+          );
+          box-sizing: border-box;
+          z-index: 40;
         }
         .chat-input-inner {
-          display:flex; align-items:flex-end; gap:8px;
-          border-radius:999px; background: var(--surface);
-          border:1px solid var(--border);
-          padding:6px 8px 6px 12px;
-          box-shadow:0 4px 10px rgba(0,0,0,0.03);
+          display: flex;
+          align-items: flex-end;
+          gap: 8px;
+          border-radius: 20px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          padding: 6px 8px 6px 12px;
+          box-shadow: 0 4px 10px rgba(0, 0, 0, 0.03);
         }
         .chat-input {
-          flex:1; border:none; background:transparent; resize:none;
-          font-size:13px; line-height:1.4; max-height:80px; padding:2px 0;
+          flex: 1;
+          border: none;
+          background: transparent;
+          resize: none;
+          font-size: 13px;
+          line-height: 1.4;
+          padding: 7px 0 5px 12px;
+          height: auto;
+          overflow-y: hidden;
+          white-space: pre-wrap;
         }
-        .chat-input:focus { outline:none; }
+        .chat-input:focus {
+          outline: none;
+        }
 
         .chat-send-btn {
-          border:none; border-radius:999px;
-          padding:6px 12px; font-size:13px; font-weight:700;
-          cursor:pointer; background: var(--accent); color:#fff;
-          box-shadow:0 2px 6px rgba(215,185,118,0.45);
-          flex-shrink:0;
+          border: none;
+          border-radius: 999px;
+          padding: 6px 12px;
+          font-size: 13px;
+          font-weight: 700;
+          cursor: pointer;
+          background: var(--accent);
+          color: #fff;
+          box-shadow: 0 2px 6px rgba(215, 185, 118, 0.45);
+          flex-shrink: 0;
         }
-        .chat-send-btn:disabled { opacity:0.5; cursor:default; box-shadow:none; }
+        .chat-send-btn:disabled {
+          opacity: 0.5;
+          cursor: default;
+          box-shadow: none;
+        }
 
-        .chat-status-bar { border-top:1px solid var(--border); padding:8px 12px; background: var(--surface); }
-        .chat-status-text { font-size:12px; color: var(--muted-foreground); text-align:center; }
+        .chat-status-bar {
+          border-top: 1px solid var(--border);
+          padding: 8px 12px;
+          background: var(--surface);
+        }
+        .chat-status-text {
+          font-size: 12px;
+          color: var(--text-sub);
+          text-align: center;
+        }
       `}</style>
     </>
   );
