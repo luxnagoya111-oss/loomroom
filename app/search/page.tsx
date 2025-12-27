@@ -499,7 +499,7 @@ export default function SearchPage() {
       <AppHeader />
 
       <main className="app-main search-main">
-        <h1 className="app-title">さがす</h1>
+        <h1 className="app-title">検索</h1>
 
         <form onSubmit={handleSubmit} className="search-form">
           <input

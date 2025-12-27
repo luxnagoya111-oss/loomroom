@@ -1087,7 +1087,6 @@ export default function PostDetailPage() {
         disabled={!viewerReady}
         sending={sendingReply}
         placeholder={viewerReady ? "返信を書く…" : "返信はログイン後に利用できます"}
-        sendOnEnter={true}
         bottomOffset={70} // BottomNav 高さ
         maxWidth={430}
       />

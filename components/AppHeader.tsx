@@ -288,7 +288,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 className="drawer-item drawer-item-button"
                 onClick={() => go("/search")}
               >
-                さがす
+                検索
               </button>
 
               <button
@@ -337,7 +337,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                     onClick={() => go("/signup/creator/start?kind=store")}
                     disabled={loadingAccount}
                   >
-                    会員登録（店舗）
+                    店舗申請
                   </button>
 
                   <button
@@ -346,7 +346,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                     onClick={() => go("/signup/creator/start?kind=therapist")}
                     disabled={loadingAccount}
                   >
-                    会員登録（セラピスト）
+                    セラピスト申請
                   </button>
                 </>
               )}
