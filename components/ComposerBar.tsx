@@ -13,26 +13,26 @@ type Props = {
   disabled?: boolean;
   sending?: boolean;
 
-  /** Enter送信 / Shift+Enter改行 */
-  sendOnEnter?: boolean;
-
   /** 既存の見た目（messages）を維持するための調整 */
   bottomOffset?: number; // BottomNav の高さ（既定 70）
   maxWidth?: number; // 既定 430
 
   /** posts 側で focus したい場合用 */
   textareaId?: string;
+
+  /** 最大行数（既定 5） */
+  maxRows?: number;
 };
 
 function autosizeTextarea(el: HTMLTextAreaElement, maxRows = 5) {
   // いったん縮めて scrollHeight を正しく測る
   el.style.height = "0px";
 
-  const next = el.scrollHeight;
-  el.style.height = `${next}px`;
-
   // 既定はスクロールバー出さない
   el.style.overflowY = "hidden";
+
+  const next = el.scrollHeight;
+  el.style.height = `${next}px`;
 
   // 視覚的な上限（maxRows）
   const lh = parseFloat(getComputedStyle(el).lineHeight || "18") || 18;
@@ -40,7 +40,7 @@ function autosizeTextarea(el: HTMLTextAreaElement, maxRows = 5) {
 
   if (el.scrollHeight > maxH) {
     el.style.height = `${maxH}px`;
-    el.style.overflowY = "auto"; // ★5行超えたら中でスクロール
+    el.style.overflowY = "auto"; // ★ maxRows超えたら中でスクロール
   }
 }
 
@@ -51,13 +51,10 @@ export default function ComposerBar({
   placeholder = "メッセージを入力...",
   disabled = false,
   sending = false,
-
-  // ★ Enter送信はNG：デフォルト false
-  sendOnEnter = false,
-
   bottomOffset = 70,
   maxWidth = 430,
   textareaId,
+  maxRows = 5,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -68,20 +65,8 @@ export default function ComposerBar({
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    autosizeTextarea(el, 5);
-  }, [value]);
-
-  const handleKeyDown: React.KeyboardEventHandler<HTMLTextAreaElement> = (e) => {
-    // sendOnEnter=false のときは何もしない（Enter=改行）
-    if (!sendOnEnter) return;
-
-    // sendOnEnter=true のときだけ Enter 送信 / Shift+Enter 改行
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!canSend) return;
-      void onSend();
-    }
-  };
+    autosizeTextarea(el, maxRows);
+  }, [value, maxRows]);
 
   return (
     <>
@@ -99,7 +84,6 @@ export default function ComposerBar({
             className="chat-input"
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            onKeyDown={handleKeyDown}
             placeholder={placeholder}
             rows={1}
             disabled={disabled}
@@ -147,7 +131,7 @@ export default function ComposerBar({
           line-height: 1.4;
           padding: 7px 0 5px 12px;
           height: auto;
-          overflow-y: hidden;
+          overflow-y: hidden; /* autosizeTextarea が必要時に auto に切替 */
           white-space: pre-wrap;
         }
 
