@@ -133,6 +133,15 @@ export default function ComposerBar({
           height: auto;
           overflow-y: hidden; /* autosizeTextarea が必要時に auto に切替 */
           white-space: pre-wrap;
+          scrollbar-width: none;        /* Firefox */
+          -ms-overflow-style: none;     /* IE/旧Edge */
+        }
+
+        /* ★ 追加：Chrome/Safari */
+        .chat-input::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          display: none;
         }
 
         .chat-input:focus {

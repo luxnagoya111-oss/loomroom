@@ -283,7 +283,6 @@ export default function PostCard(props: Props) {
 
       <style jsx>{`
         .feed-item {
-          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
           padding: 10px 16px;
         }
 
@@ -429,7 +428,7 @@ export default function PostCard(props: Props) {
 
         .feed-message {
           font-size: 12px;
-          padding: 8px 12px;
+          padding: 3px 12px;
           color: var(--text-sub);
         }
 

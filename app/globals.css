@@ -456,7 +456,7 @@ body {
 
 /* 各投稿：上下の線だけ & 余白 */
 .feed-item {
-  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   padding: 10px 0;
 }
 

@@ -6,7 +6,6 @@ import { useParams, useRouter } from "next/navigation";
 
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
-import AvatarCircle from "@/components/AvatarCircle";
 import PostCard from "@/components/PostCard";
 import ComposerBar from "@/components/ComposerBar";
 
@@ -67,6 +66,33 @@ type ReplyItem = {
 
   imageUrls: string[];
 };
+
+/**
+ * ReplyItem -> UiPost
+ * - PostCard を「正」として返信UIも同一DOM/同一CSSに寄せる
+ * - 返信に対するネスト返信は現状未実装のため replyCount は 0 を入れる
+ */
+function toUiPostFromReply(r: ReplyItem): UiPost {
+  return {
+    id: r.id,
+    body: r.body,
+    createdAt: r.createdAt,
+    timeAgoText: r.timeAgoText,
+
+    authorId: r.authorId,
+    authorKind: r.authorKind,
+    authorName: r.authorName,
+    authorHandle: r.authorHandle,
+    avatarUrl: r.avatarUrl,
+    profilePath: r.profilePath,
+
+    likeCount: r.likeCount,
+    replyCount: 0,
+    liked: r.liked,
+
+    imageUrls: r.imageUrls,
+  };
+}
 
 type DbPostRow = {
   id: string;
@@ -926,10 +952,6 @@ export default function PostDetailPage() {
       <AppHeader title="投稿" />
 
       <main className="app-main post-detail-main">
-        <button type="button" className="back-btn" onClick={() => router.back()}>
-          ← 戻る
-        </button>
-
         {loading && <div className="text-meta">読み込み中…</div>}
         {error && <div className="text-meta text-error">{error}</div>}
 
@@ -944,8 +966,7 @@ export default function PostDetailPage() {
                 // 詳細ページなので no-op
               }}
               onOpenProfile={(path) => {
-                if (!path) return;
-                router.push(path);
+                // 詳細ページ内の返信カードは no-op（誤タップ遷移を防ぐ）
               }}
               onToggleLike={() => void toggleLikeMain()}
               onReply={() => focusReplyComposer()}
@@ -955,29 +976,8 @@ export default function PostDetailPage() {
 
             {/* 返信セクション */}
             <section className="replies-section" aria-label="返信一覧">
-              <div className="replies-head">
-                <div className="replies-title">返信</div>
-                <button
-                  type="button"
-                  className="replies-reload"
-                  onClick={() => void loadReplies()}
-                  disabled={loadingReplies}
-                >
-                  {loadingReplies ? "更新中…" : "更新"}
-                </button>
-              </div>
-
               {/* 文字数/状態表示（必要最小） */}
-              <div className="reply-hint-row">
-                {viewerReady ? (
-                  <span className={replyText.trim().length > 200 ? "hint-warn" : ""}>
-                    {replyText.trim().length}/200
-                  </span>
-                ) : (
-                  <span>ログインが必要です</span>
-                )}
-              </div>
-
+    
               {repliesError && <div className="text-meta text-error">{repliesError}</div>}
 
               {!repliesError && loadingReplies && (
@@ -990,86 +990,29 @@ export default function PostDetailPage() {
 
               <div className="replies-list">
                 {replies.map((r) => {
-                  const clickable = !!r.profilePath;
+                  const uiReply = toUiPostFromReply(r);
 
                   return (
-                    <article key={r.id} className="reply-item">
-                      <div
-                        className="reply-head"
-                        role={clickable ? "button" : undefined}
-                        tabIndex={clickable ? 0 : -1}
-                        onClick={() => {
-                          if (!clickable) return;
-                          router.push(r.profilePath!);
-                        }}
-                        onKeyDown={(e) => {
-                          if (!clickable) return;
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            router.push(r.profilePath!);
-                          }
-                        }}
-                        style={{ cursor: clickable ? "pointer" : "default" }}
-                      >
-                        <AvatarCircle
-                          size={34}
-                          avatarUrl={r.avatarUrl}
-                          displayName={r.authorName}
-                          alt={r.authorName}
-                        />
-                        <div className="reply-author">
-                          <div className="reply-author-name">{r.authorName}</div>
-                          {r.authorHandle && (
-                            <div className="reply-author-handle">{r.authorHandle}</div>
-                          )}
-                          <div className="reply-time">{r.timeAgoText}</div>
-                        </div>
-                      </div>
-
-                      {r.imageUrls.length > 0 && (
-                        <div
-                          className={`media-grid media-grid--${r.imageUrls.length}`}
-                          aria-label="返信画像"
-                        >
-                          {r.imageUrls.map((url, idx) => (
-                            <a
-                              key={`${r.id}_${idx}`}
-                              href={url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="media-tile"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={url} alt="返信画像" loading="lazy" decoding="async" />
-                            </a>
-                          ))}
-                        </div>
-                      )}
-
-                      <div className="reply-body">
-                        {r.body.split("\n").map((line, i) => (
-                          <p key={i}>{line || <span style={{ opacity: 0.3 }}>　</span>}</p>
-                        ))}
-                      </div>
-
-                      {/* 返信いいね行：PostCard基準のクラスに統一 */}
-                      <div className="post-footer">
-                        <button
-                          type="button"
-                          className={`plainBtn post-like-btn ${r.liked ? "liked" : ""}`}
-                          disabled={!viewerReady}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleToggleLikeOnReply(r);
-                          }}
-                          aria-label="いいね"
-                        >
-                          <span className="post-like-icon">♥</span>
-                          <span className="post-like-count">{r.likeCount}</span>
-                        </button>
-                      </div>
-                    </article>
+                    <PostCard
+                      key={r.id}
+                      post={uiReply}
+                      viewerReady={viewerReady}
+                      viewerUuid={viewerUuid}
+                      onOpenDetail={(postId) => {
+                        // 返信も posts の1行なので詳細へ遷移（統一）
+                        router.push(`/posts/${postId}`);
+                      }}
+                      onOpenProfile={(path) => {
+                        if (!path) return;
+                        router.push(path);
+                      }}
+                      onToggleLike={() => void handleToggleLikeOnReply(r)}
+                      onReply={() => focusReplyComposer()}
+                      onDeleted={async () => {
+                        await loadReplies();
+                      }}
+                      showBadges={false}
+                    />
                   );
                 })}
               </div>
@@ -1099,24 +1042,14 @@ export default function PostDetailPage() {
           padding-bottom: 160px;
         }
 
-        .back-btn {
-          border: none;
-          background: transparent;
-          padding: 6px 0;
-          font-size: 13px;
-          color: #555;
-          cursor: pointer;
-        }
-
         /* =========================
            返信一覧
            ========================= */
         .replies-section {
-          margin-top: 18px;
+          margin-top: 2px;
           padding-top: 14px;
-          border-top: 1px solid rgba(0, 0, 0, 0.06);
+          border-top: none;
         }
-
         .replies-head {
           display: flex;
           align-items: center;
@@ -1130,84 +1063,11 @@ export default function PostDetailPage() {
           color: rgba(0, 0, 0, 0.78);
         }
 
-        .replies-reload {
-          border: 1px solid rgba(0, 0, 0, 0.1);
-          background: #fff;
-          border-radius: 999px;
-          padding: 6px 10px;
-          font-size: 12px;
-          cursor: pointer;
-        }
-
-        .replies-reload:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-
-        .reply-hint-row {
-          display: flex;
-          justify-content: flex-end;
-          font-size: 12px;
-          color: rgba(0, 0, 0, 0.55);
-          margin: 6px 2px 12px;
-        }
-
-        .hint-warn {
-          color: rgba(220, 38, 38, 0.9);
-          font-weight: 700;
-        }
-
         .replies-list {
           display: flex;
           flex-direction: column;
           gap: 12px;
         }
-
-        .reply-item {
-          border: 1px solid rgba(0, 0, 0, 0.06);
-          border-radius: 14px;
-          padding: 10px;
-          background: #fff;
-        }
-
-        .reply-head {
-          display: flex;
-          gap: 10px;
-          align-items: flex-start;
-        }
-
-        .reply-author {
-          min-width: 0;
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-
-        .reply-author-name {
-          font-size: 13px;
-          font-weight: 800;
-          color: rgba(0, 0, 0, 0.82);
-        }
-
-        .reply-author-handle {
-          font-size: 12px;
-          color: rgba(0, 0, 0, 0.45);
-        }
-
-        .reply-time {
-          font-size: 12px;
-          color: rgba(0, 0, 0, 0.45);
-        }
-
-        .reply-body {
-          font-size: 13px;
-          line-height: 1.7;
-          margin-top: 8px;
-        }
-
-        /* =========================
-           画像グリッド（返信）
-           ========================= */
 
         .media-tile img {
           width: 100%;
