@@ -770,7 +770,6 @@ const MessageDetailPage: React.FC = () => {
             sending={sending}
             bottomOffset={70}
             maxWidth={430}
-            sendOnEnter={true}
           />
         )}
 
