@@ -2,9 +2,10 @@
 "use client";
 
 import React, { useEffect, useState, FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
-import { getCurrentUserId } from "@/lib/auth";
+import { supabase } from "@/lib/supabaseClient";
 import {
   createStoreSignup,
   createTherapistSignup,
@@ -32,14 +33,43 @@ type TherapistForm = {
   note: string;
 };
 
+function buildLoginUrl(nextPath: string) {
+  const next = nextPath.startsWith("/") ? nextPath : "/signup/creator/start";
+  return `/login?next=${encodeURIComponent(next)}`;
+}
+
 export default function CreatorSignupStartPage() {
-  // ★ SSR / 初期描画時は null（まだ判定していない状態）
+  const router = useRouter();
+
+  // SSR / 初期描画時は null（まだ判定していない状態）
   const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
 
+  // Authセッションを基準にログイン判定
   useEffect(() => {
-    const currentUserId = getCurrentUserId();
-    const loggedIn = !!currentUserId && !currentUserId.startsWith("guest-");
-    setIsLoggedIn(loggedIn);
+    let cancelled = false;
+
+    const run = async () => {
+      const { data, error } = await supabase.auth.getSession();
+      const authLoggedIn = !!data.session?.user;
+
+      if (!cancelled) setIsLoggedIn(authLoggedIn);
+
+      if (error) {
+        console.warn("[CreatorSignupStartPage] getSession error:", error);
+      }
+    };
+
+    run();
+
+    // セッションが後から入るケースもあるので、Auth状態変化を購読
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      run();
+    });
+
+    return () => {
+      cancelled = true;
+      sub?.subscription?.unsubscribe();
+    };
   }, []);
 
   // 「未ログインなら注意文を出す」フラグ
@@ -56,6 +86,7 @@ export default function CreatorSignupStartPage() {
     website: "",
     note: "",
   });
+
   const [therapistForm, setTherapistForm] = useState<TherapistForm>({
     name: "",
     area: "",
@@ -64,6 +95,7 @@ export default function CreatorSignupStartPage() {
     wishStore: "",
     note: "",
   });
+
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,20 +108,28 @@ export default function CreatorSignupStartPage() {
     setError(null);
 
     try {
-      // ★ submit 時点の currentUserId をここで取得
-      const currentUserId = getCurrentUserId();
+      // submit時点で必ずAuthセッション確認
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+
+      const sessionUser = sessionData.session?.user ?? null;
+
+      if (sessionError) {
+        console.warn("[CreatorSignupStartPage] getSession error:", sessionError);
+      }
+
+      if (!sessionUser) {
+        router.push(buildLoginUrl("/signup/creator/start"));
+        return;
+      }
 
       if (kind === "store") {
         if (!storeForm.storeName.trim()) {
           setError("店舗名を入力してください。");
-          setSubmitting(false);
           return;
         }
 
-        const payload = {
-          ...storeForm,
-          currentUserId,
-        };
+        const payload = { ...storeForm };
 
         const result = await createStoreSignup({
           name: storeForm.storeName.trim(),
@@ -98,21 +138,16 @@ export default function CreatorSignupStartPage() {
         });
 
         if (!result) {
-          setError("送信に失敗しました。時間をおいて再度お試しください。");
-          setSubmitting(false);
+          setError("送信に失敗しました。ログイン状態をご確認ください。");
           return;
         }
       } else if (kind === "therapist") {
         if (!therapistForm.name.trim()) {
           setError("お名前を入力してください。");
-          setSubmitting(false);
           return;
         }
 
-        const payload = {
-          ...therapistForm,
-          currentUserId,
-        };
+        const payload = { ...therapistForm };
 
         const result = await createTherapistSignup({
           name: therapistForm.name.trim(),
@@ -121,8 +156,7 @@ export default function CreatorSignupStartPage() {
         });
 
         if (!result) {
-          setError("送信に失敗しました。時間をおいて再度お試しください。");
-          setSubmitting(false);
+          setError("送信に失敗しました。ログイン状態をご確認ください。");
           return;
         }
       }
@@ -172,7 +206,7 @@ export default function CreatorSignupStartPage() {
           ) : (
             <>
               <p className="lead">
-                LoomRoom に掲載するセラピスト / 店舗の登録フォームです。
+                LRoom に掲載するセラピスト / 店舗の登録フォームです。
                 まずはどちらとして使いたいかを選んでください。
               </p>
 
@@ -189,8 +223,8 @@ export default function CreatorSignupStartPage() {
 
               {showLoginNotice && (
                 <p className="lead">
-                  ※ ログインされていない場合、後からアカウントと申請内容をひも付けできないことがあります。
-                  可能であれば先にメールアドレスでログインしてからご利用ください。
+                  ※ ログインされていない場合、申請を受け付けできません。
+                  先にメールアドレスでログインしてからご利用ください。
                 </p>
               )}
 
@@ -380,9 +414,7 @@ export default function CreatorSignupStartPage() {
                       </div>
 
                       <div className="field">
-                        <label className="label">
-                          所属希望の店舗（あれば）
-                        </label>
+                        <label className="label">所属希望の店舗（あれば）</label>
                         <input
                           type="text"
                           className="input"
@@ -435,16 +467,12 @@ export default function CreatorSignupStartPage() {
 
                   {error && <p className="error-text">{error}</p>}
 
-                  <button
-                    type="submit"
-                    className="submit-btn"
-                    disabled={submitting}
-                  >
+                  <button type="submit" className="submit-btn" disabled={submitting}>
                     {submitting ? "送信中..." : "この内容で申請する"}
                   </button>
 
                   <p className="note">
-                    ※ 入力内容は、LoomRoom 内での運用とご連絡のためにのみ利用します。
+                    ※ 入力内容は、LRoom 内での運用とご連絡のためにのみ利用します。
                   </p>
                 </form>
               )}

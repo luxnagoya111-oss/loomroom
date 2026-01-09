@@ -1,24 +1,46 @@
 // app/admin/users/page.tsx
 "use client";
 
-import React, { useEffect, useState, ChangeEvent } from "react";
-import AppHeader from "@/components/AppHeader";
-import BottomNav from "@/components/BottomNav";
+import React, { useEffect, useMemo, useState, ChangeEvent } from "react";
 import {
   listSignupApplications,
   updateSignupStatus,
 } from "@/lib/repositories/signupRepository";
 import type { DbSignupApplicationRow, DbSignupStatus } from "@/types/db";
 
-const hasUnread = false; // 管理画面なので一旦 false のまま
-
 type UserSignup = DbSignupApplicationRow;
+
+function formatCreatedAt(iso?: string | null) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function statusLabel(s: DbSignupStatus) {
+  if (s === "pending") return "審査待ち";
+  if (s === "approved") return "承認";
+  if (s === "rejected") return "却下";
+  return s;
+}
+
+function clip(s: string, n = 240) {
+  const t = (s ?? "").trim();
+  return t.length > n ? t.slice(0, n) + "…" : t;
+}
 
 export default function AdminUsersPage() {
   const [items, setItems] = useState<UserSignup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [q, setQ] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -27,19 +49,14 @@ export default function AdminUsersPage() {
       setLoading(true);
       setError(null);
       try {
-        // type="user" の申請だけ取得
         const rows = await listSignupApplications({ type: "user" });
         if (cancelled) return;
         setItems(rows);
       } catch (err) {
         console.error("[AdminUsersPage] load error:", err);
-        if (!cancelled) {
-          setError("読み込みに失敗しました。");
-        }
+        if (!cancelled) setError("読み込みに失敗しました。");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -49,20 +66,37 @@ export default function AdminUsersPage() {
     };
   }, []);
 
-  const handleStatusChange = async (
-    id: string,
-    status: DbSignupStatus
-  ) => {
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return items;
+
+    return items.filter((app) => {
+      const payload = (app.payload ?? {}) as any;
+
+      const name = String(app.name ?? "");
+      const contact = String(app.contact ?? payload.contact ?? "");
+      const currentUserId = String(payload.currentUserId ?? "");
+      const hopes = String(payload.hopes ?? "");
+      const howToUse = String(payload.howToUse ?? "");
+
+      return [name, contact, currentUserId, hopes, howToUse]
+        .join(" ")
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [items, q]);
+
+  const handleStatusChange = async (id: string, status: DbSignupStatus) => {
     setUpdatingId(id);
+    setError(null);
+
     try {
       const updated = await updateSignupStatus({ id, status });
       if (!updated) {
         setError("ステータス更新に失敗しました。");
         return;
       }
-      setItems((prev) =>
-        prev.map((item) => (item.id === id ? updated : item))
-      );
+      setItems((prev) => prev.map((item) => (item.id === id ? updated : item)));
     } catch (err) {
       console.error("[AdminUsersPage] update error:", err);
       setError("ステータス更新に失敗しました。");
@@ -73,222 +107,187 @@ export default function AdminUsersPage() {
 
   const renderRow = (app: UserSignup) => {
     const payload = (app.payload ?? {}) as any;
-    const hopes = payload.hopes ?? "";
-    const howToUse = payload.howToUse ?? "";
+
     const contact = app.contact ?? payload.contact ?? "";
     const currentUserId = payload.currentUserId ?? "";
-
-    const created = app.created_at
-      ? new Date(app.created_at).toLocaleString("ja-JP", {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "";
+    const hopes = payload.hopes ?? "";
+    const howToUse = payload.howToUse ?? "";
+    const created = formatCreatedAt(app.created_at);
 
     return (
-      <tr key={app.id} className="row">
-        <td className="cell main-cell">
-          <div className="name">{app.name}</div>
-          {currentUserId && (
-            <div className="sub">仮ユーザーID: {currentUserId}</div>
+      <tr key={app.id} className="admin-tr">
+        <td className="admin-td admin-col--main">
+          <div className="admin-item-name">{app.name}</div>
+          <div className="admin-meta-chips">
+            {currentUserId && <span className="admin-pill">仮ユーザーID: {currentUserId}</span>}
+          </div>
+        </td>
+
+        <td className="admin-td admin-col--contact">
+          {contact ? <div className="admin-sub">{contact}</div> : <div className="admin-sub admin-muted">—</div>}
+          <div className="admin-date">{created}</div>
+        </td>
+
+        {/* hopes/howto は既存の admin-col--note を流用（5列のため） */}
+        <td className="admin-td admin-col--note">
+          {hopes ? <div className="admin-note-text">{hopes}</div> : <div className="admin-sub admin-muted">—</div>}
+        </td>
+
+        <td className="admin-td admin-col--note">
+          {howToUse ? (
+            <div className="admin-note-text">{howToUse}</div>
+          ) : (
+            <div className="admin-sub admin-muted">—</div>
           )}
         </td>
-        <td className="cell contact-cell">
-          {contact && <div className="sub">{contact}</div>}
-          <div className="date">{created}</div>
-        </td>
-        <td className="cell hopes-cell">
-          {hopes && (
-            <div className="sub">
-              <strong>できたら嬉しいこと:</strong>
-              <br />
-              {hopes}
-            </div>
-          )}
-        </td>
-        <td className="cell howto-cell">
-          {howToUse && (
-            <div className="sub">
-              <strong>使い方イメージ:</strong>
-              <br />
-              {howToUse}
-            </div>
-          )}
-        </td>
-        <td className="cell status-cell">
+
+        <td className="admin-td admin-col--status">
+          <div className={`admin-signup-status admin-signup-status--${app.status}`}>
+            {statusLabel(app.status)}
+          </div>
+
           <select
-            className="status-select"
+            className="admin-status-select"
             value={app.status}
             disabled={updatingId === app.id}
             onChange={(e: ChangeEvent<HTMLSelectElement>) =>
               handleStatusChange(app.id, e.target.value as DbSignupStatus)
             }
           >
-            <option value="pending">pending</option>
-            <option value="approved">approved</option>
-            <option value="rejected">rejected</option>
+            <option value="pending">審査待ち</option>
+            <option value="approved">承認</option>
+            <option value="rejected">却下</option>
           </select>
+
+          {updatingId === app.id && <div className="admin-sub admin-muted">更新中…</div>}
         </td>
       </tr>
     );
   };
 
-  return (
-    <div className="app-shell">
-      <AppHeader title="一般ユーザー申請一覧" />
-      <main className="app-main">
-        <div className="page-root">
-          <p className="page-lead">
-            /signup/user から送信された一般ユーザー向けの
-            signup_applications を表示しています。
-            ステータスを approved / rejected に変更すると、審査結果が確定した扱いになります。
-            （users への本登録は、別途 /admin 実装で行います）
-          </p>
+  const renderCard = (app: UserSignup) => {
+    const payload = (app.payload ?? {}) as any;
 
-          {loading ? (
-            <div className="status-message">読み込み中...</div>
-          ) : error ? (
-            <div className="status-message error">{error}</div>
-          ) : items.length === 0 ? (
-            <div className="status-message">まだ申請はありません。</div>
-          ) : (
-            <div className="table-wrapper">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th className="th main-cell">申請者</th>
-                    <th className="th contact-cell">連絡先 / 申請日時</th>
-                    <th className="th hopes-cell">できたら嬉しいこと</th>
-                    <th className="th howto-cell">使い方イメージ</th>
-                    <th className="th status-cell">ステータス</th>
-                  </tr>
-                </thead>
-                <tbody>{items.map(renderRow)}</tbody>
-              </table>
+    const contact = app.contact ?? payload.contact ?? "";
+    const currentUserId = payload.currentUserId ?? "";
+    const hopes = payload.hopes ?? "";
+    const howToUse = payload.howToUse ?? "";
+    const created = formatCreatedAt(app.created_at);
+
+    return (
+      <div key={app.id} className="admin-signup-card">
+        <div className="admin-signup-card-head">
+          <div className="admin-signup-card-title">{app.name}</div>
+          <div className={`admin-signup-status admin-signup-status--${app.status}`}>
+            {statusLabel(app.status)}
+          </div>
+        </div>
+
+        <div className="admin-signup-card-meta">
+          {currentUserId && (
+            <div className="admin-kv">
+              <span className="admin-k">仮ユーザーID</span>
+              <span className="admin-v">{currentUserId}</span>
+            </div>
+          )}
+          {contact && (
+            <div className="admin-kv">
+              <span className="admin-k">連絡先</span>
+              <span className="admin-v">{contact}</span>
+            </div>
+          )}
+          {created && (
+            <div className="admin-kv">
+              <span className="admin-k">申請日時</span>
+              <span className="admin-v">{created}</span>
             </div>
           )}
         </div>
-      </main>
 
-      <BottomNav hasUnread={hasUnread} />
+        {hopes && (
+          <div className="admin-signup-card-note">
+            <div className="admin-k">できたら嬉しいこと</div>
+            <div className="admin-v">{clip(hopes, 260)}</div>
+          </div>
+        )}
 
-      <style jsx>{`
-        .app-shell {
-          min-height: 100vh;
-          display: flex;
-          flex-direction: column;
-          background: #faf7f3;
-        }
+        {howToUse && (
+          <div className="admin-signup-card-note">
+            <div className="admin-k">使い方イメージ</div>
+            <div className="admin-v">{clip(howToUse, 260)}</div>
+          </div>
+        )}
 
-        .app-main {
-          flex: 1;
-          padding: 12px 12px 72px;
-        }
+        <div className="admin-signup-card-actions">
+          <select
+            className="admin-status-select"
+            value={app.status}
+            disabled={updatingId === app.id}
+            onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+              handleStatusChange(app.id, e.target.value as DbSignupStatus)
+            }
+          >
+            <option value="pending">審査待ち</option>
+            <option value="approved">承認</option>
+            <option value="rejected">却下</option>
+          </select>
 
-        .page-root {
-          max-width: 960px;
-          margin: 0 auto;
-        }
+          {updatingId === app.id && <div className="admin-sub admin-muted">更新中…</div>}
+        </div>
+      </div>
+    );
+  };
 
-        .page-lead {
-          font-size: 12px;
-          color: var(--text-sub, #666);
-          line-height: 1.7;
-          margin-bottom: 12px;
-        }
+  return (
+    <div className="admin-shell">
+      <div className="admin-page-head">
+        <div>
+          <h1 className="admin-page-title">一般ユーザー申請</h1>
+          <p className="admin-page-lead">
+            /signup/user から送信された一般ユーザー申請（signup_applications）を表示します。
+            ステータスを approved / rejected に変更すると審査結果が確定した扱いになります。
+          </p>
+        </div>
+      </div>
 
-        .status-message {
-          font-size: 13px;
-          color: var(--text-sub, #555);
-          padding: 12px;
-        }
+      <div className="admin-toolbar">
+        <input
+          className="admin-ctrl-input"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="名前 / 連絡先 / 仮ユーザーID / できたら嬉しいこと / 使い方イメージ を検索"
+        />
+        <div className="admin-count">{filtered.length} 件</div>
+      </div>
 
-        .status-message.error {
-          color: #b94a48;
-        }
+      {loading ? (
+        <div className="admin-status-message">読み込み中...</div>
+      ) : error ? (
+        <div className="admin-status-message admin-status-message--error">{error}</div>
+      ) : filtered.length === 0 ? (
+        <div className="admin-status-message">まだ申請はありません。</div>
+      ) : (
+        <>
+          <div className="admin-table-only">
+            <div className="admin-table-wrapper">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th className="admin-th admin-col--main">申請者</th>
+                    <th className="admin-th admin-col--contact">連絡先 / 申請日時</th>
+                    <th className="admin-th admin-col--note">できたら嬉しいこと</th>
+                    <th className="admin-th admin-col--note">使い方イメージ</th>
+                    <th className="admin-th admin-col--status">ステータス</th>
+                  </tr>
+                </thead>
+                <tbody>{filtered.map(renderRow)}</tbody>
+              </table>
+            </div>
+          </div>
 
-        .table-wrapper {
-          overflow-x: auto;
-          border-radius: 12px;
-          border: 1px solid rgba(220, 210, 200, 0.9);
-          background: #fff;
-        }
-
-        .table {
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 12px;
-        }
-
-        .th {
-          text-align: left;
-          padding: 8px 10px;
-          border-bottom: 1px solid #eee3d8;
-          background: #fdf8f1;
-          white-space: nowrap;
-        }
-
-        .cell {
-          padding: 8px 10px;
-          border-bottom: 1px solid #f3e7d8;
-          vertical-align: top;
-        }
-
-        .row:last-child .cell {
-          border-bottom: none;
-        }
-
-        .main-cell {
-          min-width: 160px;
-        }
-
-        .contact-cell {
-          min-width: 160px;
-        }
-
-        .hopes-cell {
-          min-width: 200px;
-          max-width: 260px;
-        }
-
-        .howto-cell {
-          min-width: 200px;
-          max-width: 260px;
-        }
-
-        .status-cell {
-          min-width: 120px;
-        }
-
-        .name {
-          font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 2px;
-        }
-
-        .sub {
-          font-size: 11px;
-          color: var(--text-sub, #777);
-          line-height: 1.5;
-        }
-
-        .date {
-          font-size: 11px;
-          color: var(--text-sub, #999);
-          margin-top: 4px;
-        }
-
-        .status-select {
-          font-size: 12px;
-          border-radius: 999px;
-          border: 1px solid var(--border, #ddd);
-          padding: 4px 8px;
-          background: #fff;
-        }
-      `}</style>
+          <div className="admin-card-only">{filtered.map(renderCard)}</div>
+        </>
+      )}
     </div>
   );
 }

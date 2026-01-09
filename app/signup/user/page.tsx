@@ -80,14 +80,14 @@ export default function UserSignupPage() {
             <div className="thankyou-card">
               <h2 className="thankyou-title">送信が完了しました</h2>
               <p className="thankyou-text">
-                ご入力いただいた内容をもとに、LoomRoomの準備が整い次第ご連絡いたします。
+                ご入力いただいた内容をもとに、LRoomの準備が整い次第ご連絡いたします。
                 しばらくお待ちいただけたら嬉しいです。
               </p>
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="form-card">
               <p className="form-lead">
-                LoomRoomをどんなふうに使ってみたいか、ざっくりで大丈夫なので教えてください。
+                LRoomをどんなふうに使ってみたいか、ざっくりで大丈夫なので教えてください。
               </p>
 
               <div className="field">
@@ -127,7 +127,7 @@ export default function UserSignupPage() {
               </div>
 
               <div className="field">
-                <label className="label">LoomRoomの使い方イメージ</label>
+                <label className="label">LRoomの使い方イメージ</label>
                 <textarea
                   className="textarea"
                   value={form.howToUse}
@@ -148,7 +148,7 @@ export default function UserSignupPage() {
               </button>
 
               <p className="note">
-                ※ 入力内容は、LoomRoomの改善やご案内のためにのみ利用します。
+                ※ 入力内容は、LRoomの改善やご案内のためにのみ利用します。
               </p>
             </form>
           )}

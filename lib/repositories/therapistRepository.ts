@@ -202,3 +202,49 @@ export async function attachTherapistToStore(
 
   return data as DbTherapistRow | null;
 }
+
+// ★追加：users.name も同期して更新する版
+export async function updateTherapistProfileAndUserName(args: {
+  therapistId: string; // therapists.id
+  userId: UserId;      // users.id (= auth.uid)
+  values: Partial<Pick<DbTherapistRow, "display_name" | "area" | "profile">>;
+}): Promise<DbTherapistRow | null> {
+  const { therapistId, userId, values } = args;
+
+  // display_name が入ってる時だけ users.name を同期
+  const nextName =
+    typeof values.display_name === "string" ? values.display_name.trim() : null;
+
+  if (nextName && nextName.length > 0) {
+    const { error: userErr } = await supabase
+      .from("users")
+      .update({ name: nextName })
+      .eq("id", userId);
+
+    if (userErr) {
+      console.error(
+        "[therapistRepository.updateTherapistProfileAndUserName] users update error:",
+        userErr
+      );
+      return null;
+    }
+  }
+
+  // therapists 側も更新（display_name/area/profile）
+  const { data, error: thErr } = await supabase
+    .from("therapists")
+    .update(values)
+    .eq("id", therapistId)
+    .select("id, user_id, store_id, display_name, area, profile, avatar_url, created_at")
+    .maybeSingle();
+
+  if (thErr) {
+    console.error(
+      "[therapistRepository.updateTherapistProfileAndUserName] therapists update error:",
+      thErr
+    );
+    return null;
+  }
+
+  return data as DbTherapistRow | null;
+}

@@ -1,7 +1,4 @@
 // lib/repositories/signupRepository.ts
-// signup_applications テーブル用のリポジトリ
-// - 一般ユーザー / セラピスト / 店舗 すべての審査申請をここで扱う
-
 import { supabase } from "@/lib/supabaseClient";
 import type {
   DbSignupApplicationRow,
@@ -9,165 +6,196 @@ import type {
   DbSignupStatus,
 } from "@/types/db";
 
-/**
- * 申請作成時に必要なペイロード
- *
- * name   : 申請者名 or 店名（一覧での主表示）
- * contact: 任意の連絡先（メール / LINE など）
- * payload: フォーム固有の入力内容をそのまま格納
- */
 export type CreateSignupPayload = {
-  type: DbSignupType;
+  type: DbSignupType; // "store" | "therapist" | "user"
   name: string;
   contact?: string | null;
   payload: Record<string, any>;
 };
 
+function preview(s: string, n = 300) {
+  if (!s) return "";
+  return s.length > n ? s.slice(0, n) + "..." : s;
+}
+
 /**
- * signup_applications に 1件 insert する（共通）
+ * ブラウザ側セッションから access_token を取得
+ * - API Route が Bearer 必須設計のため、ここが必須
  */
+async function getAccessToken(): Promise<string | null> {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) {
+    console.warn("[signupRepository] getSession error:", error.message);
+  }
+  const raw = data.session?.access_token ?? null;
+  const token = raw?.trim() ?? null;
+  // access_token は十分長いので、短すぎる場合は異常扱い
+  if (!token || token.length < 30) return null;
+  return token;
+}
+
+async function safeReadText(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+function safeJsonParse<T = any>(text: string): T | null {
+  try {
+    return text ? (JSON.parse(text) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createSignupApplication(
   params: CreateSignupPayload
 ): Promise<DbSignupApplicationRow | null> {
   const { type, name, contact = null, payload } = params;
 
-  const { data, error } = await supabase
-    .from("signup_applications")
-    .insert({
-      type,
-      status: "pending" as DbSignupStatus,
-      name,
-      contact,
-      payload,
-    })
-    .select("*")
-    .maybeSingle<DbSignupApplicationRow>();
+  // ===== デバッグ：送信直前にセッションの user id だけ出す（秘密は出さない）=====
+  try {
+    const { data: s } = await supabase.auth.getSession();
+    console.log(
+      "[signupRepository] session user id =",
+      s.session?.user?.id ?? null
+    );
+  } catch {}
+  // ======================================================================
 
-  if (error) {
+  const token = await getAccessToken();
+  if (!token) {
+    console.error("[signupRepository] Not authenticated: missing access_token");
+    return null;
+  }
+
+  // ===== デバッグ：token先頭だけ =====
+  console.log("[signupRepository] token head =", token.slice(0, 24));
+  // ==================================
+
+  let res: Response;
+  try {
+    res = await fetch("/api/signup-applications", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        // ★重要：API側が Bearer 必須
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        type,
+        name,
+        contact,
+        payload,
+      }),
+    });
+  } catch (e) {
+    console.error("[signupRepository] fetch failed", e);
+    return null;
+  }
+
+  const ct = res.headers.get("content-type") ?? "";
+  const bodyText = await safeReadText(res);
+
+  if (!res.ok) {
     console.error(
-      "[signupRepository.createSignupApplication] Supabase error:",
-      error
+      `[signupRepository] API error: status=${res.status} ${res.statusText} content-type=${ct} body=${preview(
+        bodyText
+      )}`
+    );
+    const j = safeJsonParse(bodyText);
+    if (j) {
+      console.error(
+        `[signupRepository] API error json=${preview(JSON.stringify(j))}`
+      );
+    }
+    return null;
+  }
+
+  const json = safeJsonParse<{ ok?: boolean; data?: any }>(bodyText);
+  if (!json) {
+    console.error(
+      "[signupRepository] response is not json",
+      { ct, body: preview(bodyText) }
     );
     return null;
   }
 
-  return data as DbSignupApplicationRow | null;
+  return (json.data ?? null) as DbSignupApplicationRow | null;
 }
 
-/**
- * セラピスト申請向けショートカット
- */
-export async function createTherapistSignup(params: {
-  name: string;
-  contact?: string | null;
-  payload: Record<string, any>;
-}): Promise<DbSignupApplicationRow | null> {
-  return createSignupApplication({
-    type: "therapist",
-    name: params.name,
-    contact: params.contact,
-    payload: params.payload,
-  });
-}
-
-/**
- * 店舗申請向けショートカット
- */
 export async function createStoreSignup(params: {
   name: string;
   contact?: string | null;
   payload: Record<string, any>;
-}): Promise<DbSignupApplicationRow | null> {
+}) {
   return createSignupApplication({
     type: "store",
     name: params.name,
-    contact: params.contact,
+    contact: params.contact ?? null,
     payload: params.payload,
   });
 }
 
-/**
- * 一般ユーザー申請向けショートカット（必要に応じて使う）
- */
+export async function createTherapistSignup(params: {
+  name: string;
+  contact?: string | null;
+  payload: Record<string, any>;
+}) {
+  return createSignupApplication({
+    type: "therapist",
+    name: params.name,
+    contact: params.contact ?? null,
+    payload: params.payload,
+  });
+}
+
 export async function createUserSignup(params: {
   name: string;
   contact?: string | null;
   payload: Record<string, any>;
-}): Promise<DbSignupApplicationRow | null> {
+}) {
   return createSignupApplication({
     type: "user",
     name: params.name,
-    contact: params.contact,
+    contact: params.contact ?? null,
     payload: params.payload,
   });
 }
 
-/**
- * ID で 1件取得（管理画面の詳細表示用）
- */
-export async function getSignupApplicationById(
-  id: string
-): Promise<DbSignupApplicationRow | null> {
-  const { data, error } = await supabase
-    .from("signup_applications")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle<DbSignupApplicationRow>();
+// ===== 管理画面用（一覧取得 / ステータス更新）=====
 
-  if (error) {
-    console.error(
-      "[signupRepository.getSignupApplicationById] Supabase error:",
-      error
-    );
-    return null;
-  }
-
-  return (data as DbSignupApplicationRow | null) ?? null;
-}
-
-/**
- * 一覧取得
- * - type / status で絞り込み可能
- * - 新しい順に並べる
- */
 export async function listSignupApplications(params?: {
   type?: DbSignupType;
   status?: DbSignupStatus;
   limit?: number;
 }): Promise<DbSignupApplicationRow[]> {
-  const { type, status, limit } = params ?? {};
+  const type = params?.type;
+  const status = params?.status;
+  const limit = params?.limit ?? 50;
 
-  let query = supabase
+  let q = supabase
     .from("signup_applications")
     .select("*")
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(limit);
 
-  if (type) {
-    query = query.eq("type", type);
-  }
-  if (status) {
-    query = query.eq("status", status);
-  }
-  if (typeof limit === "number") {
-    query = query.limit(limit);
-  }
+  if (type) q = q.eq("type", type);
+  if (status) q = q.eq("status", status);
 
-  const { data, error } = await query;
+  const { data, error } = await q;
 
   if (error) {
-    console.error(
-      "[signupRepository.listSignupApplications] Supabase error:",
-      error
-    );
+    console.error("[signupRepository] listSignupApplications error:", error);
     return [];
   }
 
   return (data ?? []) as DbSignupApplicationRow[];
 }
 
-/**
- * ステータス更新（承認 / 却下など）
- */
 export async function updateSignupStatus(params: {
   id: string;
   status: DbSignupStatus;
@@ -182,40 +210,12 @@ export async function updateSignupStatus(params: {
     })
     .eq("id", id)
     .select("*")
-    .maybeSingle<DbSignupApplicationRow>();
+    .single();
 
   if (error) {
-    console.error(
-      "[signupRepository.updateSignupStatus] Supabase error:",
-      error
-    );
+    console.error("[signupRepository] updateSignupStatus error:", error);
     return null;
   }
 
-  return data as DbSignupApplicationRow | null;
-}
-
-/**
- * 店舗 signup を承認し、
- * - stores への正式登録
- * - 該当ユーザーの role = "store" 付与
- * - signup_applications.status = "approved"
- * を 1 トランザクションで行う RPC 呼び出し
- *
- * ※ Supabase 側に approve_store_signup(p_app_id uuid) が定義されている前提
- */
-export async function approveStoreSignup(
-  id: string
-): Promise<DbSignupApplicationRow | null> {
-  const { data, error } = await supabase.rpc("approve_store_signup", {
-    p_app_id: id,
-  });
-
-  if (error) {
-    console.error("[signupRepository.approveStoreSignup] error:", error);
-    return null;
-  }
-
-  // RPC は signup_applications の 1 行を返す想定
-  return data as DbSignupApplicationRow | null;
+  return (data ?? null) as DbSignupApplicationRow | null;
 }

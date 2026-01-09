@@ -1,4 +1,3 @@
-// app/mypage/[id]/console/page.tsx
 "use client";
 
 import React, { useState, useEffect, ChangeEvent } from "react";
@@ -7,121 +6,135 @@ import AvatarUploader from "@/components/AvatarUploader";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import { supabase } from "@/lib/supabaseClient";
-import { uploadAvatar } from "@/lib/avatarStorage";
-
-type Area =
-  | ""
-  | "北海道"
-  | "東北"
-  | "関東"
-  | "中部"
-  | "近畿"
-  | "中国"
-  | "四国"
-  | "九州"
-  | "沖縄";
 
 type AccountType = "ゲスト" | "会員";
 
-const STORAGE_KEY = "loomroom_profile_v1";
+/**
+ * 旧仕様：STORAGE_KEY 固定（端末内で1人分しか持てない）
+ * 新仕様：ユーザーIDごとに分離
+ * - 旧キーがあれば読み込み時に取り込み、以後は新キーで保存する（互換維持）
+ */
+const STORAGE_PREFIX = "loomroom_profile_v1_";
+const LEGACY_STORAGE_KEY = "loomroom_profile_v1";
+
 const hasUnread = true;
+
+type LocalProfilePayload = {
+  nickname?: string;
+  area?: string;
+  intro?: string;
+
+  notifyFavPosts?: boolean;
+  notifyDm?: boolean;
+  notifyNews?: boolean;
+
+  avatarDataUrl?: string;
+
+  snsX?: string;
+  snsOther?: string;
+
+  isMember?: boolean;
+};
+
+type DbUserRow = {
+  id: string;
+  name: string | null;
+  avatar_url: string | null;
+
+  // users 側に追加した想定（無いならSQLが必要）
+  sns_x?: string | null;
+  sns_other?: string | null;
+
+  area: string | null;
+  description: string | null;
+};
 
 const MyPageConsole: React.FC = () => {
   const params = useParams();
   const userId = (params?.id as string) || "user";
 
   // ID からゲスト or 会員を自動判定（guest- ならゲスト、それ以外は会員）
-  const accountType: AccountType = userId.startsWith("guest-")
-    ? "ゲスト"
-    : "会員";
+  const accountType: AccountType = userId.startsWith("guest-") ? "ゲスト" : "会員";
+  const isMember = accountType === "会員";
+
+  const STORAGE_KEY = `${STORAGE_PREFIX}${userId}`;
 
   const [nickname, setNickname] = useState<string>("あなた");
-  const [area, setArea] = useState<Area>("");
+  const [area, setArea] = useState<string>("");
   const [intro, setIntro] = useState<string>("");
 
-  // 「メッセージについて」
-  const [messagePolicy, setMessagePolicy] = useState<string>(
-    "通知にすぐ気づけないこともあるので、ゆっくりペースでやりとりできたら嬉しいです。"
-  );
-
-  // SNS系リンク
   const [snsX, setSnsX] = useState<string>("");
-  const [snsLine, setSnsLine] = useState<string>("");
   const [snsOther, setSnsOther] = useState<string>("");
 
-  // 通知設定
   const [notifyFavPosts, setNotifyFavPosts] = useState<boolean>(true);
   const [notifyDm, setNotifyDm] = useState<boolean>(true);
   const [notifyNews, setNotifyNews] = useState<boolean>(false);
 
+  // 会員: URL / ゲスト: base64
   const [avatarDataUrl, setAvatarDataUrl] = useState<string | undefined>();
   const [loaded, setLoaded] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // 初回読み込み：localStorage から復元（accountType は ID から自動なので読み込まない）
+  // 初回読み込み：localStorage から復元（新キー → 旧キーの順でフォールバック）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
+      const rawNew = window.localStorage.getItem(STORAGE_KEY);
+      const rawLegacy = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+      const raw = rawNew ?? rawLegacy;
+
       if (!raw) {
         setLoaded(true);
         return;
       }
 
-      const data = JSON.parse(raw) as {
-        nickname?: string;
-        area?: Area;
-        intro?: string;
-        notifyFavPosts?: boolean;
-        notifyDm?: boolean;
-        notifyNews?: boolean;
-        avatarDataUrl?: string;
-        messagePolicy?: string;
-        snsX?: string;
-        snsLine?: string;
-        snsOther?: string;
-        isMember?: boolean;
-      };
+      const data = JSON.parse(raw) as LocalProfilePayload;
 
-      if (data.nickname) setNickname(data.nickname);
-      if (data.area) setArea(data.area);
+      if (typeof data.nickname === "string" && data.nickname.trim().length > 0) {
+        setNickname(data.nickname);
+      }
+      if (typeof data.area === "string") setArea(data.area);
       if (typeof data.intro === "string") setIntro(data.intro);
-      if (typeof data.notifyFavPosts === "boolean")
-        setNotifyFavPosts(data.notifyFavPosts);
+
+      if (typeof data.notifyFavPosts === "boolean") setNotifyFavPosts(data.notifyFavPosts);
       if (typeof data.notifyDm === "boolean") setNotifyDm(data.notifyDm);
       if (typeof data.notifyNews === "boolean") setNotifyNews(data.notifyNews);
-      if (typeof data.avatarDataUrl === "string")
-        setAvatarDataUrl(data.avatarDataUrl);
 
-      if (typeof data.messagePolicy === "string") {
-        setMessagePolicy(data.messagePolicy);
-      }
+      if (typeof data.avatarDataUrl === "string") setAvatarDataUrl(data.avatarDataUrl);
+
       if (typeof data.snsX === "string") setSnsX(data.snsX);
-      if (typeof data.snsLine === "string") setSnsLine(data.snsLine);
       if (typeof data.snsOther === "string") setSnsOther(data.snsOther);
     } catch (e) {
-      console.warn("Failed to load LoomRoom profile", e);
+      console.warn("[MyPageConsole] Failed to load profile from localStorage", e);
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [STORAGE_KEY]);
 
-  // Supabase の users から name / avatar_url を取得（会員のみ）
+  // Supabase の users から name / avatar_url / area / description / sns を取得（会員のみ）
   useEffect(() => {
-    if (accountType === "ゲスト") return;
+    if (!isMember) return;
     if (!userId || typeof userId !== "string") return;
 
     let cancelled = false;
 
     const loadUser = async () => {
       try {
+        // セキュリティ：自分以外のURL(id)で開かれた場合はDB同期しない
+        const { data: userRes } = await supabase.auth.getUser();
+        const uid = userRes.user?.id;
+        if (!uid || uid !== userId) {
+          // ローカルだけで表示は続行する（ただしDBからは読まない）
+          return;
+        }
+
         const { data, error } = await supabase
           .from("users")
-          .select("name, avatar_url")
+          .select("id, name, avatar_url, area, description, sns_x, sns_other")
           .eq("id", userId)
-          .maybeSingle<{ name: string | null; avatar_url: string | null }>();
+          .maybeSingle<DbUserRow>();
 
         if (cancelled) return;
 
@@ -131,11 +144,28 @@ const MyPageConsole: React.FC = () => {
         }
         if (!data) return;
 
-        if (data.name) {
+        if (typeof data.name === "string" && data.name.trim().length > 0) {
           setNickname(data.name);
         }
-        if (data.avatar_url) {
+
+        if (typeof data.avatar_url === "string" && data.avatar_url.trim().length > 0) {
           setAvatarDataUrl(data.avatar_url);
+        }
+
+        if (typeof data.area === "string") {
+          setArea(data.area);
+        }
+
+        if (typeof data.description === "string") {
+          setIntro(data.description);
+        }
+
+        if (typeof data.sns_x === "string") {
+          setSnsX(data.sns_x);
+        }
+
+        if (typeof data.sns_other === "string") {
+          setSnsOther(data.sns_other);
         }
       } catch (e) {
         if (!cancelled) {
@@ -145,60 +175,78 @@ const MyPageConsole: React.FC = () => {
     };
 
     loadUser();
+
     return () => {
       cancelled = true;
     };
-  }, [userId, accountType]);
+  }, [userId, isMember]);
 
-  // Avatar 選択時の処理
-  const handleAvatarFileSelect = async (file: File) => {
+  // ===== Avatar 選択時の処理 =====
+  // AvatarUploader が Promise<string> を期待する前提で「URL（またはdataURL）を返す」
+  const handleAvatarFileSelect = async (file: File): Promise<string> => {
+    if (!file) return "";
+
     // ゲスト：Supabase に書き込めないのでローカルプレビューだけ
-    if (accountType === "ゲスト") {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          setAvatarDataUrl(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-      return;
+    if (!isMember) {
+      return await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result;
+          if (typeof result === "string") {
+            setAvatarDataUrl(result);
+            resolve(result);
+          } else {
+            resolve("");
+          }
+        };
+        reader.onerror = () => resolve("");
+        reader.readAsDataURL(file);
+      });
     }
 
     // 会員：Storage にアップロード → users.avatar_url 更新
     try {
       setAvatarUploading(true);
-      const publicUrl = await uploadAvatar(file, userId);
 
-      // DB に保存
-      const { error } = await supabase
-        .from("users")
-        .update({ avatar_url: publicUrl })
-        .eq("id", userId);
+      const { data: userRes, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+
+      const uid = userRes.user?.id;
+      if (!uid) {
+        throw new Error("ログイン状態が切れています。ログインし直してください。");
+      }
+      if (uid !== userId) {
+        throw new Error("このページのIDとログインユーザーが一致しません。");
+      }
+
+      // 既存の AvatarUploader/Storage 実装に合わせてください（uploadAvatar関数がある場合はそれを呼ぶ）
+      // ここはプロジェクト側の実装に依存するため、既存の uploadAvatar / avatarStorage.ts を使う前提で残します。
+      const { uploadAvatar } = await import("@/lib/avatarStorage");
+      const publicUrl = await uploadAvatar(file, uid);
+
+      const { error } = await supabase.from("users").update({ avatar_url: publicUrl }).eq("id", userId);
 
       if (error) {
         console.error("[MyPageConsole] failed to update avatar_url:", error);
-        alert(
-          "アイコン画像の保存に失敗しました。時間をおいて再度お試しください。"
-        );
-        return;
+        throw new Error("アイコン画像の保存に失敗しました。時間をおいて再度お試しください。");
       }
 
       setAvatarDataUrl(publicUrl);
+      return publicUrl;
     } catch (e) {
       console.error("[MyPageConsole] handleAvatarFileSelect error:", e);
       alert("画像のアップロードに失敗しました。通信環境をご確認ください。");
+      return "";
     } finally {
       setAvatarUploading(false);
     }
   };
 
-  // 保存処理：localStorage ＋ 会員なら users.name をサーバー側にも保存
+  // 保存処理：localStorage ＋ 会員なら users（name/area/description/sns）を保存
   const handleSave = async () => {
     if (typeof window === "undefined") return;
 
-    const isMember = accountType === "会員";
-
-    const payload = {
+    const payload: LocalProfilePayload = {
       nickname,
       area,
       intro,
@@ -206,41 +254,55 @@ const MyPageConsole: React.FC = () => {
       notifyDm,
       notifyNews,
       avatarDataUrl,
-      messagePolicy,
       snsX,
-      snsLine,
       snsOther,
       isMember,
     };
 
+    // localStorage 保存（新キー）
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      // 旧キーにも上書き（互換）
+      window.localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(payload));
     } catch (e) {
-      console.error("Failed to save LoomRoom profile (localStorage)", e);
+      console.error("[MyPageConsole] Failed to save profile (localStorage)", e);
     }
 
-    // 会員のときは users.name を更新（avatar_url はファイル選択時に更新済み）
+    // 会員のときは users を更新（avatar_url はファイル選択時に更新済み）
     if (isMember) {
       try {
         setSaving(true);
-        const { error } = await supabase
-          .from("users")
-          .update({
-            name: nickname || null,
-          })
-          .eq("id", userId);
+
+        const { data: userRes } = await supabase.auth.getUser();
+        const uid = userRes.user?.id;
+        if (!uid) {
+          alert("ログイン状態が切れています。ログインし直してください。");
+          return;
+        }
+        if (uid !== userId) {
+          alert("このページのIDとログインユーザーが一致しません。");
+          return;
+        }
+
+        const updatePayload: any = {
+          name: nickname?.trim() ? nickname.trim() : null,
+          area: area?.trim() ? area.trim() : null,
+          description: intro?.trim() ? intro.trim() : null,
+
+          // ★ これが抜けてたので追加
+          sns_x: snsX?.trim() ? snsX.trim() : null,
+          sns_other: snsOther?.trim() ? snsOther.trim() : null,
+        };
+
+        const { error } = await supabase.from("users").update(updatePayload).eq("id", userId);
 
         if (error) {
-          console.error("[MyPageConsole] failed to update users.name:", error);
-          alert(
-            "サーバー側のプロフィール保存に失敗しました。時間をおいて再度お試しください。"
-          );
+          console.error("[MyPageConsole] failed to update users:", error);
+          alert("サーバー側のプロフィール保存に失敗しました。時間をおいて再度お試しください。");
         }
       } catch (e) {
         console.error("[MyPageConsole] handleSave users update error:", e);
-        alert(
-          "サーバー側のプロフィール保存に失敗しました。通信環境をご確認ください。"
-        );
+        alert("サーバー側のプロフィール保存に失敗しました。通信環境をご確認ください。");
       } finally {
         setSaving(false);
       }
@@ -250,23 +312,23 @@ const MyPageConsole: React.FC = () => {
       [
         "マイページの設定を保存しました。",
         isMember
-          ? "（この端末と LoomRoom アカウントの両方に保存されています）"
+          ? "（この端末と LRoom アカウントの両方に保存されています）"
           : "（この端末の中にだけ保存されています）",
         "",
         `ID：${userId}`,
         `ニックネーム：${nickname || "未設定"}`,
         `アカウント種別：${accountType}`,
         `エリア：${area || "未設定"}`,
-        `ひとこと：${intro || "（なし）"}`,
+        `プロフィール：${intro || "（なし）"}`,
       ].join("\n")
     );
   };
 
   if (!loaded) {
     return (
-      <div className="app-shell">
+      <div className="app-root">
         <AppHeader title="マイページ設定" subtitle="読み込み中…" />
-        <main className="app-main mypage-main">
+        <main className="app-main">
           <div className="loading-text">プロフィールを読み込んでいます…</div>
         </main>
         <BottomNav active="mypage" hasUnread={hasUnread} />
@@ -275,447 +337,251 @@ const MyPageConsole: React.FC = () => {
   }
 
   return (
-    <>
-      <div className="app-shell">
-        {/* ヘッダー（ベースそのまま） */}
-        <AppHeader title="マイページ設定" subtitle={`ID: ${userId}`} />
+    <div className="app-root">
+      <AppHeader title="マイページ設定" />
 
-        <main className="app-main mypage-main">
-          {/* プロフィールカード（ベース崩さず） */}
-          <section className="surface-card mypage-card profile-card">
-            <div className="profile-top-row">
-              <AvatarUploader
-                avatarDataUrl={avatarDataUrl}
-                displayName={nickname || "U"}
-                // ゲスト：従来通り Base64 を localStorage 用に使う
-                onChange={
-                  accountType === "ゲスト"
-                    ? (dataUrl: string) => setAvatarDataUrl(dataUrl)
-                    : undefined
-                }
-                // 会員/ゲスト 両方で File を受け取る（ゲストはローカルプレビューのみ）
-                onFileSelect={handleAvatarFileSelect}
-              />
+      <main className="app-main">
+        {/* 表示情報 */}
+        <section className="surface-card">
+          <h2>表示情報</h2>
 
-              <div className="profile-main-text">
+          <div className="mp-profile-row">
+            <AvatarUploader
+              avatarUrl={avatarDataUrl}
+              displayName={nickname || "U"}
+              onPreview={!isMember ? (dataUrl: string) => setAvatarDataUrl(dataUrl) : undefined}
+              onUploaded={isMember ? (url: string) => setAvatarDataUrl(url) : undefined}
+              onFileSelect={handleAvatarFileSelect}
+            />
+
+            <div className="mp-profile-main">
+              <div className="mp-id-pill">User ID：{userId}</div>
+
+              <div className="field">
+                <label className="field-label">ニックネーム</label>
                 <input
-                  className="profile-nickname-input"
+                  className="field-input"
                   value={nickname}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    setNickname(e.target.value)
-                  }
-                  placeholder="ニックネームを入力"
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setNickname(e.target.value)}
+                  placeholder="自由入力"
                 />
-                <div className="profile-id-hint">
-                  LoomRoomの中で表示される名前です
-                </div>
-                {avatarUploading && (
-                  <div className="profile-id-hint">
-                    アイコン画像を保存しています…
-                  </div>
-                )}
+              </div>
+              <div className="mp-caption">
+                LRoomの中で表示される名前です
+                {avatarUploading && <span>（アイコン画像を保存しています…）</span>}
               </div>
             </div>
+          </div>
 
-            <div className="profile-sub-row">
-              <div className="pill pill--accent profile-sub-pill">
-                アカウント種別：{accountType}
-              </div>
-              <div className="pill profile-sub-pill profile-sub-pill--soft">
-                この端末の中だけで、静かに情報を管理します
-              </div>
+          <div className="mp-sub-row">
+            <div className="mp-pill mp-pill--accent">アカウント種別：{accountType}</div>
+            <div className="mp-pill mp-pill--soft">
+              {isMember
+                ? "この端末とアカウントの両方に保存します"
+                : "この端末の中だけで、静かに情報を管理します"}
             </div>
-          </section>
+          </div>
+        </section>
 
-          {/* 基本情報 */}
-          <section className="surface-card mypage-card">
-            <h2 className="mypage-section-title">基本情報</h2>
+        {/* 基本情報 */}
+        <section className="surface-card">
+          <h2>基本情報</h2>
 
-            <div className="field">
-              <label className="field-label">ニックネーム</label>
-              <input
-                className="field-input"
-                value={nickname}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setNickname(e.target.value)
-                }
-                placeholder="例）momo / ゆっくりさん など"
-              />
+          <div className="field">
+            <label className="field-label">エリア</label>
+            <input
+              className="field-input"
+              value={area}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setArea(e.target.value)}
+              placeholder="例）名古屋 / 東海エリア など"
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label">プロフィール</label>
+            <textarea
+              className="field-input mp-textarea"
+              value={intro}
+              onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setIntro(e.target.value)}
+              placeholder="例）人見知りですが、ゆっくり会話できる時間が好きです。"
+            />
+            <div className="field-note">
+              {isMember
+                ? "会員の場合、この内容は users.description に保存されます。"
+                : "ゲストの場合、この端末内にのみ保存されます。"}
             </div>
+          </div>
+        </section>
 
-            <div className="field">
-              <label className="field-label">エリア</label>
-              <select
-                className="field-input"
-                value={area}
-                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                  setArea(e.target.value as Area)
-                }
-              >
-                <option value="">選択しない</option>
-                <option value="北海道">北海道</option>
-                <option value="東北">東北</option>
-                <option value="関東">関東</option>
-                <option value="中部">中部</option>
-                <option value="近畿">近畿</option>
-                <option value="中国">中国</option>
-                <option value="四国">四国</option>
-                <option value="九州">九州</option>
-                <option value="沖縄">沖縄</option>
-              </select>
-            </div>
+        {/* SNSリンク */}
+        <section className="surface-card">
+          <h2>SNSリンク</h2>
 
-            <div className="field">
-              <label className="field-label">ひとこと</label>
-              <textarea
-                className="field-input"
-                value={intro}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                  setIntro(e.target.value)
-                }
-                placeholder="例）人見知りですが、ゆっくり会話できる時間が好きです。"
-              />
-            </div>
-          </section>
+          <div className="field">
+            <label className="field-label">X（任意）</label>
+            <input
+              className="field-input"
+              value={snsX}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsX(e.target.value)}
+              placeholder="https://x.com/..."
+            />
+          </div>
 
-          {/* メッセージについて */}
-          <section className="surface-card mypage-card">
-            <h2 className="mypage-section-title">メッセージについて</h2>
-            <div className="field">
-              <label className="field-label">
-                やりとりのペースや、おねがいごと
-              </label>
-              <textarea
-                className="field-input"
-                value={messagePolicy}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                  setMessagePolicy(e.target.value)
-                }
-                placeholder="例）通知にすぐ気づけないこともあるので、ゆっくりペースでやりとりできたら嬉しいです。"
-              />
-              <div className="field-note">
-                公開マイページの「メッセージについて」にそのまま表示されます。
+          <div className="field">
+            <label className="field-label">その他（任意）</label>
+            <input
+              className="field-input"
+              value={snsOther}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setSnsOther(e.target.value)}
+              placeholder="Instagram / Misskey などのURL"
+            />
+          </div>
+        </section>
+
+        {/* 通知設定 */}
+        <section className="surface-card">
+          <h2>通知設定</h2>
+
+          <div className="toggle-row">
+            <div className="toggle-text">
+              <div className="toggle-title">お気に入りの更新</div>
+              <div className="mp-caption">
+                お気に入りにした人の新しい投稿などを、アプリ内でさりげなくお知らせします。
               </div>
             </div>
-          </section>
-
-          {/* SNSリンク */}
-          <section className="surface-card mypage-card">
-            <h2 className="mypage-section-title">SNSリンク</h2>
-            <div className="field">
-              <label className="field-label">X（任意）</label>
-              <input
-                className="field-input"
-                value={snsX}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setSnsX(e.target.value)
-                }
-                placeholder="https://x.com/..."
-              />
-            </div>
-            <div className="field">
-              <label className="field-label">LINE（任意）</label>
-              <input
-                className="field-input"
-                value={snsLine}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setSnsLine(e.target.value)
-                }
-                placeholder="https://lin.ee/..."
-              />
-            </div>
-            <div className="field">
-              <label className="field-label">その他（任意）</label>
-              <input
-                className="field-input"
-                value={snsOther}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setSnsOther(e.target.value)
-                }
-                placeholder="Instagram / Misskey などのURL"
-              />
-            </div>
-          </section>
-
-          {/* 通知設定 */}
-          <section className="surface-card mypage-card">
-            <h2 className="mypage-section-title">通知設定</h2>
 
             <button
               type="button"
-              className={"toggle-row" + (notifyFavPosts ? " toggle-row--on" : "")}
+              className={"toggle-switch" + (notifyFavPosts ? " is-on" : "")}
               onClick={() => setNotifyFavPosts((v) => !v)}
+              aria-pressed={notifyFavPosts}
             >
-              <div className="toggle-main">
-                <div className="toggle-title">お気に入りの更新</div>
-                <div className="toggle-caption">
-                  お気に入りにした人の新しい投稿などを、アプリ内でさりげなくお知らせします。
-                </div>
-              </div>
-              <div className="toggle-switch">
-                <div className="toggle-knob" />
-              </div>
+              <span className="toggle-knob" />
             </button>
+          </div>
+
+          <div className="mp-divider" />
+
+          <div className="toggle-row">
+            <div className="toggle-text">
+              <div className="toggle-title">DMの通知</div>
+              <div className="mp-caption">大事なメッセージを見逃さないようにしたいときに。</div>
+            </div>
 
             <button
               type="button"
-              className={"toggle-row" + (notifyDm ? " toggle-row--on" : "")}
+              className={"toggle-switch" + (notifyDm ? " is-on" : "")}
               onClick={() => setNotifyDm((v) => !v)}
+              aria-pressed={notifyDm}
             >
-              <div className="toggle-main">
-                <div className="toggle-title">DMの通知</div>
-                <div className="toggle-caption">
-                  大事なメッセージを見逃さないようにしたいときに。
-                </div>
-              </div>
-              <div className="toggle-switch">
-                <div className="toggle-knob" />
-              </div>
+              <span className="toggle-knob" />
             </button>
+          </div>
+
+          <div className="mp-divider" />
+
+          <div className="toggle-row">
+            <div className="toggle-text">
+              <div className="toggle-title">LRoom からのお知らせ</div>
+              <div className="mp-caption">リリース情報など、大切なことだけに使う予定です。</div>
+            </div>
 
             <button
               type="button"
-              className={"toggle-row" + (notifyNews ? " toggle-row--on" : "")}
+              className={"toggle-switch" + (notifyNews ? " is-on" : "")}
               onClick={() => setNotifyNews((v) => !v)}
+              aria-pressed={notifyNews}
             >
-              <div className="toggle-main">
-                <div className="toggle-title">LoomRoom からのお知らせ</div>
-                <div className="toggle-caption">
-                  リリース情報など、大切なことだけに使う予定です。
-                </div>
-              </div>
-              <div className="toggle-switch">
-                <div className="toggle-knob" />
-              </div>
+              <span className="toggle-knob" />
             </button>
-          </section>
+          </div>
+        </section>
+      </main>
 
-          {/* 保存ボタン */}
-          <section className="mypage-save-section">
-            <button
-              type="button"
-              className="primary-button primary-button--full"
-              onClick={handleSave}
-              disabled={saving}
-            >
-              {saving ? "保存中..." : "この内容で保存する"}
-            </button>
-          </section>
-        </main>
+      {/* 保存バー（globals の console-footer-bar に統一） */}
+      <footer className="console-footer-bar">
+        <button
+          type="button"
+          className="btn-primary btn-primary--full"
+          onClick={handleSave}
+          disabled={saving}
+        >
+          {saving ? "保存中..." : "この内容で保存する"}
+        </button>
+      </footer>
 
-        <BottomNav active="mypage" hasUnread={hasUnread} />
-      </div>
+      <BottomNav active="mypage" hasUnread={hasUnread} />
 
+      {/* MyPage固有の見た目だけ残す */}
       <style jsx>{`
-        .app-shell {
-          min-height: 100vh;
-          max-width: 480px;
-          margin: 0 auto;
-          background: var(--background);
-          color: var(--text-main);
-          display: flex;
-          flex-direction: column;
-        }
-
-        .app-main {
-          flex: 1;
-          padding-bottom: 80px;
-        }
-
-        .mypage-main {
-          padding: 12px 16px 140px;
-        }
-
-        .mypage-card {
-          border-radius: 16px;
-          border: 1px solid var(--border);
-          background: var(--surface);
-          padding: 12px;
-          box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
-          margin-top: 12px;
-        }
-
-        .profile-card {
-          padding-top: 16px;
-        }
-
-        .profile-top-row {
+        .mp-profile-row {
           display: flex;
           gap: 12px;
-          align-items: center;
+          align-items: flex-start;
         }
 
-        .profile-main-text {
+        .mp-profile-main {
           flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          min-width: 0;
         }
 
-        .profile-nickname-input {
-          width: 100%;
-          border: none;
-          border-bottom: 1px solid var(--border);
-          padding: 4px 2px;
-          font-size: 16px;
-          font-weight: 600;
-          background: transparent;
-        }
-
-        .profile-nickname-input::placeholder {
-          color: var(--text-sub);
-        }
-
-        .profile-id-hint {
+        .mp-id-pill {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 8px;
+          border-radius: 999px;
+          background: var(--surface-soft);
           font-size: 11px;
           color: var(--text-sub);
-          margin-top: 4px;
+          width: fit-content;
         }
 
-        .profile-sub-row {
+        .mp-sub-row {
           display: flex;
           flex-wrap: wrap;
           gap: 6px;
           margin-top: 10px;
         }
 
-        .profile-sub-pill {
-          font-size: 11px;
-        }
-
-        .profile-sub-pill--soft {
-          background: var(--surface-soft);
-          color: var(--text-sub);
-        }
-
-        .pill {
+        .mp-pill {
           border-radius: 999px;
           padding: 4px 10px;
           background: var(--surface-soft);
           font-size: 11px;
+          border: 1px solid rgba(0, 0, 0, 0.06);
         }
 
-        .pill--accent {
+        .mp-pill--accent {
           background: var(--accent-soft);
           color: var(--accent);
+          border-color: rgba(180, 137, 90, 0.18);
         }
 
-        .mypage-section-title {
-          font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 8px;
+        .mp-pill--soft {
+          background: var(--surface-soft);
           color: var(--text-sub);
         }
 
-        .field {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          margin-top: 8px;
-        }
-
-        .field-label {
+        .mp-caption {
           font-size: 11px;
           color: var(--text-sub);
+          line-height: 1.6;
+          margin-top: 2px;
         }
 
-        .field-input {
-          width: 100%;
-          border-radius: 12px;
-          border: 1px solid var(--border);
-          padding: 6px 10px;
-          font-size: 13px;
-          background: #fff;
-        }
-
-        textarea.field-input {
-          min-height: 70px;
+        .mp-textarea {
+          min-height: 80px;
+          line-height: 1.7;
           resize: vertical;
         }
 
-        .field-note {
-          font-size: 11px;
-          color: var(--text-sub);
-          margin-top: 4px;
-        }
-
-        .toggle-row {
-          margin-top: 8px;
-          border-radius: 12px;
-          border: 1px solid var(--border);
-          padding: 8px 10px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: #fff;
-        }
-
-        .toggle-row--on {
-          border-color: var(--accent);
-          background: var(--accent-soft);
-        }
-
-        .toggle-main {
-          flex: 1;
-          padding-right: 8px;
-        }
-
-        .toggle-title {
-          font-size: 13px;
-          font-weight: 500;
-          margin-bottom: 2px;
-        }
-
-        .toggle-caption {
-          font-size: 11px;
-          color: var(--text-sub);
-        }
-
-        .toggle-switch {
-          width: 38px;
-          height: 22px;
-          border-radius: 999px;
-          background: var(--border);
-          display: flex;
-          align-items: center;
-          padding: 2px;
-        }
-
-        .toggle-row--on .toggle-switch {
-          background: var(--accent);
-        }
-
-        .toggle-knob {
-          width: 18px;
-          height: 18px;
-          border-radius: 999px;
-          background: #fff;
-          margin-left: 0;
-          transition: margin 0.15s ease;
-        }
-
-        .toggle-row--on .toggle-knob {
-          margin-left: 16px;
-        }
-
-        .mypage-save-section {
-          margin: 18px 0 80px;
-        }
-
-        .primary-button {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          border-radius: 999px;
-          border: none;
-          padding: 10px 18px;
-          font-size: 14px;
-          font-weight: 600;
-          cursor: pointer;
-          background: var(--accent);
-          color: #fff;
-          box-shadow: 0 6px 16px rgba(180, 137, 90, 0.35);
-        }
-
-        .primary-button--full {
-          width: 100%;
+        .mp-divider {
+          height: 1px;
+          background: var(--border-soft, rgba(0, 0, 0, 0.06));
+          margin: 10px 0;
         }
 
         .loading-text {
@@ -724,7 +590,7 @@ const MyPageConsole: React.FC = () => {
           color: var(--text-sub);
         }
       `}</style>
-    </>
+    </div>
   );
 };
 
